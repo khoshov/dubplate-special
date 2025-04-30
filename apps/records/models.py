@@ -1,10 +1,12 @@
 from django.db import models
 
+from django_ckeditor_5.fields import CKEditor5Field
+
 
 class Artist(models.Model):
     name = models.CharField(max_length=255)
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
-    bio = models.TextField(blank=True, null=True)
+    bio = CKEditor5Field(blank=True, null=True)
 
     def __str__(self):
         return self.name
@@ -13,7 +15,7 @@ class Artist(models.Model):
 class Label(models.Model):
     name = models.CharField(max_length=255)
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
-    description = models.TextField(blank=True, null=True)
+    description = CKEditor5Field(blank=True, null=True)
 
     def __str__(self):
         return self.name
@@ -42,7 +44,7 @@ class Record(models.Model):
     styles = models.ManyToManyField(Style, related_name='records')
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     cover_image = models.URLField(blank=True, null=True)
-    notes = models.TextField(blank=True, null=True)
+    notes = CKEditor5Field(blank=True, null=True)
 
     # VSNCD001
     # Страна: Netherlands
