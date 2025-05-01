@@ -45,6 +45,10 @@ class Record(models.Model):
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     cover_image = models.URLField(blank=True, null=True)
     notes = CKEditor5Field(blank=True, null=True)
+    stock = models.PositiveIntegerField(
+        default=0,
+        verbose_name='Количество на складе'
+    )
 
     # VSNCD001
     # Страна: Netherlands
