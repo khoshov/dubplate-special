@@ -36,6 +36,16 @@ class Style(models.Model):
 
 
 class Record(models.Model):
+    CONDITION_CHOICES = (
+        ('M', 'Mint (M)'),
+        ('NM', 'Near Mint (NM)'),
+        ('VG+', 'Very Good Plus (VG+)'),
+        ('VG', 'Very Good (VG)'),
+        ('G+', 'Good Plus (G+)'),
+        ('G', 'Good (G)'),
+        ('F', 'Fair (F)'),
+        ('P', 'Poor (P)'),
+    )
     title = models.CharField(max_length=255)
     artists = models.ManyToManyField(Artist, related_name='records')
     label = models.ForeignKey(Label, on_delete=models.SET_NULL, null=True, blank=True, related_name='records')
@@ -48,6 +58,11 @@ class Record(models.Model):
     stock = models.PositiveIntegerField(
         default=0,
         verbose_name='Количество на складе'
+    )
+    condition = models.CharField(
+        max_length=3,
+        choices=CONDITION_CHOICES,
+        default='NM',
     )
 
     # VSNCD001
