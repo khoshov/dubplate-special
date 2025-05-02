@@ -1,4 +1,5 @@
-### Installation UV
+<details>
+<summary>### Installation UV</summary>
 
 Install uv with our standalone installers:
 
@@ -27,7 +28,11 @@ uv self update
 
 See the [installation documentation](https://docs.astral.sh/uv/getting-started/installation/) for
 details and alternative installation methods.
+
+</details>
+
 ---
+
 To install a specific Python version:
 ```bash
 uv python install 3.13
