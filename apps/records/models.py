@@ -2,6 +2,7 @@ from django.db import models
 
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
+from sorl.thumbnail import ImageField
 
 
 class RecordConditions:
@@ -98,7 +99,11 @@ class Record(models.Model):
     genres = models.ManyToManyField(Genre, related_name='records')
     styles = models.ManyToManyField(Style, related_name='records')
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
-    cover_image = models.URLField(null=True, blank=True)
+    cover_image = ImageField(
+        upload_to='images/',
+        null=True,
+        blank=True
+    )
     notes = CKEditor5Field(null=True, blank=True)
     stock = models.PositiveIntegerField(
         default=0,

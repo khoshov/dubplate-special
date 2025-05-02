@@ -45,9 +45,10 @@ INSTALLED_APPS = [
     # Third party apps
     'django_ckeditor_5',  # https://github.com/hvlads/django-ckeditor-5
     'django_countries',  # https://github.com/SmileyChris/django-countries
+    'sorl.thumbnail',  # https://sorl-thumbnail.readthedocs.io/
 
     # Project apps
-    'records'
+    'records',
 ]
 
 MIDDLEWARE = [
