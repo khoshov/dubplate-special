@@ -4,6 +4,60 @@ from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
 
 
+class RecordConditions:
+    M = 'M'
+    NM = 'NM'
+    VGP = 'VG+'
+    VG = 'VG'
+    GP = 'G+'
+    G = 'G'
+    F = 'F'
+    P = 'P'
+    CONDITION_CHOICES = (
+        (M, 'Mint (M)'),
+        (NM, 'Near Mint (NM)'),
+        (VGP, 'Very Good Plus (VG+)'),
+        (VG, 'Very Good (VG)'),
+        (GP, 'Good Plus (G+)'),
+        (G, 'Good (G)'),
+        (F, 'Fair (F)'),
+        (P, 'Poor (P)'),
+    )
+
+
+class RecordFormats:
+    LP = 'LP'
+    LP2 = '2LP'
+    LP3 = '3LP'
+    EP = 'EP'
+    SEVEN = '7"'
+    TEN = '10"'
+    TWELVE = '12"'
+    BOX = 'BOX'
+    PIC = 'PIC'
+    SHAPED = 'SHAPED'
+    FLEXI = 'FLEXI'
+    ACETATE = 'ACETATE'
+    TEST = 'TEST'
+    OTHER = 'OTHER'
+    FORMAT_CHOICES = (
+        (LP, 'LP (12" Long Play)'),
+        (LP2, '2LP (Double Album)'),
+        (LP3, '3LP (Triple Album)'),
+        (EP, 'EP (12" Extended Play)'),
+        (SEVEN, '7" (Single)'),
+        (TEN, '10" (Single/EP)'),
+        (TWELVE, '12" Single'),
+        (BOX, 'Box Set'),
+        (PIC, 'Picture Disc'),
+        (SHAPED, 'Shaped Disc'),
+        (FLEXI, 'Flexi Disc'),
+        (ACETATE, 'Acetate'),
+        (TEST, 'Test Pressing'),
+        (OTHER, 'Other Format'),
+    )
+
+
 class Artist(models.Model):
     name = models.CharField(max_length=255)
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
@@ -37,32 +91,6 @@ class Style(models.Model):
 
 
 class Record(models.Model):
-    CONDITION_CHOICES = (
-        ('M', 'Mint (M)'),
-        ('NM', 'Near Mint (NM)'),
-        ('VG+', 'Very Good Plus (VG+)'),
-        ('VG', 'Very Good (VG)'),
-        ('G+', 'Good Plus (G+)'),
-        ('G', 'Good (G)'),
-        ('F', 'Fair (F)'),
-        ('P', 'Poor (P)'),
-    )
-    FORMAT_CHOICES = (
-        ('LP', 'LP (12" Long Play)'),
-        ('2LP', '2LP (Double Album)'),
-        ('3LP', '3LP (Triple Album)'),
-        ('EP', 'EP (12" Extended Play)'),
-        ('7"', '7" (Single)'),
-        ('10"', '10" (Single/EP)'),
-        ('12"', '12" Single'),
-        ('BOX', 'Box Set'),
-        ('PIC', 'Picture Disc'),
-        ('SHAPED', 'Shaped Disc'),
-        ('FLEXI', 'Flexi Disc'),
-        ('ACETATE', 'Acetate'),
-        ('TEST', 'Test Pressing'),
-        ('OTHER', 'Other Format'),
-    )
     title = models.CharField(max_length=255)
     artists = models.ManyToManyField(Artist, related_name='records')
     label = models.ForeignKey(Label, on_delete=models.SET_NULL, null=True, blank=True, related_name='records')
@@ -78,15 +106,15 @@ class Record(models.Model):
     )
     condition = models.CharField(
         max_length=3,
-        choices=CONDITION_CHOICES,
-        default='NM',
+        choices=RecordConditions.CONDITION_CHOICES,
+        default=RecordConditions.NM,
     )
     catalog_number = models.CharField(max_length=50, unique=True, null=True, blank=True)
     barcode = models.CharField(max_length=20, unique=True, null=True, blank=True)
     format = models.CharField(
         max_length=7,
-        choices=FORMAT_CHOICES,
-        default='OTHER',
+        choices=RecordFormats.FORMAT_CHOICES,
+        default=RecordFormats.OTHER,
     )
     country = CountryField(null=True, blank=True)
 
