@@ -1,5 +1,5 @@
 <details>
-<summary>### Installation UV</summary>
+### <summary> Installation UV</summary>
 
 Install uv with our standalone installers:
 
