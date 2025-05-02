@@ -56,24 +56,18 @@ name = "dubplate-special"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "asgiref" },
     { name = "django" },
     { name = "django-ckeditor-5" },
     { name = "django-countries" },
-    { name = "pyuca" },
     { name = "sorl-thumbnail" },
-    { name = "sqlparse" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "asgiref", specifier = "==3.8.1" },
     { name = "django", specifier = "==5.1.7" },
     { name = "django-ckeditor-5", specifier = "==0.2.17" },
     { name = "django-countries", specifier = "==7.6.1" },
-    { name = "pyuca", specifier = "==1.2" },
     { name = "sorl-thumbnail", specifier = "==12.11.0" },
-    { name = "sqlparse", specifier = "==0.5.3" },
 ]
 
 [[package]]
@@ -104,15 +98,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/92/1ca0c3f09233bd7decf8f7105a1c4e3162fb9142128c74adad0fb361b7eb/pillow-11.2.1-cp313-cp313t-win32.whl", hash = "sha256:e0b55f27f584ed623221cfe995c912c61606be8513bfa0e07d2c674b4516d9dd", size = 2335774 },
     { url = "https://files.pythonhosted.org/packages/a5/ac/77525347cb43b83ae905ffe257bbe2cc6fd23acb9796639a1f56aa59d191/pillow-11.2.1-cp313-cp313t-win_amd64.whl", hash = "sha256:36d6b82164c39ce5482f649b437382c0fb2395eabc1e2b1702a6deb8ad647d6e", size = 2681895 },
     { url = "https://files.pythonhosted.org/packages/67/32/32dc030cfa91ca0fc52baebbba2e009bb001122a1daa8b6a79ad830b38d3/pillow-11.2.1-cp313-cp313t-win_arm64.whl", hash = "sha256:225c832a13326e34f212d2072982bb1adb210e0cc0b153e688743018c94a2681", size = 2417234 },
-]
-
-[[package]]
-name = "pyuca"
-version = "1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/30/32/95beca7e3308581c6da4735c7102b0c0cbb30a6b863cc1a8e44e6d2f5c3c/pyuca-1.2.tar.gz", hash = "sha256:8a382fe74627f08c0d18908c0713ca4a20aad5385f077579e56208beea2893b2", size = 1398641 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/88/aeeee34d88f841aca712a8c18fbd62a33eaad8f2dbe535e87f3c829b02f9/pyuca-1.2-py2.py3-none-any.whl", hash = "sha256:abaa12e1bd2c7c68ca8396ff8383bc0654a739cef3ae68fd7af58bf29af0a91e", size = 1464896 },
 ]
 
 [[package]]
