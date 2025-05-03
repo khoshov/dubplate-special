@@ -2,6 +2,7 @@ from django.db import models
 
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
+from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
 
 
@@ -59,7 +60,7 @@ class RecordFormats:
     )
 
 
-class Artist(models.Model):
+class Artist(TimeStampedModel):
     name = models.CharField(max_length=255)
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     bio = CKEditor5Field(null=True, blank=True)
@@ -68,7 +69,7 @@ class Artist(models.Model):
         return self.name
 
 
-class Label(models.Model):
+class Label(TimeStampedModel):
     name = models.CharField(max_length=255)
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     description = CKEditor5Field(null=True, blank=True)
@@ -77,21 +78,21 @@ class Label(models.Model):
         return self.name
 
 
-class Genre(models.Model):
+class Genre(TimeStampedModel):
     name = models.CharField(max_length=100)
 
     def __str__(self):
         return self.name
 
 
-class Style(models.Model):
+class Style(TimeStampedModel):
     name = models.CharField(max_length=100)
 
     def __str__(self):
         return self.name
 
 
-class Record(models.Model):
+class Record(TimeStampedModel):
     title = models.CharField(max_length=255)
     artists = models.ManyToManyField(Artist, related_name='records')
     label = models.ForeignKey(Label, on_delete=models.SET_NULL, null=True, blank=True, related_name='records')
@@ -127,7 +128,7 @@ class Record(models.Model):
         return self.title
 
 
-class Track(models.Model):
+class Track(TimeStampedModel):
     record = models.ForeignKey(Record, on_delete=models.CASCADE, related_name='tracks')
     position = models.CharField(max_length=10)
     title = models.CharField(max_length=255)
