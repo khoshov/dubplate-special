@@ -1,0 +1,130 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-05-04 14:36+0300\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=4; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<12 || n%100>14) ? 1 : n%10==0 || (n%10>=5 && n%10<=9) || "
+"(n%100>=11 && n%100<=14)? 2 : 3);\n"
+
+#: apps/records/models.py:64 apps/records/models.py:77
+#: apps/records/models.py:91 apps/records/models.py:102
+msgid "Name"
+msgstr "Название"
+
+#: apps/records/models.py:66
+msgid "Bio"
+msgstr "Биография"
+
+#: apps/records/models.py:72 apps/records/models.py:115
+msgid "Artist"
+msgstr "Исполнитель"
+
+#: apps/records/models.py:73
+msgid "Artists"
+msgstr "Исполнители"
+
+#: apps/records/models.py:80
+msgid "Description"
+msgstr "Описание"
+
+#: apps/records/models.py:86 apps/records/models.py:118
+msgid "Label"
+msgstr "Лейбл"
+
+#: apps/records/models.py:87
+msgid "Labels"
+msgstr "Лейблы"
+
+#: apps/records/models.py:97 apps/records/models.py:122
+msgid "Genre"
+msgstr "Жанр"
+
+#: apps/records/models.py:98
+msgid "Genres"
+msgstr "Жанры"
+
+#: apps/records/models.py:108 apps/records/models.py:124
+msgid "Style"
+msgstr "Стиль"
+
+#: apps/records/models.py:109
+msgid "Styles"
+msgstr "Стили"
+
+#: apps/records/models.py:113
+msgid "Record title"
+msgstr "Название пластинки"
+
+#: apps/records/models.py:120
+msgid "Release date"
+msgstr "Дата релиза"
+
+#: apps/records/models.py:130
+msgid "Record image"
+msgstr "Изображение пластинки"
+
+#: apps/records/models.py:132
+msgid "Notes"
+msgstr "Примечание"
+
+#: apps/records/models.py:135
+msgid "Storage on hand"
+msgstr "Количество на складе"
+
+#: apps/records/models.py:141
+msgid "Condition"
+msgstr "Состояние"
+
+#: apps/records/models.py:145
+msgid "Catalog number"
+msgstr "Номер в каталоге"
+
+#: apps/records/models.py:148
+msgid "Barcode"
+msgstr "Штрих-код"
+
+#: apps/records/models.py:153
+msgid "Format"
+msgstr "Формат"
+
+#: apps/records/models.py:155
+msgid "Country"
+msgstr "Страна"
+
+#: apps/records/models.py:161
+msgid "Record"
+msgstr "Пластинка"
+
+#: apps/records/models.py:162
+msgid "Records"
+msgstr "Пластинки"
+
+#: apps/records/models.py:169
+msgid "Track title"
+msgstr "Название трека"
+
+#: apps/records/models.py:171
+msgid "Duration"
+msgstr "Продолжительность"
+
+#: apps/records/models.py:177
+msgid "Track"
+msgstr "Трек"
+
+#: apps/records/models.py:178
+msgid "Tracks"
+msgstr "Треки"
