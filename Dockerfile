@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 # 1. Установка системных зависимостей + uv
 
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update && apt-get install -y curl gettext
 
 WORKDIR /app
 
@@ -19,9 +19,10 @@ RUN uv sync --locked
 # 4. Копируем весь код
 COPY . .
 
+# 5. compilemessages
+RUN uv run manage.py compilemessages
 
-# 5. Запускаем сервер django
-
+# 6. Запускаем сервер django
 CMD ["uv","run", "manage.py", "runserver", "0.0.0.0:8000"]
 
 #
