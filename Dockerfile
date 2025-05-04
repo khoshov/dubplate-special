@@ -16,12 +16,11 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked
 
 
-# 5. Копируем весь код
+# 4. Копируем весь код
 COPY . .
 
 
-
-# 7. Dev-образ (с возможностью hot-reload)
+# 5. Запускаем сервер django
 
 CMD ["uv","run", "manage.py", "runserver", "0.0.0.0:8000"]
 
