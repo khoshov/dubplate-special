@@ -62,3 +62,9 @@ uvx ruff check .
 ```
 
 
+### Docker
+```bash
+docker-compose up --build
+```
+
+
