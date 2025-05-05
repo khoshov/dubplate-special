@@ -3,6 +3,7 @@ from django.utils.translation import gettext_lazy as _
 
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
+from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
 
 
@@ -60,7 +61,7 @@ class RecordFormats:
     )
 
 
-class Artist(models.Model):
+class Artist(TimeStampedModel):
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     bio = CKEditor5Field(null=True, blank=True, verbose_name=_("Bio"))
@@ -73,7 +74,7 @@ class Artist(models.Model):
         verbose_name_plural = _("Artists")
 
 
-class Label(models.Model):
+class Label(TimeStampedModel):
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     description = CKEditor5Field(null=True, blank=True,
@@ -87,7 +88,7 @@ class Label(models.Model):
         verbose_name_plural = _("Labels")
 
 
-class Genre(models.Model):
+class Genre(TimeStampedModel):
     name = models.CharField(max_length=100, verbose_name=_("Name"))
 
     def __str__(self):
@@ -98,7 +99,7 @@ class Genre(models.Model):
         verbose_name_plural = _("Genres")
 
 
-class Style(models.Model):
+class Style(TimeStampedModel):
     name = models.CharField(max_length=100, verbose_name=_("Name"))
 
     def __str__(self):
@@ -109,7 +110,7 @@ class Style(models.Model):
         verbose_name_plural = _("Styles")
 
 
-class Record(models.Model):
+class Record(TimeStampedModel):
     title = models.CharField(max_length=255, verbose_name=_("Record title"))
     artists = models.ManyToManyField(Artist, related_name='records',
                                      verbose_name=_("Artist"))
@@ -162,7 +163,7 @@ class Record(models.Model):
         verbose_name_plural = _("Records")
 
 
-class Track(models.Model):
+class Track(TimeStampedModel):
     record = models.ForeignKey(Record, on_delete=models.CASCADE,
                                related_name='tracks')
     position = models.CharField(max_length=10)
