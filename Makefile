@@ -1,2 +1,2 @@
-ruff:
-	uvx ruff check --fix --unsafe-fixes apps && uvx ruff format apps && uvx ruff check --select I --fix apps
+format:
+	uvx ruff check --fix apps config && uvx ruff check --select I --fix apps config && uvx ruff format apps config

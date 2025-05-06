@@ -10,11 +10,3 @@ dependencies = [
     "django-environ>=0.12.0",
     "sorl-thumbnail==12.11.0",
 ]
-
-[tool.ruff.isort]
-multi_line_output = 3
-include_trailing_comma = true
-default_section = "THIRDPARTY"
-known_first_party = "records"
-known_django = "django"
-sections = ["FUTURE","STDLIB","THIRDPARTY","DJANGO","FIRSTPARTY","LOCALFOLDER"]

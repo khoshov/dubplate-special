@@ -1,7 +1,8 @@
-from django.db import models
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
 from sorl.thumbnail import ImageField
+
+from django.db import models
 
 
 class RecordConditions:
@@ -93,7 +94,9 @@ class Style(models.Model):
 class Record(models.Model):
     title = models.CharField(max_length=255)
     artists = models.ManyToManyField(Artist, related_name="records")
-    label = models.ForeignKey(Label, on_delete=models.SET_NULL, null=True, blank=True, related_name="records")
+    label = models.ForeignKey(
+        Label, on_delete=models.SET_NULL, null=True, blank=True, related_name="records"
+    )
     release_date = models.DateField(null=True, blank=True)
     genres = models.ManyToManyField(Genre, related_name="records")
     styles = models.ManyToManyField(Style, related_name="records")

@@ -1,6 +1,6 @@
-.venv
-db.sqlite3
-.idea
 .git
 .gitignore
+.idea
 .ruff_cache
+.venv
+db.sqlite3
