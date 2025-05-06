@@ -1,3 +1,5 @@
+
+
 services:
   web:
     build: .
@@ -6,56 +8,11 @@ services:
       - 8000:8000
     volumes:
       - .:/app
+  postgres:
+    image: postgres
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
 
 
-
-
-
-#version: '3'
-#
-#services:
-#  postgres:
-#    image: postgres
-#    environment:
-#      - POSTGRES_DB=postgres
-#      - POSTGRES_USER=postgres
-#      - POSTGRES_PASSWORD=postgres
-#    ports:
-#      - "5432:5432"
-#  redis:
-#    image: "redis:alpine"
-#    ports:
-#      - "6379:6379"
-#  django:
-#    build: .
-#    command: python manage.py runserver 0.0.0.0:8000
-#    environment:
-#      - DJANGO_SETTINGS_MODULE=config.settings.dev
-#    volumes:
-#      - .:/usr/src/app
-#    ports:
-#      - "8000:8000"
-#    depends_on:
-#      - postgres
-#      - redis
-#  celery:
-#    build: .
-#    command: celery -A config worker -B -l INFO
-#    environment:
-#      - DJANGO_SETTINGS_MODULE=config.settings.dev
-#    volumes:
-#      - .:/usr/src/app
-#    depends_on:
-#      - redis
-#  node:
-#    build:
-#      context: .
-#      dockerfile: Dockerfile.node
-#    command: nodemon --watch ./ --ext scss --ignore webpack_bundles --exec "npx webpack --config webpack.config.js --watch"
-#    volumes:
-#      - ./assets:/usr/src/app/assets
-#      - ./webpack.config.js:/usr/src/app/webpack.config.js
-#      - ./.stylelintrc.json:/usr/src/app/.stylelintrc.json
-#      - ./.prettierrc:/usr/src/app/.prettierrc
-#      - ./webpack-stats.json:/usr/src/app/webpack-stats.json
-#      - /usr/src/app/node_modules
