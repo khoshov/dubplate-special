@@ -1,70 +1,87 @@
+## Установка и использование UV
+
 <details>
-### <summary> Installation UV</summary>
+<summary>📦 Способы установки UV</summary>
 
-Install uv with our standalone installers:
+### 1. Установка через автономные установщики (рекомендуется)
 
+**Для macOS и Linux:**
 ```bash
-# On macOS and Linux.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-```bash
-# On Windows.
+**Для Windows (PowerShell):**
+```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Or, from [PyPI](https://pypi.org/project/uv/):
-
+### 2. Установка через PyPI (альтернативный способ)
 ```bash
-# With pip.
 pip install uv
 ```
 
-If installed via the standalone installer, uv can update itself to the latest version:
-
+### Обновление UV
+После установки вы можете обновить UV до последней версии:
 ```bash
 uv self update
 ```
 
-See the [installation documentation](https://docs.astral.sh/uv/getting-started/installation/) for
-details and alternative installation methods.
-
+🔗 Подробнее об установке: [Официальная документация](https://docs.astral.sh/uv/getting-started/installation/)
 </details>
 
 ---
 
-To install a specific Python version:
+<details>
+<summary>🚀 Основные команды UV</summary>
+
+### Управление Python-окружением
+
+**Установка конкретной версии Python:**
 ```bash
-uv python install 3.13
+uv python install 3.13  # Установит Python 3.13
 ```
 
-Sync the project's dependencies with the environment.
-```bash 
-uv sync
-```
-Run a command in the project environment.
+### Управление зависимостями
+
+**Синхронизация зависимостей проекта:**
 ```bash
-uv run <COMMAND>
+uv sync  # Аналог pip install + pip-compile
 ```
-Run django server.
+
+**Запуск команд в окружении проекта:**
 ```bash
-uv run manage.py runserver
+uv run <COMMAND>  # Например: uv run pytest
 ```
 
-
-### RUFF:
+**Запуск Django-сервера:**
 ```bash
-uvx ruff
+uv run manage.py runserver  # Альтернатива python manage.py runserver
 ```
+</details>
 
+---
+
+<details>
+<summary>🔍 Интеграция с Ruff</summary>
+
+[Ruff](https://github.com/astral-sh/ruff) - это молниеносный линтер для Python, также разработанный Astral.
+
+**Установка Ruff через UV:**
 ```bash
-uvx ruff check .
+uvx ruff  # Установит последнюю версию Ruff
 ```
 
-
-### Docker
+**Проверка кода с помощью Ruff:**
 ```bash
-docker-compose up --build
+uvx ruff check .  # Проверит все файлы в текущей директории
 ```
+</details>
 
+---
 
+## Запуск проекта в Docker
+
+**Сборка и запуск контейнеров:**
+```bash
+docker-compose up --build  # Соберет и запустит сервисы
+```
