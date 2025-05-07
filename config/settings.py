@@ -23,7 +23,7 @@ env = environ.Env()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Take environment variables from .env file
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 
 # Allows to keep applications in apps directory
 sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
