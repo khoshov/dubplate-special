@@ -1,0 +1,6 @@
+[lint.isort]
+section-order = ["future","standard-library","third-party","django","first-party","local-folder"]
+
+[lint.isort.sections]
+# Group all Django imports into a separate section.
+"django" = ["django"]
