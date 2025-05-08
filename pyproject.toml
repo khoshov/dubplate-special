@@ -10,5 +10,6 @@ dependencies = [
     "django-environ>=0.12.0",
     "django-extensions>=4.1",
     "psycopg2-binary>=2.9.10",
+    "python3-discogs-client>=2.8",
     "sorl-thumbnail==12.11.0",
 ]

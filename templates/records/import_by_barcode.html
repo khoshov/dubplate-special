@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row">
+        <div class="col-md-6 offset-md-3">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h4>Импорт пластинки по штрих-коду</h4>
+                </div>
+                <div class="card-body">
+                    <form method="post">
+                        {% csrf_token %}
+                        {{ form.as_p }}
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-search"></i> Найти и импортировать
+                        </button>
+                        <a href="{% url 'record_list' %}" class="btn btn-secondary">Отмена</a>
+                    </form>
+                </div>
+            </div>
+
+            <div class="mt-4 alert alert-info">
+                <h5>Где найти штрих-код?</h5>
+                <p>Штрих-код обычно расположен на задней обложке пластинки или на наклейке.
+                Это последовательность цифр под черно-белыми полосками.</p>
+                <img src="https://example.com/barcode-example.jpg" alt="Пример штрих-кода" class="img-fluid">
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
