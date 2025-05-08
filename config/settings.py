@@ -37,6 +37,8 @@ SECRET_KEY = env("SECRET_KEY")
 DEBUG = env("DEBUG")
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
+# Discogs token
+DISCOGS_TOKEN = env("DISCOGS_API_KEY")
 
 # =====================
 # APPLICATION DEFINITION
