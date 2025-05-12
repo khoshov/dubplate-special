@@ -72,6 +72,7 @@ class Artist(TimeStampedModel):
     class Meta:
         verbose_name = _("Artist")
         verbose_name_plural = _("Artists")
+        ordering = ("id",)
 
 
 class Label(TimeStampedModel):
@@ -85,6 +86,7 @@ class Label(TimeStampedModel):
     class Meta:
         verbose_name = _("Label")
         verbose_name_plural = _("Labels")
+        ordering = ("id",)
 
 
 class Genre(TimeStampedModel):
@@ -96,6 +98,7 @@ class Genre(TimeStampedModel):
     class Meta:
         verbose_name = _("Genre")
         verbose_name_plural = _("Genres")
+        ordering = ("name",)
 
 
 class Style(TimeStampedModel):
@@ -107,6 +110,7 @@ class Style(TimeStampedModel):
     class Meta:
         verbose_name = _("Style")
         verbose_name_plural = _("Styles")
+        ordering = ("name",)
 
 
 class Record(TimeStampedModel):
@@ -152,12 +156,10 @@ class Record(TimeStampedModel):
     catalog_number = models.CharField(
         max_length=50,
         unique=True,
-        null=True,
-        blank=True,
         verbose_name=_("Catalog number"),
     )
     barcode = models.CharField(
-        max_length=20, unique=True, null=True, blank=True, verbose_name=_("Barcode")
+        max_length=20, unique=True, verbose_name=_("Barcode")
     )
     format = models.CharField(
         max_length=7,
@@ -173,6 +175,7 @@ class Record(TimeStampedModel):
     class Meta:
         verbose_name = _("Record")
         verbose_name_plural = _("Records")
+        ordering = ("title",)
 
 
 class Track(TimeStampedModel):
@@ -189,3 +192,4 @@ class Track(TimeStampedModel):
     class Meta:
         verbose_name = _("Track")
         verbose_name_plural = _("Tracks")
+        ordering = ("record", "position",)
