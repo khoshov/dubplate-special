@@ -50,10 +50,11 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party apps
-    "django_ckeditor_5",
-    "django_countries",
-    "rest_framework",
-    "sorl.thumbnail",
+    "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
+    "django_countries",  # https://github.com/SmileyChris/django-countries
+    "rest_framework",  # https://www.django-rest-framework.org/
+    "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "api",
     "records",
@@ -118,9 +119,14 @@ AUTH_PASSWORD_VALIDATORS = [
 # =================
 # INTERNATIONALIZATION
 # =================
-LANGUAGE_CODE = "en-us"
+LANGUAGE_CODE = 'en'
+LANGUAGES = [
+    ('en', 'English'),
+    ('ru', 'Russian'),
+]
 TIME_ZONE = "UTC"
 USE_I18N = True
+USE_L10N = True
 USE_TZ = True
 
 # =============
