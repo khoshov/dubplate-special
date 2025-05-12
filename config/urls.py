@@ -20,12 +20,12 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
-from apps.records.views import import_by_barcode, RecordDetailView, record_list
+from apps.records.views import RecordDetailView, import_by_barcode, record_list
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("ckeditor5/", include("django_ckeditor_5.urls")),
-    path('records/', record_list, name='record_list'),
-    path('records/<int:pk>/', RecordDetailView.as_view(), name='record_detail'),
-    path("records/import/", import_by_barcode, name='import_by_barcode'),
+    path("records/", record_list, name="record_list"),
+    path("records/<int:pk>/", RecordDetailView.as_view(), name="record_detail"),
+    path("records/import/", import_by_barcode, name="import_by_barcode"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

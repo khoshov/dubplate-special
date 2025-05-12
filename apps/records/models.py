@@ -1,7 +1,8 @@
-from django.core.validators import URLValidator
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
 from django_extensions.db.models import TimeStampedModel
+from sorl.thumbnail import ImageField
+
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
@@ -131,12 +132,11 @@ class Record(TimeStampedModel):
         Style, related_name="records", verbose_name=_("Style")
     )
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
-    cover_image_url = models.URLField(
-        max_length=512,
-        blank=True,
+    cover_image = ImageField(
+        upload_to="images/",
         null=True,
-        validators=[URLValidator()],
-        verbose_name=_("Cover Image URL")
+        blank=True,
+        verbose_name=_("Record image"),
     )
     notes = CKEditor5Field(null=True, blank=True, verbose_name=_("Notes"))
     stock = models.PositiveIntegerField(
@@ -165,7 +165,9 @@ class Record(TimeStampedModel):
         default=RecordFormats.OTHER,
         verbose_name=_("Format"),
     )
-    country = CountryField(null=True, blank=True, verbose_name=_("Country"), max_length=50)
+    country = CountryField(
+        null=True, blank=True, verbose_name=_("Country"), max_length=50
+    )
 
     def __str__(self):
         return self.title
