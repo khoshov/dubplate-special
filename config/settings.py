@@ -52,8 +52,10 @@ INSTALLED_APPS = [
     # Third party apps
     "django_ckeditor_5",
     "django_countries",
+    "rest_framework",
     "sorl.thumbnail",
     # Project apps
+    "api",
     "records",
 ]
 
@@ -288,4 +290,9 @@ CKEDITOR_5_CONFIGS = {
             "reversed": "true",
         }
     },
+}
+
+REST_FRAMEWORK = {
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 10,
 }
