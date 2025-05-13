@@ -2,10 +2,9 @@ import discogs_client
 import time
 import requests
 from datetime import datetime
-from django.core.files import File
-from tempfile import NamedTemporaryFile
 from typing import Optional
 from django.conf import settings
+from django.core.files.base import ContentFile
 
 from apps.records.models import (
     Track, RecordConditions, RecordFormats, Record,
@@ -100,7 +99,7 @@ class DiscogsService:
             print(f"Ошибка импорта: {str(e)}")
             return None
 
-    # Вспомогательные методы (остаются без изменений)
+    # Вспомогательные методы
     def _process_artists(self, artists_data) -> list[Artist]:
         artists = []
         for artist_data in artists_data:
@@ -147,44 +146,19 @@ class DiscogsService:
             )
 
     def _download_cover_image(self, record: Record, image_url: str):
-        """Загружает обложку с обходом ограничений Discogs"""
+        """Загружает обложку"""
         try:
-            # 1. Формируем правильные заголовки
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/webp,image/*,*/*;q=0.8',
-                'Referer': 'https://www.discogs.com/',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'DNT': '1'
-            }
+            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0",
+                       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                       "Accept-Language": "en-US,en;q=0.9"
+                       }
 
-            # 2. Добавляем небольшую задержку перед загрузкой
-            time.sleep(1.5)
-
-            # 3. Загружаем изображение с таймаутом
-            response = requests.get(
-                image_url,
-                headers=headers,
-                stream=True,
-                timeout=20
-            )
+            response = requests.get(image_url, headers=headers, timeout=20)
             response.raise_for_status()
 
-            # 4. Генерируем уникальное имя файла
-            file_ext = image_url.split('.')[-1].lower()
-            if file_ext not in ['jpg', 'jpeg', 'png']:
-                file_ext = 'jpeg'
+            filename = f"cover_{record.discogs_id}_{int(time.time())}.jpeg"
 
-            filename = f"cover_{record.discogs_id}_{int(time.time())}.{file_ext}"
-
-            # 5. Сохраняем временный файл
-            with NamedTemporaryFile(delete=True, suffix=f'.{file_ext}') as img_temp:
-                for chunk in response.iter_content(8192):
-                    img_temp.write(chunk)
-                img_temp.flush()
-
-                # 6. Сохраняем в модель
-                record.cover_image.save(filename, File(img_temp), save=True)
+            record.cover_image.save(filename, ContentFile(response.content))
 
             print(f"Обложка успешно загружена: {filename}")
 
