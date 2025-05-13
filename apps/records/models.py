@@ -158,9 +158,7 @@ class Record(TimeStampedModel):
         unique=True,
         verbose_name=_("Catalog number"),
     )
-    barcode = models.CharField(
-        max_length=20, unique=True, verbose_name=_("Barcode")
-    )
+    barcode = models.CharField(max_length=20, unique=True, verbose_name=_("Barcode"))
     format = models.CharField(
         max_length=7,
         choices=RecordFormats.FORMAT_CHOICES,
@@ -179,8 +177,13 @@ class Record(TimeStampedModel):
 
 
 class Track(TimeStampedModel):
-    record = models.ForeignKey(Record, on_delete=models.CASCADE, related_name="tracks")
-    position = models.CharField(max_length=10)
+    record = models.ForeignKey(
+        Record,
+        on_delete=models.CASCADE,
+        related_name="tracks",
+        verbose_name=_("Record"),
+    )
+    position = models.CharField(max_length=10, verbose_name=_("Position"))
     title = models.CharField(max_length=255, verbose_name=_("Track title"))
     duration = models.CharField(
         max_length=10, null=True, blank=True, verbose_name=_("Duration")
@@ -192,4 +195,7 @@ class Track(TimeStampedModel):
     class Meta:
         verbose_name = _("Track")
         verbose_name_plural = _("Tracks")
-        ordering = ("record", "position",)
+        ordering = (
+            "record",
+            "position",
+        )
