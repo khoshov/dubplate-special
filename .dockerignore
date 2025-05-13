@@ -3,4 +3,4 @@
 .idea
 .ruff_cache
 .venv
-db.sqlite3
+pgdata
