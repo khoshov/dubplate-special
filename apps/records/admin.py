@@ -1,5 +1,6 @@
-from .models import Record, Genre, Artist, Label, Style, Track
 from django.contrib import admin
+
+from .models import Artist, Genre, Label, Record, Style, Track
 
 # Register your models here.
 admin.site.register(Genre)
