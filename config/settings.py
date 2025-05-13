@@ -119,15 +119,18 @@ AUTH_PASSWORD_VALIDATORS = [
 # =================
 # INTERNATIONALIZATION
 # =================
-LANGUAGE_CODE = 'en'
+LANGUAGE_CODE = "en"
 LANGUAGES = [
-    ('en', 'English'),
-    ('ru', 'Russian'),
+    ("en", "English"),
+    ("ru", "Russian"),
 ]
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_L10N = True
 USE_TZ = True
+LOCALE_PATHS = [
+    os.path.join(BASE_DIR, "locale"),
+]
 
 # =============
 # STATIC FILES
@@ -299,6 +302,6 @@ CKEDITOR_5_CONFIGS = {
 }
 
 REST_FRAMEWORK = {
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 10,
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 10,
 }
