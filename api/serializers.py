@@ -1,5 +1,3 @@
-from django_countries.serializer_fields import CountryField
-from django_countries.serializers import CountryFieldMixin
 from records.models import Artist, Genre, Label, Record, Style, Track
 from rest_framework import serializers
 
@@ -30,7 +28,7 @@ class StyleSerializer(serializers.HyperlinkedModelSerializer):
         fields = ["id", "url", "name"]
 
 
-class RecordSerializer(CountryFieldMixin, serializers.HyperlinkedModelSerializer):
+class RecordSerializer(serializers.HyperlinkedModelSerializer):
     artists = ArtistSerializer(many=True, read_only=True)
     artist_ids = serializers.PrimaryKeyRelatedField(
         many=True,
@@ -64,7 +62,6 @@ class RecordSerializer(CountryFieldMixin, serializers.HyperlinkedModelSerializer
         label=_("Styles"),
         source="styles",
     )
-    country = CountryField(name_only=True)
 
     class Meta:
         model = Record

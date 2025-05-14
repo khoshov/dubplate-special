@@ -1,5 +1,4 @@
 from django_ckeditor_5.fields import CKEditor5Field
-from django_countries.fields import CountryField
 from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
 
@@ -165,7 +164,7 @@ class Record(TimeStampedModel):
         default=RecordFormats.OTHER,
         verbose_name=_("Format"),
     )
-    country = CountryField(null=True, blank=True, verbose_name=_("Country"))
+    country =  models.CharField(null=True, blank=True, verbose_name=_("Country"), max_length=50)
 
     def __str__(self):
         return self.title

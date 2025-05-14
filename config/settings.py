@@ -52,7 +52,6 @@ INSTALLED_APPS = [
     # Third party apps
     "django_extensions",  # https://django-extensions.readthedocs.io
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
-    "django_countries",  # https://github.com/SmileyChris/django-countries
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
