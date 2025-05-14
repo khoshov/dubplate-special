@@ -1,10 +1,9 @@
 from django.shortcuts import redirect, render
 from django.views.generic import DetailView
 
-from services.discogs_service import DiscogsService  # Измененный импорт
-
 from .forms import BarcodeImportForm
 from .models import Record
+from .services.discogs_service import DiscogsService
 
 
 class RecordDetailView(DetailView):

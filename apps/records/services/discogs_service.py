@@ -1,14 +1,22 @@
-import discogs_client
 import time
-import requests
 from datetime import datetime
 from typing import Optional
+
+import discogs_client
+import requests
+
 from django.conf import settings
 from django.core.files.base import ContentFile
 
 from apps.records.models import (
-    Track, RecordConditions, RecordFormats, Record,
-    Style, Genre, Label, Artist
+    Artist,
+    Genre,
+    Label,
+    Record,
+    RecordConditions,
+    RecordFormats,
+    Style,
+    Track,
 )
 
 
@@ -20,9 +28,11 @@ class DiscogsService:
     def __init__(self):
         self.client = discogs_client.Client(
             user_agent="VinylCatalog/1.0 +http://localhost",  # Укажите свой User-Agent
-            user_token=settings.DISCOGS_TOKEN  # Только user_token
+            user_token=settings.DISCOGS_TOKEN,  # Только user_token
         )
-        self.request_delay = 1.2  # Задержка между запросами (Discogs требует минимум 1 сек)
+        self.request_delay = (
+            1.2  # Задержка между запросами (Discogs требует минимум 1 сек)
+        )
 
     def _make_request(self, func, *args, **kwargs):
         """Обертка для запросов с задержкой и обработкой ошибок"""
@@ -31,10 +41,14 @@ class DiscogsService:
             return func(*args, **kwargs)
         except discogs_client.exceptions.HTTPError as e:
             if e.status_code == 401:
-                raise Exception("Ошибка аутентификации. Проверьте DISCOGS_USER_TOKEN в settings.py")
+                raise Exception(
+                    "Ошибка аутентификации. Проверьте DISCOGS_USER_TOKEN в settings.py"
+                )
             raise
 
-    def import_release_by_barcode(self, barcode: str, save_image: bool = True) -> Optional[Record]:
+    def import_release_by_barcode(
+        self, barcode: str, save_image: bool = True
+    ) -> Optional[Record]:
         """
         Импортирует релиз по штрих-коду
         Args:
@@ -45,11 +59,7 @@ class DiscogsService:
         """
         try:
             # Поиск релиза
-            results = self._make_request(
-                self.client.search,
-                barcode,
-                type='release'
-            )
+            results = self._make_request(self.client.search, barcode, type="release")
             if not results:
                 return None
 
@@ -64,21 +74,22 @@ class DiscogsService:
 
             # Создание/обновление записи
             record_data = {
-                'title': release.title,
-                'label': label,
-                'release_date': self._parse_release_date(getattr(release, 'released', None)),
-                'catalog_number': release.labels[0].catno if release.labels else None,
-                'barcode': barcode,
-                'format': self._determine_format(release.formats),
-                'country': release.country,
-                'notes': getattr(release, 'notes', None),
-                'condition': RecordConditions.NM,
-                'discogs_id': release.id,
+                "title": release.title,
+                "label": label,
+                "release_date": self._parse_release_date(
+                    getattr(release, "released", None)
+                ),
+                "catalog_number": release.labels[0].catno if release.labels else None,
+                "barcode": barcode,
+                "format": self._determine_format(release.formats),
+                "country": release.country,
+                "notes": getattr(release, "notes", None),
+                "condition": RecordConditions.NM,
+                "discogs_id": release.id,
             }
 
             record, _ = Record.objects.update_or_create(
-                discogs_id=release.id,
-                defaults=record_data
+                discogs_id=release.id, defaults=record_data
             )
 
             # Установка связей
@@ -91,7 +102,7 @@ class DiscogsService:
 
             # Обложка
             if save_image and release.images:
-                self._download_cover_image(record, release.images[0]['uri'])
+                self._download_cover_image(record, release.images[0]["uri"])
 
             return record
 
@@ -104,8 +115,7 @@ class DiscogsService:
         artists = []
         for artist_data in artists_data:
             artist, _ = Artist.objects.get_or_create(
-                discogs_id=artist_data.id,
-                defaults={'name': artist_data.name}
+                discogs_id=artist_data.id, defaults={"name": artist_data.name}
             )
             artists.append(artist)
         return artists
@@ -114,9 +124,9 @@ class DiscogsService:
         label, _ = Label.objects.get_or_create(
             discogs_id=label_data.id,
             defaults={
-                'name': label_data.name,
-                'description': f"Discogs ID: {label_data.id}"
-            }
+                "name": label_data.name,
+                "description": f"Discogs ID: {label_data.id}",
+            },
         )
         return label
 
@@ -139,19 +149,17 @@ class DiscogsService:
             Track.objects.update_or_create(
                 record=record,
                 position=track_data.position,
-                defaults={
-                    'title': track_data.title,
-                    'duration': track_data.duration
-                }
+                defaults={"title": track_data.title, "duration": track_data.duration},
             )
 
     def _download_cover_image(self, record: Record, image_url: str):
         """Загружает обложку"""
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0",
-                       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                       "Accept-Language": "en-US,en;q=0.9"
-                       }
+            headers = {
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
 
             response = requests.get(image_url, headers=headers, timeout=20)
             response.raise_for_status()
@@ -169,7 +177,7 @@ class DiscogsService:
         if not date_str:
             return None
         try:
-            for fmt in ('%Y-%m-%d', '%Y-%m', '%Y'):
+            for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
                 try:
                     return datetime.strptime(date_str, fmt).date()
                 except ValueError:
@@ -182,29 +190,29 @@ class DiscogsService:
         if not formats_data:
             return RecordFormats.OTHER
 
-        format_name = formats_data[0]['name'].upper()
-        qty = int(formats_data[0].get('qty', 1))
+        format_name = formats_data[0]["name"].upper()
+        qty = int(formats_data[0].get("qty", 1))
 
         format_mapping = {
-            'LP': RecordFormats.LP,
-            '2LP': RecordFormats.LP2,
-            '3LP': RecordFormats.LP3,
-            'EP': RecordFormats.EP,
+            "LP": RecordFormats.LP,
+            "2LP": RecordFormats.LP2,
+            "3LP": RecordFormats.LP3,
+            "EP": RecordFormats.EP,
             '7"': RecordFormats.SEVEN,
             '10"': RecordFormats.TEN,
             '12"': RecordFormats.TWELVE,
-            'BOX': RecordFormats.BOX,
-            'PICTURE DISC': RecordFormats.PIC,
-            'SHAPED': RecordFormats.SHAPED,
-            'FLEXI': RecordFormats.FLEXI,
-            'ACETATE': RecordFormats.ACETATE,
-            'TEST PRESSING': RecordFormats.TEST,
-            'CD': RecordFormats.OTHER,
-            'CASSETTE': RecordFormats.OTHER,
-            'DIGITAL': RecordFormats.OTHER,
+            "BOX": RecordFormats.BOX,
+            "PICTURE DISC": RecordFormats.PIC,
+            "SHAPED": RecordFormats.SHAPED,
+            "FLEXI": RecordFormats.FLEXI,
+            "ACETATE": RecordFormats.ACETATE,
+            "TEST PRESSING": RecordFormats.TEST,
+            "CD": RecordFormats.OTHER,
+            "CASSETTE": RecordFormats.OTHER,
+            "DIGITAL": RecordFormats.OTHER,
         }
 
-        if qty > 1 and format_name == 'LP':
+        if qty > 1 and format_name == "LP":
             if qty == 2:
                 return RecordFormats.LP2
             elif qty == 3:
