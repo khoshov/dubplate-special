@@ -164,7 +164,9 @@ class Record(TimeStampedModel):
         default=RecordFormats.OTHER,
         verbose_name=_("Format"),
     )
-    country =  models.CharField(null=True, blank=True, verbose_name=_("Country"), max_length=50)
+    country = models.CharField(
+        null=True, blank=True, verbose_name=_("Country"), max_length=50
+    )
 
     def __str__(self):
         return self.title

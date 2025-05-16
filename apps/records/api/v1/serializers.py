@@ -1,4 +1,4 @@
-from records.models import Artist, Label, Genre, Style, Record, Track
+from records.models import Artist, Genre, Label, Record, Style, Track
 from rest_framework import serializers
 
 
@@ -39,8 +39,8 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
     genres = GenreSerializer(many=True, read_only=True)
     styles = StyleSerializer(many=True, read_only=True)
     tracks = TrackSerializer(many=True, read_only=True)
-    condition = serializers.CharField(source='get_condition_display', read_only=True)
-    format = serializers.CharField(source='get_format_display', read_only=True)
+    condition = serializers.CharField(source="get_condition_display", read_only=True)
+    format = serializers.CharField(source="get_format_display", read_only=True)
 
     class Meta:
         model = Record
@@ -62,6 +62,6 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
             "barcode",
             "format",
             "country",
-            "tracks"
+            "tracks",
         ]
-        read_only_fields = ['id', "url", 'created', 'modified']
+        read_only_fields = ["id", "url", "created", "modified"]
