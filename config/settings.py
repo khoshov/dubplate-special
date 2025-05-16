@@ -55,7 +55,6 @@ INSTALLED_APPS = [
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
-    "api",
     "records",
 ]
 
@@ -301,6 +300,9 @@ CKEDITOR_5_CONFIGS = {
 }
 
 REST_FRAMEWORK = {
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticatedOrReadOnly',
+    ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
 }
