@@ -47,7 +47,7 @@ class DiscogsService:
             raise
 
     def import_release_by_barcode(
-        self, barcode: str, save_image: bool = True
+        self, barcode: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
         """
         Импортирует релиз по штрих-коду
@@ -67,41 +67,68 @@ class DiscogsService:
             self._make_request(release.refresh)  # Получаем полные данные
 
             # Обработка данных релиза
-            artists = self._process_artists(release.artists)
-            label = self._process_label(release.labels[0]) if release.labels else None
-            genres = self._process_genres(release.genres)
-            styles = self._process_styles(release.styles)
-
-            # Создание/обновление записи
-            record_data = {
-                "title": release.title,
-                "label": label,
-                "release_date": self._parse_release_date(
-                    getattr(release, "released", None)
-                ),
-                "catalog_number": release.labels[0].catno if release.labels else None,
-                "barcode": barcode,
-                "format": self._determine_format(release.formats),
-                "country": release.country,
-                "notes": getattr(release, "notes", None),
-                "condition": RecordConditions.NM,
-                "discogs_id": release.id,
-            }
-
-            record, _ = Record.objects.update_or_create(
-                discogs_id=release.id, defaults=record_data
+            artists = (
+                self._process_artists(release.artists)
+                if hasattr(release, "artists") and release.artists
+                else []
+            )
+            label = (
+                self._process_label(release.labels[0])
+                if hasattr(release, "labels") and release.labels
+                else None
+            )
+            genres = (
+                self._process_genres(release.genres)
+                if hasattr(release, "genres") and release.genres
+                else []
+            )
+            styles = (
+                self._process_styles(release.styles)
+                if hasattr(release, "styles") and release.styles
+                else []
             )
 
-            # Установка связей
+            # Получаем дату релиза (пробуем released, затем year)
+            release_date = None
+            if hasattr(release, "released") and release.released:
+                release_date = self._parse_release_date(release.released)
+            elif hasattr(release, "year") and release.year:
+                release_date = datetime(int(release.year), 1, 1).date()
+
+            # Обновляем поля записи
+            record.title = release.title
+            record.label = label
+            record.release_date = release_date
+            record.catalog_number = (
+                release.labels[0].catno
+                if hasattr(release, "labels") and release.labels
+                else None
+            )
+            record.barcode = barcode
+            record.format = (
+                self._determine_format(release.formats)
+                if hasattr(release, "formats")
+                else RecordFormats.OTHER
+            )
+            record.country = getattr(release, "country", None)
+            record.notes = getattr(release, "notes", None)
+            record.condition = RecordConditions.NM
+            record.discogs_id = release.id
+
+            # Сохраняем изменения в записи перед установкой связей
+            record.save()
+
+            # Установка связей ManyToMany (теперь у записи есть ID)
             record.artists.set(artists)
             record.genres.set(genres)
             record.styles.set(styles)
 
             # Треки
-            self._process_tracks(record, release.tracklist)
+            if hasattr(release, "tracklist") and release.tracklist:
+                self._process_tracks(record, release.tracklist)
 
             # Обложка
-            if save_image and release.images:
+            if save_image and hasattr(release, "images") and release.images:
                 self._download_cover_image(record, release.images[0]["uri"])
 
             return record
@@ -176,14 +203,24 @@ class DiscogsService:
     def _parse_release_date(self, date_str: Optional[str]) -> Optional[datetime.date]:
         if not date_str:
             return None
+
+        date_str = str(date_str).strip()
+
         try:
-            for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+            # Сначала пробуем стандартные форматы
+            for fmt in ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%b %d, %Y", "%Y-%m", "%Y"):
                 try:
                     return datetime.strptime(date_str, fmt).date()
                 except ValueError:
                     continue
+
+            # Если дата содержит только год
+            if date_str.isdigit() and len(date_str) == 4:
+                return datetime(int(date_str), 1, 1).date()
+
             return None
-        except (ValueError, AttributeError):
+        except Exception as e:
+            print(f"Ошибка парсинга даты '{date_str}': {str(e)}")
             return None
 
     def _determine_format(self, formats_data) -> str:

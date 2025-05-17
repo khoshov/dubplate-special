@@ -1,16 +1,17 @@
 from django.contrib import admin
 
+from .forms import RecordForm
 from .models import Record
 
 
-@admin.register(Record)
 class RecordAdmin(admin.ModelAdmin):
-    list_display = ("title", "display_artists", "label", "release_date", "format")
-    list_filter = ("format", "genres", "styles")
-    search_fields = ("title", "catalog_number", "barcode")
-    filter_horizontal = ("artists", "genres", "styles")
+    form = RecordForm
+    add_fields = ("barcode",)
 
-    def display_artists(self, obj):
-        return ", ".join([artist.name for artist in obj.artists.all()])
+    def get_fields(self, request, obj=None):
+        if not obj:
+            return self.add_fields
+        return super().get_fields(request, obj)
 
-    display_artists.short_description = "Artists"
+
+admin.site.register(Record, RecordAdmin)
