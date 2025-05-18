@@ -1,3 +1,7 @@
+
+[![Ruff](https://github.com/khoshov/dubplate-special/actions/workflows/ruff.yml/badge.svg)](https://github.com/khoshov/dubplate-special/actions/workflows/ruff.yml)
+
+
 ## Установка и использование UV
 
 <details>
