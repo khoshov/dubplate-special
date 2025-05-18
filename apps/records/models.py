@@ -1,5 +1,4 @@
 from django_ckeditor_5.fields import CKEditor5Field
-from django_countries.fields import CountryField
 from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
 
@@ -72,6 +71,7 @@ class Artist(TimeStampedModel):
     class Meta:
         verbose_name = _("Artist")
         verbose_name_plural = _("Artists")
+        ordering = ("id",)
 
 
 class Label(TimeStampedModel):
@@ -85,6 +85,7 @@ class Label(TimeStampedModel):
     class Meta:
         verbose_name = _("Label")
         verbose_name_plural = _("Labels")
+        ordering = ("id",)
 
 
 class Genre(TimeStampedModel):
@@ -96,6 +97,7 @@ class Genre(TimeStampedModel):
     class Meta:
         verbose_name = _("Genre")
         verbose_name_plural = _("Genres")
+        ordering = ("name",)
 
 
 class Style(TimeStampedModel):
@@ -107,6 +109,7 @@ class Style(TimeStampedModel):
     class Meta:
         verbose_name = _("Style")
         verbose_name_plural = _("Styles")
+        ordering = ("name",)
 
 
 class Record(TimeStampedModel):
@@ -152,20 +155,18 @@ class Record(TimeStampedModel):
     catalog_number = models.CharField(
         max_length=50,
         unique=True,
-        null=True,
-        blank=True,
         verbose_name=_("Catalog number"),
     )
-    barcode = models.CharField(
-        max_length=20, unique=True, null=True, blank=True, verbose_name=_("Barcode")
-    )
+    barcode = models.CharField(max_length=20, unique=True, verbose_name=_("Barcode"))
     format = models.CharField(
         max_length=7,
         choices=RecordFormats.FORMAT_CHOICES,
         default=RecordFormats.OTHER,
         verbose_name=_("Format"),
     )
-    country = CountryField(null=True, blank=True, verbose_name=_("Country"))
+    country = models.CharField(
+        null=True, blank=True, verbose_name=_("Country"), max_length=50
+    )
 
     def __str__(self):
         return self.title
@@ -173,11 +174,17 @@ class Record(TimeStampedModel):
     class Meta:
         verbose_name = _("Record")
         verbose_name_plural = _("Records")
+        ordering = ("title",)
 
 
 class Track(TimeStampedModel):
-    record = models.ForeignKey(Record, on_delete=models.CASCADE, related_name="tracks")
-    position = models.CharField(max_length=10)
+    record = models.ForeignKey(
+        Record,
+        on_delete=models.CASCADE,
+        related_name="tracks",
+        verbose_name=_("Record"),
+    )
+    position = models.CharField(max_length=10, verbose_name=_("Position"))
     title = models.CharField(max_length=255, verbose_name=_("Track title"))
     duration = models.CharField(
         max_length=10, null=True, blank=True, verbose_name=_("Duration")
@@ -189,3 +196,7 @@ class Track(TimeStampedModel):
     class Meta:
         verbose_name = _("Track")
         verbose_name_plural = _("Tracks")
+        ordering = (
+            "record",
+            "position",
+        )
