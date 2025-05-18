@@ -1,6 +1,6 @@
 from django_ckeditor_5.fields import CKEditor5Field
 from django_countries.fields import CountryField
-from django_extensions.db.models import TimeStampedModel, TitleDescriptionModel
+from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
 
 from django.db import models
