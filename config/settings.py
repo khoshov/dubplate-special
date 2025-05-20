@@ -52,9 +52,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party apps
-    "django_ckeditor_5",
-    "django_countries",
-    "sorl.thumbnail",
+    "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
+    "rest_framework",  # https://www.django-rest-framework.org/
+    "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "records",
 ]
@@ -118,10 +119,18 @@ AUTH_PASSWORD_VALIDATORS = [
 # =================
 # INTERNATIONALIZATION
 # =================
-LANGUAGE_CODE = "en-us"
-TIME_ZONE = "Europe/Moscow"
+LANGUAGE_CODE = "en"
+LANGUAGES = [
+    ("en", "English"),
+    ("ru", "Russian"),
+]
+TIME_ZONE = "UTC"
 USE_I18N = True
+USE_L10N = True
 USE_TZ = True
+LOCALE_PATHS = [
+    os.path.join(BASE_DIR, "locale"),
+]
 
 # =============
 # STATIC FILES
@@ -290,4 +299,12 @@ CKEDITOR_5_CONFIGS = {
             "reversed": "true",
         }
     },
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticatedOrReadOnly",
+    ],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 10,
 }
