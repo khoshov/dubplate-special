@@ -6,7 +6,11 @@ services:
     env_file:
       - .env
     volumes:
-      - .:/app
+      - ./apps:/app/apps
+      - ./config:/app/config
+      - ./locale:/app/locale
+      - ./media:/app/media
+      - ./manage.py:/app/manage.py
     depends_on:
       postgres:
         condition: service_healthy
