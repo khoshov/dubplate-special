@@ -227,32 +227,42 @@ class DiscogsService:
         if not formats_data:
             return RecordFormats.OTHER
 
-        format_name = formats_data[0]["name"].upper()
-        qty = int(formats_data[0].get("qty", 1))
+        # Получаем первый элемент формата (основной формат)
+        format_info = formats_data[0]
 
-        format_mapping = {
-            "LP": RecordFormats.LP,
-            "2LP": RecordFormats.LP2,
-            "3LP": RecordFormats.LP3,
-            "EP": RecordFormats.EP,
-            '7"': RecordFormats.SEVEN,
-            '10"': RecordFormats.TEN,
-            '12"': RecordFormats.TWELVE,
-            "BOX": RecordFormats.BOX,
-            "PICTURE DISC": RecordFormats.PIC,
-            "SHAPED": RecordFormats.SHAPED,
-            "FLEXI": RecordFormats.FLEXI,
-            "ACETATE": RecordFormats.ACETATE,
-            "TEST PRESSING": RecordFormats.TEST,
-            "CD": RecordFormats.OTHER,
-            "CASSETTE": RecordFormats.OTHER,
-            "DIGITAL": RecordFormats.OTHER,
-        }
+        # Проверяем описания формата (в descriptions часто содержится точный тип)
+        descriptions = format_info.get('descriptions', [])
+        format_name = format_info['name'].upper()
 
-        if qty > 1 and format_name == "LP":
+        # Сначала проверяем описания (там может быть "LP", "Album" и т.д.)
+        for desc in descriptions:
+            desc_upper = desc.upper()
+            if desc_upper in {'LP', '2LP', '3LP', 'EP', '12"', '10"', '7"'}:
+                format_name = desc_upper
+                break
+
+        # Обработка количества дисков
+        qty = int(format_info.get('qty', 1))
+
+        # Определение формата
+        if format_name == 'LP':
             if qty == 2:
                 return RecordFormats.LP2
             elif qty == 3:
                 return RecordFormats.LP3
+            return RecordFormats.LP
 
-        return format_mapping.get(format_name, RecordFormats.OTHER)
+        # Простые соответствия
+        simple_mapping = {
+            'EP': RecordFormats.EP,
+            '7"': RecordFormats.SEVEN,
+            '10"': RecordFormats.TEN,
+            '12"': RecordFormats.TWELVE,
+            'PICTURE DISC': RecordFormats.PIC,
+            'SHAPED': RecordFormats.SHAPED,
+            'FLEXI': RecordFormats.FLEXI,
+            'ACETATE': RecordFormats.ACETATE,
+            'TEST PRESSING': RecordFormats.TEST
+        }
+
+        return simple_mapping.get(format_name, RecordFormats.OTHER)
