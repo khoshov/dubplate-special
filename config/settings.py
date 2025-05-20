@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     # Third party apps
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
     "django_extensions",  # https://django-extensions.readthedocs.io
+    "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
@@ -309,4 +310,5 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
+    "DEFAULT_SCHEMA_CLASS": 'drf_spectacular.openapi.AutoSchema'
 }
