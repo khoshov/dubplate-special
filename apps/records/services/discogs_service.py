@@ -8,7 +8,7 @@ import requests
 from django.conf import settings
 from django.core.files.base import ContentFile
 
-from apps.records.models import (
+from records.models import (
     Artist,
     Genre,
     Label,

@@ -1,6 +1,6 @@
 from django import forms
 
-from apps.records.models import Record
+from .models import Record
 
 from .services.discogs_service import DiscogsService
 
