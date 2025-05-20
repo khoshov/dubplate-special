@@ -10,12 +10,3 @@ from .serializers import RecordSerializer
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Record.objects.all()
     serializer_class = RecordSerializer
-
-
-@api_view(["GET"])
-def api_root(request):
-    return Response(
-        {
-            "records": reverse("record-list", request=request),
-        }
-    )
