@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     # Third party apps
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
     "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "rest_framework",  # https://www.django-rest-framework.org/
