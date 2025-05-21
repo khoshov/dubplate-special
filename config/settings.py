@@ -50,8 +50,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party apps
-    "django_extensions",  # https://django-extensions.readthedocs.io
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
+    "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
@@ -302,6 +303,9 @@ CKEDITOR_5_CONFIGS = {
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
+    ],
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend"
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
