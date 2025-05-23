@@ -50,9 +50,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party apps
-    "django_extensions",  # https://django-extensions.readthedocs.io
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
+    "django_extensions",  # https://django-extensions.readthedocs.io
     "rest_framework",  # https://www.django-rest-framework.org/
+    "silk",  # https://pypi.org/project/django-silk/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "records",
@@ -66,6 +67,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "silk.middleware.SilkyMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
