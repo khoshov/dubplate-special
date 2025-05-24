@@ -163,18 +163,18 @@ class DiscogsService:
         format_objects = []
 
         for format_info in formats_data:
-            qty = int(format_info.get('qty', 1))
-            descriptions = [d.upper() for d in format_info.get('descriptions', [])]
+            qty = int(format_info.get("qty", 1))
+            descriptions = [d.upper() for d in format_info.get("descriptions", [])]
 
             # Основные форматы
-            if 'LP' in descriptions:
-                format_name = f"{qty}LP" if qty > 1 else 'LP'
+            if "LP" in descriptions:
+                format_name = f"{qty}LP" if qty > 1 else "LP"
                 format_obj, _ = Format.objects.get_or_create(name=format_name)
                 format_objects.append(format_obj)
 
             # Дополнительные описания
             for desc in descriptions:
-                if desc not in ['LP', '2LP', '3LP']:  # Исключаем дублирование
+                if desc not in ["LP", "2LP", "3LP"]:  # Исключаем дублирование
                     format_obj, _ = Format.objects.get_or_create(name=desc)
                     format_objects.append(format_obj)
 
