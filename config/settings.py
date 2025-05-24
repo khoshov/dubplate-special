@@ -39,6 +39,8 @@ DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 # Discogs token
 DISCOGS_TOKEN = env("DISCOGS_API_KEY")
+# User Agent
+DISCOGS_USER_AGENT = env("DISCOGS_USER_AGENT")
 
 # =====================
 # APPLICATION DEFINITION

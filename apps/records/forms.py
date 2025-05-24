@@ -1,11 +1,16 @@
 from django import forms
+from django.core.exceptions import ValidationError
 
 from .models import Record
-
 from .services.discogs_service import DiscogsService
 
 
 class RecordForm(forms.ModelForm):
+    """
+    Форма для создания и редактирования Record с интеграцией Discogs.
+    Автоматически импортирует данные по штрих-коду при сохранении.
+    """
+
     class Meta:
         model = Record
         fields = "__all__"
@@ -13,25 +18,33 @@ class RecordForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["barcode"].required = True
+        self.fields["barcode"].widget.attrs.update({
+            'placeholder': 'Введите штрих-код',
+            'class': 'barcode-input'
+        })
+
+    def clean_barcode(self):
+        """Валидация штрих-кода"""
+        barcode = self.cleaned_data['barcode']
+        if len(barcode) < 8:
+            raise ValidationError("Штрих-код должен содержать минимум 8 символов")
+        return barcode.strip()
 
     def save(self, commit=True):
+        """
+        Сохраняет запись и пытается импортировать данные из Discogs.
+        В случае ошибки импорта сохраняет только введенные данные.
+        """
         instance = super().save(commit=False)
 
-        # Сначала сохраняем запись, чтобы получить ID
         if commit:
-            instance.save()
+            instance.save()  # Сохраняем для получения ID
+            self.save_m2m()  # Сохраняем связи ManyToMany
 
-        # Затем импортируем данные из Discogs
-        service = DiscogsService()
-        updated_record = service.import_release_by_barcode(instance.barcode, instance)
+        # Импорт из Discogs
+        if not instance.discogs_id:  # Импортируем только для новых записей
+            service = DiscogsService()
+            return service.import_release_by_barcode(instance.barcode, instance) or instance
 
-        # Если импорт не удался, возвращаем исходную запись
-        if not updated_record:
-            if commit:
-                self.save_m2m()
-            return instance
 
-        # Если импорт успешен, возвращаем обновленную запись
-        if commit:
-            self.save_m2m()
-        return updated_record
+        return instance
