@@ -54,7 +54,6 @@ INSTALLED_APPS = [
     "django_extensions",  # https://django-extensions.readthedocs.io
     "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
-    "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
