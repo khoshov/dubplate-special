@@ -20,7 +20,15 @@ from records.models import (
 
 
 class DiscogsService:
-    """Service for interacting with Discogs API"""
+    """Сервис для работы с Discogs API для импорта музыкальных релизов.
+
+    Обрабатывает аутентификацию, ограничение запросов и преобразование данных
+    из Discogs API в модели базы данных.
+
+    Атрибуты:
+        client (discogs_client.Client): Клиент Discogs API
+        request_delay (float): Задержка между запросами в секундах
+    """
 
     def __init__(self):
         self.client = discogs_client.Client(
@@ -30,7 +38,20 @@ class DiscogsService:
         self.request_delay = 1.2  # Discogs requires 1s between requests
 
     def _make_request(self, func, *args, **kwargs):
-        """Wrapper for requests with rate limiting"""
+        """Обертка для запросов к Discogs API с ограничением частоты и обработкой ошибок.
+
+        Args:
+            func: Метод клиента Discogs для вызова
+            *args: Позиционные аргументы
+            **kwargs: Именованные аргументы
+
+        Returns:
+            Результат вызова API
+
+        Raises:
+            Exception: Если аутентификация не удалась (HTTP 401)
+            discogs_client.exceptions.HTTPError: Другие HTTP ошибки
+        """
         time.sleep(self.request_delay)
         try:
             return func(*args, **kwargs)
@@ -42,7 +63,16 @@ class DiscogsService:
     def import_release_by_barcode(
         self, barcode: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
-        """Import release by barcode from Discogs"""
+        """Основной метод для импорта данных релиза по штрих-коду из Discogs.
+
+        Args:
+            barcode: Штрих-код для поиска
+            record: Экземпляр Record для заполнения данными
+            save_image: Загружать ли обложку. По умолчанию True.
+
+        Returns:
+            Record: Обновленный экземпляр Record при успехе, иначе None
+        """
         try:
             release = self._get_release_by_barcode(barcode)
             if not release:
@@ -56,7 +86,14 @@ class DiscogsService:
             return None
 
     def _get_release_by_barcode(self, barcode: str):
-        """Find release by barcode"""
+        """Ищет релиз в Discogs по штрих-коду.
+
+        Args:
+            barcode: Штрих-код для поиска
+
+        Returns:
+            discogs_client.Release: Найденный релиз или None
+        """
         results = self._make_request(self.client.search, barcode, type="release")
         if results:
             release = results[0]
@@ -65,8 +102,14 @@ class DiscogsService:
         return None
 
     def _process_release_data(self, release, record: Record, save_image: bool):
-        """Process all release data and update record"""
-        # Save the main record with basic fields
+        """Обрабатывает данные релиза и обновляет экземпляр Record.
+
+        Args:
+            release: Объект релиза Discogs
+            record: Экземпляр Record для обновления
+            save_image: Загружать ли обложку
+        """
+        # Основные поля
         record.title = release.title
         record.release_year = getattr(release, "year", None)
         record.catalog_number = release.labels[0].catno if release.labels else None
@@ -75,11 +118,9 @@ class DiscogsService:
         record.notes = getattr(release, "notes", None)
         record.condition = RecordConditions.M
         record.discogs_id = release.id
-
-        # Save the record before establishing ManyToMany relationships
         record.save()
 
-        # Establish relationships
+        # Связи
         record.label = (
             self._process_label(release.labels[0]) if release.labels else None
         )
@@ -88,7 +129,7 @@ class DiscogsService:
         record.styles.set(self._process_items(release.styles, self._process_style))
         record.formats.set(self._determine_formats(release.formats))
 
-        # Save again after establishing relationships
+        # Треки и обложка
         record.save()
 
         if hasattr(release, "tracklist") and release.tracklist:
@@ -99,25 +140,61 @@ class DiscogsService:
 
     # Generic processing methods
     def _process_items(self, items, processor):
-        """Generic method to process related items"""
+        """Универсальный обработчик связанных элементов.
+
+        Args:
+            items: Список элементов для обработки
+            processor: Функция для обработки каждого элемента
+
+        Returns:
+            Список обработанных элементов
+        """
         return [processor(item) for item in items] if items else []
 
     def _process_artist(self, artist_data):
-        """Create or get Artist instance"""
+        """Создает или получает артиста из данных Discogs.
+
+        Args:
+            artist_data: Объект артиста Discogs
+
+        Returns:
+            Artist: Локальный экземпляр Artist
+        """
         return Artist.objects.get_or_create(
             discogs_id=artist_data.id, defaults={"name": artist_data.name}
         )[0]
 
     def _process_genre(self, genre_name):
-        """Create or get Genre instance"""
+        """Создает или получает жанр.
+
+        Args:
+            genre_name: Название жанра из Discogs
+
+        Returns:
+            Genre: Локальный экземпляр Genre
+        """
         return Genre.objects.get_or_create(name=genre_name)[0]
 
     def _process_style(self, style_name):
-        """Create or get Style instance"""
+        """Создает или получает стиль.
+
+        Args:
+            style_name: Название стиля из Discogs
+
+        Returns:
+            Style: Локальный экземпляр Style
+        """
         return Style.objects.get_or_create(name=style_name)[0]
 
     def _process_label(self, label_data):
-        """Create or get Label instance"""
+        """Создает или получает лейбл из данных Discogs.
+
+        Args:
+            label_data: Объект лейбла Discogs
+
+        Returns:
+            Label: Локальный экземпляр Label
+        """
         return Label.objects.get_or_create(
             discogs_id=label_data.id,
             defaults={
@@ -128,7 +205,12 @@ class DiscogsService:
 
     # Track processing
     def _process_tracks(self, record: Record, tracklist_data):
-        """Process all tracks for the release"""
+        """Обрабатывает трек-лист и создает/обновляет треки.
+
+        Args:
+            record: Родительский экземпляр Record
+            tracklist_data: Список треков из Discogs
+        """
         for track in tracklist_data:
             Track.objects.update_or_create(
                 record=record,
@@ -138,7 +220,12 @@ class DiscogsService:
 
     # Image processing
     def _download_cover_image(self, record: Record, image_url: str):
-        """Download and save cover image"""
+        """Загружает и сохраняет обложку релиза.
+
+        Args:
+            record: Record для связывания с обложкой
+            image_url: URL обложки
+        """
         try:
             response = requests.get(
                 image_url,
@@ -156,7 +243,14 @@ class DiscogsService:
 
     # Format processing
     def _determine_formats(self, formats_data) -> list:
-        """Определяет все форматы релиза, используя только name"""
+        """Обрабатывает информацию о форматах релиза.
+
+        Args:
+            formats_data: Список форматов из Discogs
+
+        Returns:
+            Список экземпляров Format для этого релиза
+        """
         if not formats_data:
             return []
 
