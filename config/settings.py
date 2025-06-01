@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env("DEBUG")
+DEBUG = env.bool("DEBUG", True)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 
@@ -67,8 +67,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "silk.middleware.SilkyMiddleware",
 ]
+
+if DEBUG:
+    MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
 
 ROOT_URLCONF = "config.urls"
 
