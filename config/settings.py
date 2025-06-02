@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env.bool("DEBUG", True)
+DEBUG = env.bool("DEBUG", False)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 
@@ -53,7 +53,6 @@ INSTALLED_APPS = [
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
     "django_extensions",  # https://django-extensions.readthedocs.io
     "rest_framework",  # https://www.django-rest-framework.org/
-    "silk",  # https://pypi.org/project/django-silk/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "records",
@@ -70,7 +69,12 @@ MIDDLEWARE = [
 ]
 
 if DEBUG:
+    # DJANGO-SILK
+    INSTALLED_APPS.append("silk")  # https://pypi.org/project/django-silk/
     MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
+
+    SILKY_AUTHENTICATION = True
+    SILKY_AUTHORISATION = True
 
 ROOT_URLCONF = "config.urls"
 
@@ -310,6 +314,3 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
 }
-
-SILKY_AUTHENTICATION = True
-SILKY_AUTHORISATION = True
