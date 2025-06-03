@@ -26,5 +26,5 @@ urlpatterns = [
     path("records/", include("records.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
-if settings.DEBUG:
+if settings.SILK_ENABLED:
     urlpatterns.append(path("silk/", include("silk.urls", namespace="silk")))
