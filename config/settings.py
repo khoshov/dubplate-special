@@ -68,8 +68,9 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-if DEBUG:
-    # DJANGO-SILK
+# SILK
+SILK_ENABLED = env.bool("SILK_ENABLED", False)
+if SILK_ENABLED:
     INSTALLED_APPS.append("silk")  # https://pypi.org/project/django-silk/
     MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
 
