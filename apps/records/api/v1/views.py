@@ -1,8 +1,6 @@
 from records.models import Record
-from rest_framework import viewsets
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework.reverse import reverse
+from rest_framework import viewsets, filters
+
 
 from .serializers import RecordSerializer
 
@@ -10,12 +8,18 @@ from .serializers import RecordSerializer
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Record.objects.all()
     serializer_class = RecordSerializer
-
-
-@api_view(["GET"])
-def api_root(request):
-    return Response(
-        {
-            "records": reverse("record-list", request=request),
-        }
-    )
+    filter_backends = [filters.SearchFilter]
+    search_fields = [
+        "title",
+        "artists__name",
+        "label__name",
+        "release_date",
+        "genres__name",
+        "styles__name",
+        "discogs_id",
+        "condition",
+        "catalog_number",
+        "barcode",
+        "format",
+        "country",
+    ]

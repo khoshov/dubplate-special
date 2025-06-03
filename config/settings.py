@@ -52,6 +52,8 @@ INSTALLED_APPS = [
     # Third party apps
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
     "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
+    "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
@@ -312,6 +314,10 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ],
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend"
+    ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
