@@ -30,7 +30,7 @@ COPY pyproject.toml uv.lock ./
 
 # Install Python dependencies using UV:
 # --locked: ensures exact versions from lockfile are used
-RUN uv sync --locked
+RUN uv sync --no-dev --locked
 
 # ======================
 # APPLICATION CODE
@@ -39,11 +39,8 @@ RUN uv sync --locked
 # Note: This is done after dependency installation for better caching
 COPY . .
 
-# ======================
-# COMPILE TRANSLATIONS
-# ======================
-# Compile Django translation messages (.po -> .mo)
-RUN uv run manage.py compilemessages
+# Making the file executable
+RUN chmod +x entrypoint.sh
 
 # ======================
 # RUNTIME CONFIGURATION
@@ -51,8 +48,4 @@ RUN uv run manage.py compilemessages
 # Expose the port Django runs on
 EXPOSE 8000
 
-# Run Django development server:
-# - Binds to all network interfaces (0.0.0.0)
-# - Uses port 8000
-# Note: For production, use a proper WSGI server like Gunicorn instead
-CMD ["uv", "run", "manage.py", "runserver", "0.0.0.0:8000"]
+ENTRYPOINT ["./entrypoint.sh"]
