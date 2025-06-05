@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env("DEBUG")
+DEBUG = env.bool("DEBUG", False)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 
@@ -69,6 +69,15 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# SILK
+SILK_ENABLED = env.bool("SILK_ENABLED", False)
+if SILK_ENABLED:
+    INSTALLED_APPS.append("silk")  # https://pypi.org/project/django-silk/
+    MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
+
+    SILKY_AUTHENTICATION = True
+    SILKY_AUTHORISATION = True
 
 ROOT_URLCONF = "config.urls"
 

@@ -2,7 +2,7 @@
 URL configuration for dubplate-special-api project.
 
 The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/4.2/topics/http/urls/
+    https://docs.djangoproject.com/en/5.1/topics/http/urls/
 Examples:
 Function views
     1. Add an import:  from my_app import views
@@ -29,3 +29,6 @@ urlpatterns = [
     path("openapi.json", SpectacularAPIView.as_view(), name="schema"),
     path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+if settings.SILK_ENABLED:
+    urlpatterns.append(path("silk/", include("silk.urls", namespace="silk")))
