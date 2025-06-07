@@ -13,6 +13,7 @@ class TrackInline(admin.TabularInline):
     - readonly_fields: Поля только для чтения
     - can_delete: Запрет удаления треков через админку
     """
+
     model = Track
     extra = 0
     readonly_fields = ("position", "title", "duration")
@@ -27,6 +28,7 @@ class RecordAdmin(admin.ModelAdmin):
     - Показывает треклист только при редактировании
     - При создании записи отображает только поле штрих-кода
     """
+
     form = RecordForm
     inlines = [TrackInline]
     add_fields = ("barcode",)

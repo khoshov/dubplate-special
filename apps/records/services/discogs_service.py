@@ -1,5 +1,6 @@
 import time
 from typing import Optional
+import logging
 
 import discogs_client
 import requests
@@ -18,6 +19,7 @@ from records.models import (
     Track,
 )
 
+logger = logging.getLogger(__name__)
 
 class DiscogsService:
     """Сервис для работы с Discogs API для импорта музыкальных релизов.
@@ -82,7 +84,7 @@ class DiscogsService:
             return record
 
         except Exception as e:
-            print(f"Import error: {str(e)}")
+            logger.error(f"Ошибка импорта для штрих-кода {barcode}: {str(e)}", exc_info=True)
             return None
 
     def _get_release_by_barcode(self, barcode: str):
@@ -234,12 +236,12 @@ class DiscogsService:
             )
             response.raise_for_status()
 
-            filename = f"cover_{record.discogs_id}_{int(time.time())}.jpeg"
+            filename = f"cover_{record.discogs_id}.jpeg"
             record.cover_image.save(filename, ContentFile(response.content))
-            print(f"Cover downloaded: {filename}")
+            logger.info(f"Обложка успешно загружена: {filename}")
 
         except Exception as e:
-            print(f"Error downloading cover: {str(e)}")
+            logger.error(f"Error downloading cover: {str(e)}")
 
     # Format processing
     def _determine_formats(self, formats_data) -> list:

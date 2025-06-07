@@ -13,3 +13,9 @@ dependencies = [
     "python3-discogs-client>=2.8",
     "sorl-thumbnail==12.11.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-django>=4.11.1",
+]
