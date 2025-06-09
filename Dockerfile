@@ -30,7 +30,7 @@ COPY pyproject.toml uv.lock ./
 
 # Install Python dependencies using UV:
 # --locked: ensures exact versions from lockfile are used
-RUN uv sync --locked
+RUN uv sync --dev
 
 # ======================
 # APPLICATION CODE

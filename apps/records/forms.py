@@ -23,10 +23,17 @@ class RecordForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         self.fields["barcode"].required = True
         self.fields["barcode"].widget.attrs.update(
             {"placeholder": "Введите штрих-код", "class": "barcode-input"}
         )
+
+        if not self.instance.pk:
+            allowed_fields = ['barcode']
+            for field in list(self.fields.keys()):
+                if field not in allowed_fields:
+                    del self.fields[field]
 
     def clean_barcode(self):
         """Валидирует поле штрих-кода.
@@ -39,10 +46,10 @@ class RecordForm(forms.ModelForm):
         """
         """Валидация штрих-кода"""
 
-        barcode = self.cleaned_data["barcode"]
+        barcode = self.cleaned_data["barcode"].strip()
         if len(barcode) < 8:
             raise ValidationError("Штрих-код должен содержать минимум 8 символов")
-        return barcode.strip()
+        return barcode
 
     def save(self, commit=True):
         """Сохраняет запись с возможностью импорта данных из Discogs.

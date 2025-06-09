@@ -11,6 +11,7 @@ services:
       - ./locale:/app/locale
       - ./media:/app/media
       - ./manage.py:/app/manage.py
+      - ./pytest.ini:/app/pytest.ini
     depends_on:
       postgres:
         condition: service_healthy

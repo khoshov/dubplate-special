@@ -13,7 +13,7 @@ def record_admin():
 
 @pytest.fixture
 def track_inline():
-    return TrackInline(model=Track, admin_site=AdminSite())
+    return TrackInline(Track, admin_site=AdminSite())
 
 
 @pytest.mark.django_db
