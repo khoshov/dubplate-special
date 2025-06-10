@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env("DEBUG")
+DEBUG = env.bool("DEBUG", False)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 # Discogs token
@@ -54,8 +54,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Third party apps
-    "django_extensions",  # https://django-extensions.readthedocs.io
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
+    "django_extensions",  # https://django-extensions.readthedocs.io
+    "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
+    "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
@@ -71,6 +73,15 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# SILK
+SILK_ENABLED = env.bool("SILK_ENABLED", False)
+if SILK_ENABLED:
+    INSTALLED_APPS.append("silk")  # https://pypi.org/project/django-silk/
+    MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
+
+    SILKY_AUTHENTICATION = True
+    SILKY_AUTHORISATION = True
 
 ROOT_URLCONF = "config.urls"
 
@@ -307,6 +318,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ],
+    "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 10,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }

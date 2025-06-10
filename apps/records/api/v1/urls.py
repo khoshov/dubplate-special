@@ -8,6 +8,5 @@ router = routers.DefaultRouter()
 router.register(r"records", views.RecordViewSet)
 
 urlpatterns = [
-    path("", views.api_root, name="api-root"),
     path("", include(router.urls)),
 ]
