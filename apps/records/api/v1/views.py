@@ -6,12 +6,12 @@ from .serializers import RecordSerializer
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Record.objects.select_related(
-        'label',
+        "label",
     ).prefetch_related(
-        'artists',
-        'tracks',
-        'genres',
-        'styles',
+        "artists",
+        "tracks",
+        "genres",
+        "styles",
     )
     serializer_class = RecordSerializer
     filter_backends = [filters.SearchFilter]
