@@ -150,7 +150,7 @@ LOCALE_PATHS = [
 # =============
 STATIC_URL = "static/"
 # Note: STATIC_ROOT should be set when collecting static files for production
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
 # ====================
 # DEFAULT PRIMARY KEY

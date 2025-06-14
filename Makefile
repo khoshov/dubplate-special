@@ -27,3 +27,6 @@ format:
 
 list_packages:
 	$(UV) pip list
+
+test:
+	$(PYTHON) pytest

@@ -125,7 +125,7 @@ class Record(TimeStampedModel):
     )
     notes = CKEditor5Field(null=True, blank=True, verbose_name=_("Notes"))
     stock = models.PositiveIntegerField(
-        default=0,
+        default=1,
         verbose_name=_("Storage on hand"),
     )
     condition = models.CharField(

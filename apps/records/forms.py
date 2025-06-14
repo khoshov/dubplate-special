@@ -1,27 +1,33 @@
+import logging
+
 from django import forms
 from django.core.exceptions import ValidationError
 
 from .models import Record
 from .services.discogs_service import DiscogsService
 
+logger = logging.getLogger(__name__)
+
 
 class RecordForm(forms.ModelForm):
-    """Форма для работы с записями (Record) с интеграцией Discogs API.
+    """Форма для создания/редактирования Record с интеграцией Discogs.
 
     Attributes:
-        Meta (class): Вложенный класс для конфигурации формы.
-
-    Форма обеспечивает:
-        - Создание и редактирование записей
-        - Валидацию штрих-кода
-        - Автоматический импорт данных из Discogs по штрих-коду
+        discogs_service (DiscogsService): Сервис для работы с Discogs API
     """
 
     class Meta:
         model = Record
         fields = "__all__"
 
+        error_messages = {
+            "barcode": {
+                "unique": "Этот штрих-код уже существует (кастомизируем обработку)"
+            }
+        }
+
     def __init__(self, *args, **kwargs):
+        self.discogs_service = DiscogsService()
         super().__init__(*args, **kwargs)
 
         self.fields["barcode"].required = True
@@ -30,22 +36,20 @@ class RecordForm(forms.ModelForm):
         )
 
         if not self.instance.pk:
-            allowed_fields = ['barcode']
+            allowed_fields = ["barcode"]
             for field in list(self.fields.keys()):
                 if field not in allowed_fields:
                     del self.fields[field]
 
     def clean_barcode(self):
-        """Валидирует поле штрих-кода.
+        """Валидирует штрих-код.
 
         Returns:
-            str: Очищенный (без пробелов) валидный штрих-код.
+            Очищенный штрих-код
 
         Raises:
-            ValidationError: Если штрих-код короче 8 символов.
+            ValidationError: Если штрих-код короче 8 символов
         """
-        """Валидация штрих-кода"""
-
         barcode = self.cleaned_data["barcode"].strip()
         if len(barcode) < 8:
             raise ValidationError("Штрих-код должен содержать минимум 8 символов")
@@ -74,11 +78,9 @@ class RecordForm(forms.ModelForm):
             instance.save()  # Сохраняем для получения ID
             self.save_m2m()  # Сохраняем связи ManyToMany
 
-        # Импорт из Discogs
-        if not instance.discogs_id:  # Импортируем только для новых записей
-            service = DiscogsService()
+        if not instance.discogs_id:
             return (
-                service.import_release_by_barcode(instance.barcode, instance)
+                self.discogs_service.importer.import_release(instance.barcode, instance)
                 or instance
             )
 

@@ -1,5 +1,6 @@
-from records.models import Artist, Format, Genre, Label, Record, Style, Track
 from rest_framework import serializers
+
+from records.models import Artist, Format, Genre, Label, Record, Style, Track
 
 
 class ArtistSerializer(serializers.ModelSerializer):
