@@ -27,39 +27,6 @@ class RecordConditions:
     )
 
 
-class RecordFormats:
-    LP = "LP"
-    LP2 = "2LP"
-    LP3 = "3LP"
-    EP = "EP"
-    SEVEN = '7"'
-    TEN = '10"'
-    TWELVE = '12"'
-    BOX = "BOX"
-    PIC = "PIC"
-    SHAPED = "SHAPED"
-    FLEXI = "FLEXI"
-    ACETATE = "ACETATE"
-    TEST = "TEST"
-    OTHER = "OTHER"
-    FORMAT_CHOICES = (
-        (LP, 'LP (12" Long Play)'),
-        (LP2, "2LP (Double Album)"),
-        (LP3, "3LP (Triple Album)"),
-        (EP, 'EP (12" Extended Play)'),
-        (SEVEN, '7" (Single)'),
-        (TEN, '10" (Single/EP)'),
-        (TWELVE, '12" Single'),
-        (BOX, "Box Set"),
-        (PIC, "Picture Disc"),
-        (SHAPED, "Shaped Disc"),
-        (FLEXI, "Flexi Disc"),
-        (ACETATE, "Acetate"),
-        (TEST, "Test Pressing"),
-        (OTHER, "Other Format"),
-    )
-
-
 class Artist(TimeStampedModel):
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
@@ -100,6 +67,18 @@ class Genre(TimeStampedModel):
         ordering = ("name",)
 
 
+class Format(TimeStampedModel):
+    name = models.CharField(max_length=100, verbose_name=_("Name"))
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = _("Format")
+        verbose_name_plural = _("Formats")
+        ordering = ("name",)
+
+
 class Style(TimeStampedModel):
     name = models.CharField(max_length=100, verbose_name=_("Name"))
 
@@ -125,11 +104,14 @@ class Record(TimeStampedModel):
         related_name="records",
         verbose_name=_("Label"),
     )
-    release_date = models.DateField(
-        null=True, blank=True, verbose_name=_("Release date")
+    release_year = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name=_("Release year")
     )
     genres = models.ManyToManyField(
         Genre, related_name="records", verbose_name=_("Genre")
+    )
+    formats = models.ManyToManyField(
+        Format, related_name="records", verbose_name=_("Format")
     )
     styles = models.ManyToManyField(
         Style, related_name="records", verbose_name=_("Style")
@@ -149,7 +131,7 @@ class Record(TimeStampedModel):
     condition = models.CharField(
         max_length=3,
         choices=RecordConditions.CONDITION_CHOICES,
-        default=RecordConditions.NM,
+        default=RecordConditions.M,
         verbose_name=_("Condition"),
     )
     catalog_number = models.CharField(
@@ -158,12 +140,6 @@ class Record(TimeStampedModel):
         verbose_name=_("Catalog number"),
     )
     barcode = models.CharField(max_length=20, unique=True, verbose_name=_("Barcode"))
-    format = models.CharField(
-        max_length=7,
-        choices=RecordFormats.FORMAT_CHOICES,
-        default=RecordFormats.OTHER,
-        verbose_name=_("Format"),
-    )
     country = models.CharField(
         null=True, blank=True, verbose_name=_("Country"), max_length=50
     )
