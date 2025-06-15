@@ -31,7 +31,6 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
         "condition",
         "catalog_number",
         "barcode",
-        "format",
         "country",
     ]
 
