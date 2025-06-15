@@ -24,7 +24,7 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
         "title",
         "artists__name",
         "label__name",
-        "release_date",
+        "release_year",
         "genres__name",
         "styles__name",
         "discogs_id",
@@ -39,4 +39,5 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
 class StyleListView(generics.ListAPIView):
     queryset = Style.objects.all()
     serializer_class = StyleSerializer
+    pagination_class = None
     name = "style-list"
