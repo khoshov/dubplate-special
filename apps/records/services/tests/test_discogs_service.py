@@ -44,7 +44,6 @@ class DiscogsServiceTestCase(TestCase):
 
     @patch('discogs_client.Client')
     def test_init(self, mock_client):
-        service = DiscogsService()
         mock_client.assert_called_once_with(
             user_agent=settings.DISCOGS_USER_AGENT,
             user_token=settings.DISCOGS_TOKEN
