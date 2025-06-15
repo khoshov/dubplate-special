@@ -8,17 +8,17 @@ from records.models import Style
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Record.objects.select_related(
-        'label',
+        "label",
     ).prefetch_related(
-        'artists',
-        'tracks',
-        'genres',
-        'styles',
+        "artists",
+        "tracks",
+        "genres",
+        "styles",
     ).distinct()
     serializer_class = RecordSerializer
     filterset_fields = (
-        'genres__name',
-        'styles__name',
+        "genres__name",
+        "styles__name",
     )
     search_fields = [
         "title",
