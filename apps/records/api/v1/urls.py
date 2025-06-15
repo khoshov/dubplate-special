@@ -9,4 +9,5 @@ router.register(r"records", views.RecordViewSet)
 
 urlpatterns = [
     path("", include(router.urls)),
+    path('styles/', views.StyleListView.as_view(), name=views.StyleListView.name),
 ]

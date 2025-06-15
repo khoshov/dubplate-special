@@ -1,7 +1,9 @@
 from records.models import Record
-from rest_framework import filters, viewsets
+from rest_framework import viewsets
+from rest_framework import generics
 
-from .serializers import RecordSerializer
+from .serializers import RecordSerializer, StyleSerializer
+from records.models import Style
 
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
@@ -12,9 +14,12 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
         "tracks",
         "genres",
         "styles",
-    )
+    ).distinct()
     serializer_class = RecordSerializer
-    filter_backends = [filters.SearchFilter]
+    filterset_fields = (
+        "genres__name",
+        "styles__name",
+    )
     search_fields = [
         "title",
         "artists__name",
@@ -29,3 +34,9 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
         "format",
         "country",
     ]
+
+
+class StyleListView(generics.ListAPIView):
+    queryset = Style.objects.all()
+    serializer_class = StyleSerializer
+    name = "style-list"
