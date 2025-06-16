@@ -1,10 +1,8 @@
-from records.models import Record
+from records.models import Record, Style
 from rest_framework import viewsets
-from rest_framework import generics
 
 from .serializers import RecordSerializer, StyleSerializer
 from .filters import RecordFilter
-from records.models import Style
 
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
@@ -33,8 +31,7 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
     ]
 
 
-class StyleListView(generics.ListAPIView):
+class StyleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Style.objects.all()
     serializer_class = StyleSerializer
     pagination_class = None
-    name = "style-list"
