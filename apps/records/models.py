@@ -167,6 +167,11 @@ class Record(TimeStampedModel):
     country = models.CharField(
         null=True, blank=True, verbose_name=_("Country"), max_length=50
     )
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        verbose_name=_("Price"),
+    )
 
     def __str__(self):
         return self.title
@@ -200,3 +205,56 @@ class Track(TimeStampedModel):
             "record",
             "position",
         )
+
+
+class Order(TimeStampedModel):
+    name = models.CharField(max_length=100, verbose_name=_("Full name"))
+    phone = models.CharField(max_length=20, verbose_name=_("Phone"))
+    address = models.CharField(max_length=100, verbose_name=_("Adress"))
+    total_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        verbose_name=_("Total price")
+    )
+
+    class Meta:
+        verbose_name = _("Order")
+        verbose_name_plural = _("Orders")
+
+    def __str__(self):
+        return f"{_('Order')} - {self.id}"
+
+
+class OrderItem(TimeStampedModel):
+    order = models.ForeignKey(
+        Order,
+        related_name="items",
+        on_delete=models.CASCADE,
+        verbose_name=_("Order")
+    )
+    record = models.ForeignKey(
+        Record,
+        related_name="order_items",
+        on_delete=models.CASCADE,
+        verbose_name=_("Record")
+    )
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        verbose_name=_("Price"),
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        verbose_name=_("Count"),
+    )
+
+    class Meta:
+        verbose_name = "Позиция заказа"
+        verbose_name_plural = "Позиции заказа"
+
+    def __str__(self):
+        return f"{self.quantity} x {self.record.title}"
+
+    def get_cost(self):
+        return self.price * self.quantity
