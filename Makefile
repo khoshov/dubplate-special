@@ -29,4 +29,4 @@ list_packages:
 	$(UV) pip list
 
 test:
-	$(PYTHON) pytest
+	$(PYTHON) pytest -v

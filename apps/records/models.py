@@ -143,6 +143,14 @@ class Record(TimeStampedModel):
     country = models.CharField(
         null=True, blank=True, verbose_name=_("Country"), max_length=50
     )
+    price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_("Our price (RUB)"),
+        help_text=_("Manual price in Russian Rubles"),
+    )
 
     def __str__(self):
         return self.title
