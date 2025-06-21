@@ -1,25 +1,37 @@
-from rest_framework import filters, viewsets
+from records.models import Record, Style
+from rest_framework import viewsets
 
-from records.models import Record
-
-from .serializers import RecordSerializer
+from .serializers import RecordSerializer, StyleSerializer
+from .filters import RecordFilter
 
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Record.objects.all()
+    queryset = Record.objects.select_related(
+        "label",
+    ).prefetch_related(
+        "artists",
+        "tracks",
+        "genres",
+        "styles",
+    ).distinct()
     serializer_class = RecordSerializer
-    filter_backends = [filters.SearchFilter]
+    filterset_class = RecordFilter
     search_fields = [
         "title",
         "artists__name",
         "label__name",
-        "release_date",
+        "release_year",
         "genres__name",
         "styles__name",
         "discogs_id",
         "condition",
         "catalog_number",
         "barcode",
-        "format",
         "country",
     ]
+
+
+class StyleViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Style.objects.all()
+    serializer_class = StyleSerializer
+    pagination_class = None
