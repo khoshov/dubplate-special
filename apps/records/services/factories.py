@@ -23,16 +23,19 @@ class DiscogsModelFactory:
     def create_or_update_model(
         model_class: Type[T], discogs_id: int = None, **defaults
     ) -> T:
-        """
-        Общий метод для создания/обновления моделей.
+        """Создает или обновляет экземпляр модели Django.
 
         Args:
-            model_class: Класс модели Django
-            discogs_id: ID в Discogs (опционально)
-            defaults: Значения по умолчанию для создания
+            model_class: Класс модели Django для создания/обновления.
+            discogs_id: ID в Discogs (опционально, используется как ключ поиска).
+            **defaults: Значения полей для создания/обновления.
 
         Returns:
-            Экземпляр указанного класса модели
+            T: Созданный или обновленный экземпляр модели.
+
+        Note:
+            Если указан discogs_id, поиск выполняется по нему. В противном случае
+            используется поле 'name' из defaults.
         """
         if discogs_id is not None:
             return model_class.objects.get_or_create(
@@ -43,21 +46,49 @@ class DiscogsModelFactory:
         )[0]
 
     def create_or_update_artist(self, artist_data) -> Artist:
-        """Создает или обновляет артиста."""
+        """Создает или обновляет артиста.
+
+        Args:
+            artist_data: Данные артиста из Discogs API.
+
+        Returns:
+            Artist: Созданный или обновленный экземпляр Artist.
+        """
         return self.create_or_update_model(
             Artist, discogs_id=artist_data.id, name=artist_data.name
         )
 
     def create_or_update_genre(self, genre_name: str) -> Genre:
-        """Создает или обновляет жанр."""
+        """Создает или обновляет жанр.
+
+        Args:
+            genre_name: Название жанра.
+
+        Returns:
+            Genre: Созданный или обновленный экземпляр Genre.
+        """
         return self.create_or_update_model(Genre, name=genre_name)
 
     def create_or_update_style(self, style_name: str) -> Style:
-        """Создает или обновляет стиль."""
+        """Создает или обновляет стиль.
+
+        Args:
+            style_name: Название стиля.
+
+        Returns:
+            Style: Созданный или обновленный экземпляр Style.
+        """
         return self.create_or_update_model(Style, name=style_name)
 
     def create_or_update_label(self, label_data) -> Label:
-        """Создает или обновляет лейбл."""
+        """Создает или обновляет лейбл.
+
+        Args:
+            label_data: Данные лейбла из Discogs API.
+
+        Returns:
+            Label: Созданный или обновленный экземпляр Label.
+        """
         return self.create_or_update_model(
             Label,
             discogs_id=label_data.id,
@@ -66,7 +97,18 @@ class DiscogsModelFactory:
         )
 
     def create_or_update_formats(self, formats_data) -> List[Format]:
-        """Создает или обновляет форматы."""
+        """Создает или обновляет форматы релиза.
+
+        Args:
+            formats_data: Данные о форматах из Discogs API.
+
+        Returns:
+            List[Format]: Список созданных или обновленных экземпляров Format.
+
+        Note:
+            Обрабатывает специальные случаи для LP (создает записи вида "2LP" и т.д.)
+            и добавляет все описания форматов как отдельные записи.
+        """
         if not formats_data:
             return []
 

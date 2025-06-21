@@ -17,10 +17,14 @@ class DiscogsService:
     """Фасад для работы с Discogs API и связанными сервисами.
 
     Attributes:
-        api_client (DiscogsAPIClient): Клиент для запросов к API
-        model_factory (DiscogsModelFactory): Фабрика моделей Django
-        image_downloader (DiscogsImageDownloader): Загрузчик обложек
-        importer (DiscogsReleaseImporter): Импортер данных
+        api_client (DiscogsAPIClient): Клиент для запросов к API.
+        model_factory (DiscogsModelFactory): Фабрика моделей Django.
+        image_downloader (DiscogsImageDownloader): Загрузчик обложек.
+        importer (DiscogsReleaseImporter): Импортер данных релизов.
+
+    Example:
+        >>> service = DiscogsService()
+        >>> record = service.importer.import_release(barcode="123456789")
     """
 
     def __init__(self):
@@ -40,8 +44,11 @@ class DiscogsAPIClient:
     """Клиент для работы с Discogs API.
 
     Args:
-        user_agent (str): Идентификатор приложения
-        user_token (str): Токен аутентификации
+        user_agent (str): Идентификатор приложения.
+        user_token (str): Токен аутентификации.
+
+    Attributes:
+        client: Экземпляр клиента discogs_client.
     """
 
     def __init__(self, user_agent: str, user_token: str):
@@ -54,15 +61,16 @@ class DiscogsAPIClient:
         """Выполняет запрос с обработкой ошибок и rate limiting.
 
         Args:
-            func: Функция для выполнения
-            *args: Позиционные аргументы
-            **kwargs: Именованные аргументы
+            func: Функция для выполнения.
+            *args: Позиционные аргументы для функции.
+            **kwargs: Именованные аргументы для функции.
 
         Returns:
-            Результат выполнения функции
+            Результат выполнения функции.
 
         Raises:
-            Exception: При ошибках аутентификации или API
+            Exception: При ошибках аутентификации или API.
+            После превышения лимита запросов делает паузу 60 секунд.
         """
         try:
             return func(*args, **kwargs)
@@ -83,10 +91,13 @@ class DiscogsAPIClient:
         """Ищет релиз по штрих-коду.
 
         Args:
-            barcode: Штрих-код для поиска
+            barcode: Штрих-код для поиска.
 
         Returns:
-            Объект релиза или None, если не найден
+            Optional[discogs_client.Release]: Объект релиза или None, если не найден.
+
+        Note:
+            Возвращает первый найденный релиз и обновляет его данные через refresh().
         """
         results = self._make_request(self.client.search, barcode, type="release")
         if results:

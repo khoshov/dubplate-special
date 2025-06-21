@@ -7,7 +7,16 @@ logger = logging.getLogger(__name__)
 
 
 class DiscogsReleaseImporter:
-    """Импортер релизов из Discogs в модели Django."""
+    """Импортер релизов из Discogs в модели Django.
+
+    Args:
+        api_client: Клиент Discogs API.
+        model_factory: Фабрика для создания моделей.
+        image_downloader: Загрузчик обложек.
+
+    Methods:
+        import_release: Основной метод импорта релиза по штрих-коду.
+    """
 
     def __init__(self, api_client, model_factory, image_downloader):
         self.api_client = api_client
@@ -17,7 +26,20 @@ class DiscogsReleaseImporter:
     def import_release(
         self, barcode: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
-        """Основной метод импорта релиза по штрих-коду."""
+        """Импортирует релиз по штрих-коду в модель Record.
+
+        Args:
+            barcode: Штрих-код релиза для поиска в Discogs.
+            record: Экземпляр модели Record для заполнения данными.
+            save_image: Флаг, указывающий нужно ли загружать обложку.
+
+        Returns:
+            Optional[Record]: Заполненная модель Record или None при ошибке.
+
+        Note:
+            Если record не сохранен в БД (не имеет pk), метод сохранит его перед
+            заполнением данных.
+        """
         try:
             logger.debug(f"Starting import for barcode: {barcode}")
             release = self.api_client.search_release_by_barcode(barcode)
@@ -36,7 +58,12 @@ class DiscogsReleaseImporter:
             return None
 
     def _update_basic_fields(self, release, record: Record):
-        """Обновляет основные поля записи."""
+        """Обновляет основные поля записи.
+
+        Args:
+            release: Объект релиза из Discogs API.
+            record: Экземпляр модели Record для обновления.
+        """
         record.title = release.title
         record.release_year = getattr(release, "year", None)
         record.catalog_number = release.labels[0].catno if release.labels else None
@@ -46,7 +73,12 @@ class DiscogsReleaseImporter:
         record.discogs_id = release.id
 
     def _update_relations(self, release, record: Record):
-        """Обновляет связи ManyToMany."""
+        """Обновляет связи ManyToMany записи.
+
+        Args:
+            release: Объект релиза из Discogs API.
+            record: Экземпляр модели Record для обновления.
+        """
         if release.labels:
             record.label = self.model_factory.create_or_update_label(release.labels[0])
 
@@ -75,7 +107,20 @@ class DiscogsReleaseImporter:
         )
 
     def _update_record(self, release, record: Record, save_image: bool):
-        """Обновляет запись данными релиза."""
+        """Обновляет запись данными релиза.
+
+        Args:
+            release: Объект релиза из Discogs API.
+            record: Экземпляр модели Record для обновления.
+            save_image: Флаг, указывающий нужно ли загружать обложку.
+
+        Note:
+            Выполняет обновление в следующем порядке:
+            1. Основные поля
+            2. Связи ManyToMany
+            3. Треки
+            4. Обложка (если требуется)
+        """
         # 1. Сначала обновляем и сохраняем основные поля
         self._update_basic_fields(release, record)
         record.save()  # Важно: сохраняем запись перед установкой связей
@@ -92,7 +137,12 @@ class DiscogsReleaseImporter:
             self.image_downloader.download_cover(release, record)
 
     def _update_tracks(self, record: Record, tracklist):
-        """Обновляет треки для записи."""
+        """Обновляет треки для записи.
+
+        Args:
+            record: Экземпляр модели Record.
+            tracklist: Список треков из Discogs API.
+        """
         for track in tracklist:
             Track.objects.update_or_create(
                 record=record,

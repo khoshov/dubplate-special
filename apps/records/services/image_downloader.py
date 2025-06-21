@@ -11,11 +11,24 @@ logger = logging.getLogger(__name__)
 
 
 class DiscogsImageDownloader:
-    """Загрузчик обложек релизов с Discogs."""
+    """Загрузчик обложек релизов с Discogs.
+
+    Methods:
+        download_cover: Загружает и сохраняет обложку релиза.
+    """
 
     @staticmethod
     def download_cover(release, record: Record) -> bool:
-        """Загружает и сохраняет обложку для указанного релиза."""
+        """Загружает и сохраняет обложку для указанного релиза.
+
+        Args:
+            release: Объект релиза из Discogs API.
+            record: Экземпляр модели Record для сохранения обложки.
+
+        Returns:
+            bool: True если обложка была успешно загружена и сохранена,
+                  False если обложка уже существует или произошла ошибка.
+        """
         if record.cover_image:
             return False
 
