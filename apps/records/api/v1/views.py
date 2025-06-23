@@ -42,14 +42,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         return obj
 
     def create(self, request, *args, **kwargs):
-        # Форматируем данные для соответствия сериализатору
-        request_data = {
-            "name": request.data.get("name"),
-            "phone": request.data.get("phone"),
-            "address": request.data.get("address"),
-            "items": request.data.get("items", [])
-        }
-
         serializer = self.get_serializer(data=request_data)
         serializer.is_valid(raise_exception=True)
 
@@ -64,18 +56,3 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {"error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-    def validate_items(self, items):
-        # Проверяем наличие товара на складе
-        for item_data in items:
-            record = item_data['record']
-            quantity = item_data['quantity']
-            if record.stock < quantity:
-                raise ValidationError(
-                    f"Недостаточно пластинок '{record.title}' в наличии. "
-                    f"Доступно: {record.stock}, заказано: {quantity}"
-                )
-
-            # Уменьшаем количество на складе
-            record.stock -= quantity
-            record.save()
