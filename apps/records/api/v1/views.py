@@ -1,7 +1,5 @@
-from django.db import transaction
 from django.shortcuts import get_object_or_404
-from rest_framework import filters, viewsets, permissions, status
-from rest_framework.exceptions import ValidationError, NotFound
+from rest_framework import filters, viewsets, status, exceptions
 from rest_framework.response import Response
 
 from records.models import Record, Order
@@ -31,18 +29,13 @@ class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
     http_method_names = ['get', 'post']
-    permission_classes = [permissions.AllowAny]
+    permission_classes = []
 
     def get_object(self):
-        try:
-            obj = get_object_or_404(queryset, pk=self.kwargs["pk"])
-        except (ValidationError, ValueError):
-            raise NotFound("Заказ не найден")
-
-        return obj
+        return get_object_or_404(self.queryset, pk=self.kwargs.get("pk"))
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request_data)
+        serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         try:
@@ -51,8 +44,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 serializer.data,
                 status=status.HTTP_201_CREATED
             )
-        except ValidationError as e:
+        except exceptions.ValidationError as err:
             return Response(
-                {"error": str(e)},
+                {"error": str(err)},
                 status=status.HTTP_400_BAD_REQUEST
             )

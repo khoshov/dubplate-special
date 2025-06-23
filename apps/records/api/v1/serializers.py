@@ -111,7 +111,10 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
 
-        items_data = validated_data.pop("items")
+        if not (items_data := validated_data.pop("items")):
+            raise serializers.ValidationError(
+                {"items": ["Невозможно создать заказ без пластинок. Добавьте хотя бы одну позицию."]}
+            )
 
         try:
             with transaction.atomic():
@@ -149,8 +152,5 @@ class OrderSerializer(serializers.ModelSerializer):
                 return order
 
 
-        except ValidationError as e:
-            # Удаляем частично созданный заказ при ошибке]
-            if order.id:
-                order.delete()
-            raise e
+        except serializers.ValidationError:
+            order.delete()
