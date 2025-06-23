@@ -1,9 +1,10 @@
-from django.shortcuts import get_object_or_404
-from rest_framework import filters, viewsets, status, exceptions
+from records.models import Order, Record
+from rest_framework import exceptions, filters, status, viewsets
 from rest_framework.response import Response
 
-from records.models import Record, Order
-from .serializers import RecordSerializer, OrderSerializer
+from django.shortcuts import get_object_or_404
+
+from .serializers import OrderSerializer, RecordSerializer
 
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
@@ -25,10 +26,11 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
         "country",
     ]
 
+
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
-    http_method_names = ['get', 'post']
+    http_method_names = ["get", "post"]
     permission_classes = []
 
     def get_object(self):
@@ -39,13 +41,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
-            order = serializer.save()
-            return Response(
-                serializer.data,
-                status=status.HTTP_201_CREATED
-            )
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
         except exceptions.ValidationError as err:
-            return Response(
-                {"error": str(err)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": str(err)}, status=status.HTTP_400_BAD_REQUEST)

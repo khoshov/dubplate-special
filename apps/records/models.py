@@ -212,10 +212,7 @@ class Order(TimeStampedModel):
     phone = models.CharField(max_length=20, verbose_name=_("Phone"))
     address = models.CharField(max_length=100, verbose_name=_("Adress"))
     total_price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        default=0,
-        verbose_name=_("Total price")
+        max_digits=10, decimal_places=2, default=0, verbose_name=_("Total price")
     )
 
     class Meta:
@@ -228,16 +225,13 @@ class Order(TimeStampedModel):
 
 class OrderItem(TimeStampedModel):
     order = models.ForeignKey(
-        Order,
-        related_name="items",
-        on_delete=models.CASCADE,
-        verbose_name=_("Order")
+        Order, related_name="items", on_delete=models.CASCADE, verbose_name=_("Order")
     )
     record = models.ForeignKey(
         Record,
         related_name="order_items",
         on_delete=models.CASCADE,
-        verbose_name=_("Record")
+        verbose_name=_("Record"),
     )
     price = models.DecimalField(
         max_digits=10,
