@@ -1,7 +1,18 @@
-from records.models import Artist, Genre, Label, Order, OrderItem, Record, Style, Track
 from rest_framework import serializers
 
 from django.db import transaction
+
+from records.models import (
+    Artist,
+    Format,
+    Genre,
+    Label,
+    Order,
+    OrderItem,
+    Record,
+    Style,
+    Track,
+)
 
 
 class ArtistSerializer(serializers.ModelSerializer):
@@ -19,6 +30,12 @@ class LabelSerializer(serializers.ModelSerializer):
 class GenreSerializer(serializers.ModelSerializer):
     class Meta:
         model = Genre
+        fields = ["id", "name"]
+
+
+class FormatSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Format
         fields = ["id", "name"]
 
 
@@ -42,7 +59,7 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
     styles = StyleSerializer(many=True, read_only=True)
     tracks = TrackSerializer(many=True, read_only=True)
     condition = serializers.CharField(source="get_condition_display", read_only=True)
-    format = serializers.CharField(source="get_format_display", read_only=True)
+    format = FormatSerializer(many=True, read_only=True)
 
     class Meta:
         model = Record
@@ -52,7 +69,7 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
             "title",
             "artists",
             "label",
-            "release_date",
+            "release_year",
             "genres",
             "styles",
             "discogs_id",

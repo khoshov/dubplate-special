@@ -1,4 +1,5 @@
-PYTHON := docker compose run -u $(USERID):$(GROUPID) --rm django uv run
+UV := docker compose run -u $(USERID):$(GROUPID) --rm django uv
+PYTHON := $(UV) run
 
 collectstatic:
 	$(PYTHON) manage.py collectstatic --noi -c
@@ -23,3 +24,9 @@ reset_db:
 
 format:
 	uvx ruff check --fix apps config && uvx ruff check --select I --fix apps config && uvx ruff format apps config
+
+list_packages:
+	$(UV) pip list
+
+test:
+	$(PYTHON) pytest -v
