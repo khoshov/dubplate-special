@@ -1,7 +1,10 @@
-from records.models import Record, Style
-from rest_framework import viewsets
+from records.models import Order, Record, Style
+from rest_framework import exceptions, filters, status, viewsets
+from rest_framework.response import Response
 
-from .serializers import RecordSerializer, StyleSerializer
+from django.shortcuts import get_object_or_404
+
+from .serializers import OrderSerializer, RecordSerializer, StyleSerializer
 from .filters import RecordFilter
 
 
@@ -35,3 +38,23 @@ class StyleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Style.objects.all()
     serializer_class = StyleSerializer
     pagination_class = None
+
+
+class OrderViewSet(viewsets.ModelViewSet):
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+    http_method_names = ["get", "post"]
+    permission_classes = []
+
+    def get_object(self):
+        return get_object_or_404(self.queryset, pk=self.kwargs.get("pk"))
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        except exceptions.ValidationError as err:
+            return Response({"error": str(err)}, status=status.HTTP_400_BAD_REQUEST)
