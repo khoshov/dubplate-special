@@ -53,7 +53,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-
     # Third party apps
     "corsheaders",  # https://github.com/adamchainz/django-cors-headers
     "django_ckeditor_5",  # https://github.com/hvlads/django-ckeditor-5
@@ -62,7 +61,6 @@ INSTALLED_APPS = [
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
-
     # Project apps
     "records",
 ]

@@ -1,22 +1,27 @@
-from records.models import Order, Record, Style
-from rest_framework import exceptions, filters, status, viewsets
+from rest_framework import exceptions, status, viewsets
 from rest_framework.response import Response
 
 from django.shortcuts import get_object_or_404
 
-from .serializers import OrderSerializer, RecordSerializer, StyleSerializer
+from records.models import Order, Record, Style
+
 from .filters import RecordFilter
+from .serializers import OrderSerializer, RecordSerializer, StyleSerializer
 
 
 class RecordViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Record.objects.select_related(
-        "label",
-    ).prefetch_related(
-        "artists",
-        "tracks",
-        "genres",
-        "styles",
-    ).distinct()
+    queryset = (
+        Record.objects.select_related(
+            "label",
+        )
+        .prefetch_related(
+            "artists",
+            "tracks",
+            "genres",
+            "styles",
+        )
+        .distinct()
+    )
     serializer_class = RecordSerializer
     filterset_class = RecordFilter
     search_fields = [

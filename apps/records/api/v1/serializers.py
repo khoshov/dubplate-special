@@ -1,7 +1,18 @@
-from records.models import Artist, Genre, Label, Order, OrderItem, Record, Style, Track
 from rest_framework import serializers
 
 from django.db import transaction
+
+from records.models import (
+    Artist,
+    Format,
+    Genre,
+    Label,
+    Order,
+    OrderItem,
+    Record,
+    Style,
+    Track,
+)
 
 
 class ArtistSerializer(serializers.ModelSerializer):
