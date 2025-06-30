@@ -31,7 +31,7 @@ class RecordAdmin(admin.ModelAdmin):
 
     form = RecordForm
     inlines = [TrackInline]
-    add_fields = ("barcode",)
+    add_fields = ("barcode", "catalog_number")
 
     def get_fields(self, request, obj=None):
         """

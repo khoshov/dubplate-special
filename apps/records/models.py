@@ -139,7 +139,9 @@ class Record(TimeStampedModel):
         unique=True,
         verbose_name=_("Catalog number"),
     )
-    barcode = models.CharField(max_length=20, unique=True, verbose_name=_("Barcode"))
+    barcode = models.CharField(
+        max_length=20, unique=True, null=True, blank=True, verbose_name=_("Barcode")
+    )
     country = models.CharField(
         null=True, blank=True, verbose_name=_("Country"), max_length=50
     )

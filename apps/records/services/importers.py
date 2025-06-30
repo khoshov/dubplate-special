@@ -15,7 +15,9 @@ class DiscogsReleaseImporter:
         image_downloader: Загрузчик обложек.
 
     Methods:
-        import_release: Основной метод импорта релиза по штрих-коду.
+        import_release_by_barcode: Импорт релиза по штрих-коду.
+        import_release_by_catalog_number: Импорт релиза по каталожному номеру.
+        import_release: Устаревший метод (для обратной совместимости).
     """
 
     def __init__(self, api_client, model_factory, image_downloader):
@@ -23,7 +25,7 @@ class DiscogsReleaseImporter:
         self.model_factory = model_factory
         self.image_downloader = image_downloader
 
-    def import_release(
+    def import_release_by_barcode(
         self, barcode: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
         """Импортирует релиз по штрих-коду в модель Record.
@@ -35,10 +37,6 @@ class DiscogsReleaseImporter:
 
         Returns:
             Optional[Record]: Заполненная модель Record или None при ошибке.
-
-        Note:
-            Если record не сохранен в БД (не имеет pk), метод сохранит его перед
-            заполнением данных.
         """
         try:
             logger.debug(f"Starting import for barcode: {barcode}")
@@ -47,15 +45,58 @@ class DiscogsReleaseImporter:
                 logger.warning(f"No release found for barcode: {barcode}")
                 return None
 
-            # Важно: сначала сохраняем запись, если она новая
-            if not record.pk:
-                record.save()
-
-            self._update_record(release, record, save_image)
-            return record
+            return self._import_release_data(release, record, save_image)
         except Exception as e:
             logger.error(f"Import error for barcode {barcode}: {str(e)}", exc_info=True)
             return None
+
+    def import_release_by_catalog_number(
+        self, catalog_number: str, record: Record, save_image: bool = True
+    ) -> Optional[Record]:
+        """Импортирует релиз по каталожному номеру в модель Record.
+
+        Args:
+            catalog_number: Каталожный номер релиза для поиска в Discogs.
+            record: Экземпляр модели Record для заполнения данными.
+            save_image: Флаг, указывающий нужно ли загружать обложку.
+
+        Returns:
+            Optional[Record]: Заполненная модель Record или None при ошибке.
+        """
+        try:
+            logger.debug(f"Starting import for catalog number: {catalog_number}")
+            release = self.api_client.search_release_by_catalog_number(catalog_number)
+            if not release:
+                logger.warning(f"No release found for catalog number: {catalog_number}")
+                return None
+
+            return self._import_release_data(release, record, save_image)
+        except Exception as e:
+            logger.error(
+                f"Import error for catalog number {catalog_number}: {str(e)}",
+                exc_info=True,
+            )
+            return None
+
+    def _import_release_data(
+        self, release, record: Record, save_image: bool = True
+    ) -> Optional[Record]:
+        """Общий метод для импорта данных релиза.
+
+        Args:
+            release: Объект релиза из Discogs API.
+            record: Экземпляр модели Record для заполнения данными.
+            save_image: Флаг, указывающий нужно ли загружать обложку.
+
+        Returns:
+            Optional[Record]: Заполненная модель Record.
+        """
+        # Важно: сначала сохраняем запись, если она новая
+        if not record.pk:
+            record.save()
+
+        self._update_record(release, record, save_image)
+        return record
 
     def _update_basic_fields(self, release, record: Record):
         """Обновляет основные поля записи.

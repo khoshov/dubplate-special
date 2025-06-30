@@ -99,7 +99,26 @@ class DiscogsAPIClient:
         Note:
             Возвращает первый найденный релиз и обновляет его данные через refresh().
         """
-        results = self._make_request(self.client.search, barcode, type="release")
+        results = self._make_request(self.client.search, barcode, type="barcode")
+        if results:
+            release = results[0]
+            self._make_request(release.refresh)  # Получение полных данных
+            return release
+        return None
+
+    def search_release_by_catalog_number(
+        self, catalog_number: str
+    ) -> Optional[discogs_client.Release]:
+        """Ищет релиз по каталожному номеру.
+
+        Args:
+            catalog_number: Каталожный номер для поиска.
+
+        Returns:
+            Optional[discogs_client.Release]: Объект релиза или None, если не найден.
+        """
+        catno = catalog_number
+        results = self._make_request(self.client.search, catno, type="catno")
         if results:
             release = results[0]
             self._make_request(release.refresh)  # Получение полных данных
