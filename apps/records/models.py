@@ -1,5 +1,6 @@
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
+from solo.models import SingletonModel
 from sorl.thumbnail import ImageField
 
 from django.db import models
@@ -231,3 +232,20 @@ class OrderItem(TimeStampedModel):
 
     def get_cost(self):
         return self.price * self.quantity
+
+
+class DollarRate(SingletonModel, TimeStampedModel):
+    rate = models.FloatField(
+        default=100.0,
+        verbose_name="Курс доллара к рублю"
+    )
+    auto_update = models.BooleanField(
+        default=True,
+        verbose_name="Автообновление",
+    )
+
+    class Meta:
+        verbose_name = "Курс доллара"
+
+    def __str__(self):
+        return f"1 USD = {self.rate} RUB"

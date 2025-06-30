@@ -1,7 +1,8 @@
 from django.contrib import admin
+from solo.admin import SingletonModelAdmin
 
 from .forms import RecordForm
-from .models import Record, Track
+from .models import Record, Track, DollarRate
 
 
 class TrackInline(admin.TabularInline):
@@ -67,6 +68,11 @@ class RecordAdmin(admin.ModelAdmin):
         if obj:
             return [inline(self.model, self.admin_site) for inline in self.inlines]
         return []
+
+
+@admin.register(DollarRate)
+class DollarRateAdmin(SingletonModelAdmin):
+    pass
 
 
 admin.site.register(Record, RecordAdmin)

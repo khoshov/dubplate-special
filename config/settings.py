@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
+    "solo",  # https://github.com/lazybird/django-solo
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "records",
