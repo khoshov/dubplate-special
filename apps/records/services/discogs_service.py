@@ -6,6 +6,7 @@ import discogs_client
 
 from django.conf import settings
 
+from records.services.constants import DiscogsConstants
 from records.services.factories import DiscogsModelFactory
 from records.services.image_downloader import DiscogsImageDownloader
 from records.services.importers import DiscogsReleaseImporter
@@ -70,28 +71,27 @@ class DiscogsAPIClient:
 
         Raises:
             Exception: При ошибках аутентификации или API.
-            После превышения лимита запросов делает паузу 60 секунд.
+            После превышения лимита запросов делает паузу согласно константе.
         """
         try:
             return func(*args, **kwargs)
         except discogs_client.exceptions.HTTPError as e:
-            if e.status_code == 401:
+            if e.status_code == DiscogsConstants.HTTP_UNAUTHORIZED:
                 logger.error("Discogs authentication error")
                 raise Exception("Discogs authentication error. Check your token.")
-            elif e.status_code == 429:
+            elif e.status_code == DiscogsConstants.HTTP_RATE_LIMIT_EXCEEDED:
                 logger.warning("Rate limit exceeded, waiting before retry...")
-                time.sleep(60)
+                time.sleep(DiscogsConstants.RATE_LIMIT_WAIT_TIME)
                 return self._make_request(func, *args, **kwargs)
             logger.error(f"Discogs API error: {str(e)}")
             raise
 
-    def search_release_by_barcode(
-        self, barcode: str
-    ) -> Optional[discogs_client.Release]:
-        """Ищет релиз по штрих-коду.
+    def search_release(self, query: str, search_type: str) -> Optional[discogs_client.Release]:
+        """Универсальный поиск релиза.
 
         Args:
-            barcode: Штрих-код для поиска.
+            query: Строка для поиска.
+            search_type: Тип поиска (barcode, catno и т.д.).
 
         Returns:
             Optional[discogs_client.Release]: Объект релиза или None, если не найден.
@@ -99,12 +99,23 @@ class DiscogsAPIClient:
         Note:
             Возвращает первый найденный релиз и обновляет его данные через refresh().
         """
-        results = self._make_request(self.client.search, barcode, type="barcode")
+        results = self._make_request(self.client.search, query, type=search_type)
         if results:
             release = results[0]
             self._make_request(release.refresh)  # Получение полных данных
             return release
         return None
+
+    def search_release_by_barcode(self, barcode: str) -> Optional[discogs_client.Release]:
+        """Ищет релиз по штрих-коду.
+
+        Args:
+            barcode: Штрих-код для поиска.
+
+        Returns:
+            Optional[discogs_client.Release]: Объект релиза или None, если не найден.
+        """
+        return self.search_release(barcode, DiscogsConstants.SEARCH_TYPE_BARCODE)
 
     def search_release_by_catalog_number(
         self, catalog_number: str
@@ -117,13 +128,7 @@ class DiscogsAPIClient:
         Returns:
             Optional[discogs_client.Release]: Объект релиза или None, если не найден.
         """
-        catno = catalog_number
-        results = self._make_request(self.client.search, catno, type="catno")
-        if results:
-            release = results[0]
-            self._make_request(release.refresh)  # Получение полных данных
-            return release
-        return None
+        return self.search_release(catalog_number, DiscogsConstants.SEARCH_TYPE_CATALOG)
 
     def get_release_videos(self, release_id: int) -> Optional[list]:
         """Получает список видео для релиза.

@@ -22,9 +22,11 @@ class RecordForm(forms.ModelForm):
 
         error_messages = {
             "barcode": {
-                "unique": "Этот штрих-код уже существует (кастомизируем обработку)"
+                "unique": "Запись с таким штрих-кодом уже существует в базе данных"
             },
-            "catalog_number": {"unique": "Этот каталожный номер уже существует"},
+            "catalog_number": {
+                "unique": "Запись с таким каталожным номером уже существует в базе данных"
+            },
         }
 
     def __init__(self, *args, **kwargs):
@@ -45,6 +47,36 @@ class RecordForm(forms.ModelForm):
             for field in list(self.fields.keys()):
                 if field not in allowed_fields:
                     del self.fields[field]
+
+    def clean_barcode(self):
+        """Валидация штрих-кода с проверкой существующих записей."""
+        barcode = self.cleaned_data.get('barcode')
+
+        if barcode:
+            # Проверяем, существует ли запись с таким штрих-кодом
+            existing = Record.objects.filter(barcode=barcode).exclude(pk=self.instance.pk).first()
+            if existing:
+                raise ValidationError(
+                    f'Запись с таким штрих-кодом уже существует: "{existing.title}" '
+                    f'(ID: {existing.pk}, Каталожный номер: {existing.catalog_number})'
+                )
+
+        return barcode
+
+    def clean_catalog_number(self):
+        """Валидация каталожного номера с проверкой существующих записей."""
+        catalog_number = self.cleaned_data.get('catalog_number')
+
+        if catalog_number:
+            # Проверяем, существует ли запись с таким каталожным номером
+            existing = Record.objects.filter(catalog_number=catalog_number).exclude(pk=self.instance.pk).first()
+            if existing:
+                raise ValidationError(
+                    f'Запись с таким каталожным номером уже существует: "{existing.title}" '
+                    f'(ID: {existing.pk}, Штрих-код: {existing.barcode})'
+                )
+
+        return catalog_number
 
     def clean(self):
         """Валидирует форму на уровне всей формы."""
@@ -70,13 +102,14 @@ class RecordForm(forms.ModelForm):
 
         Returns:
             Record: Сохраненный экземпляр Record:
+                - Существующая запись (если найден дубликат по discogs_id)
                 - С импортированными данными из Discogs (если успешно)
                 - С оригинальными данными (если импорт не удался)
 
         Процесс работы:
             1. Сохраняет переданные в форму данные
             2. Для новых записей (без discogs_id) пытается импортировать данные
-            3. Возвращает обновленную или оригинальную запись
+            3. Возвращает обновленную, существующую или оригинальную запись
         """
 
         instance = super().save(commit=False)
@@ -90,18 +123,39 @@ class RecordForm(forms.ModelForm):
             barcode = self.cleaned_data.get("barcode", "")
             catalog_number = self.cleaned_data.get("catalog_number", "")
 
+            # Приоритет у штрих-кода
             if barcode:
-                result = self.discogs_service.importer.import_release_by_barcode(
-                    barcode, instance
-                )
-                if result:
-                    return result
+                try:
+                    result = self.discogs_service.importer.import_release_by_barcode(
+                        barcode, instance
+                    )
+                    if result:
+                        logger.info(f"Successfully imported record by barcode: {barcode}")
+                        # Если вернулась другая запись (дубликат), сохраняем её в атрибут формы
+                        if result.pk != instance.pk:
+                            self.duplicate_record = result
+                        return result
+                except Exception as e:
+                    logger.error(f"Failed to import by barcode {barcode}: {str(e)}")
 
             if catalog_number:
-                result = self.discogs_service.importer.import_release_by_catalog_number(
-                    catalog_number, instance
-                )
-                if result:
-                    return result
+                try:
+                    result = self.discogs_service.importer.import_release_by_catalog_number(
+                        catalog_number, instance
+                    )
+                    if result:
+                        logger.info(f"Successfully imported record by catalog number: {catalog_number}")
+                        # Если вернулась другая запись (дубликат), сохраняем её в атрибут формы
+                        if result.pk != instance.pk:
+                            self.duplicate_record = result
+                        return result
+                except Exception as e:
+                    logger.error(f"Failed to import by catalog number {catalog_number}: {str(e)}")
+
+            # Если импорт не удался, логируем это
+            logger.warning(
+                f"Failed to import record. Barcode: {barcode or 'N/A'}, "
+                f"Catalog: {catalog_number or 'N/A'}"
+            )
 
         return instance

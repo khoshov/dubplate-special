@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 
 from records.models import Record
+from records.services.constants import DiscogsConstants
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +41,14 @@ class DiscogsImageDownloader:
             response = requests.get(
                 image_url,
                 headers={"User-Agent": settings.DISCOGS_USER_AGENT},
-                timeout=20,
+                timeout=DiscogsConstants.IMAGE_DOWNLOAD_TIMEOUT,
             )
             response.raise_for_status()
 
-            filename = f"cover_{record.discogs_id}.jpeg"
+            filename = DiscogsConstants.IMAGE_FILENAME_TEMPLATE.format(
+                discogs_id=record.discogs_id,
+                format=DiscogsConstants.IMAGE_FORMAT
+            )
             record.cover_image.save(filename, ContentFile(response.content))
             return True
         except Exception as e:
