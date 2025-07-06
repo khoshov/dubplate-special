@@ -28,6 +28,5 @@ jobs:
           uv run manage.py compilemessages
           
           sudo systemctl restart gunicorn
-          sudo systemctl restart nginx
           
           echo "Deployment successful!"
