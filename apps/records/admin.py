@@ -16,7 +16,7 @@ class TrackInline(admin.TabularInline):
 
     model = Track
     extra = 0
-    readonly_fields = ("position", "title", "duration")
+    readonly_fields = ("position", "title", "duration", "youtube_url")
     can_delete = False
 
 
