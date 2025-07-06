@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "solo",  # https://github.com/lazybird/django-solo
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
+    "core",
     "records",
 ]
 
