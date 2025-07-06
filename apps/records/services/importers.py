@@ -162,6 +162,6 @@ class DiscogsReleaseImporter:
                 defaults={
                     "title": track.title,
                     "duration": track.duration,
-                    "url": track_url,
+                    "youtube_url": track_url,
                 },
             )
