@@ -46,8 +46,7 @@ class DiscogsImageDownloader:
             response.raise_for_status()
 
             filename = DiscogsConstants.IMAGE_FILENAME_TEMPLATE.format(
-                discogs_id=record.discogs_id,
-                format=DiscogsConstants.IMAGE_FORMAT
+                discogs_id=record.discogs_id, format=DiscogsConstants.IMAGE_FORMAT
             )
             record.cover_image.save(filename, ContentFile(response.content))
             return True

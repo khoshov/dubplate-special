@@ -86,7 +86,9 @@ class DiscogsAPIClient:
             logger.error(f"Discogs API error: {str(e)}")
             raise
 
-    def search_release(self, query: str, search_type: str) -> Optional[discogs_client.Release]:
+    def search_release(
+        self, query: str, search_type: str
+    ) -> Optional[discogs_client.Release]:
         """Универсальный поиск релиза.
 
         Args:
@@ -106,7 +108,9 @@ class DiscogsAPIClient:
             return release
         return None
 
-    def search_release_by_barcode(self, barcode: str) -> Optional[discogs_client.Release]:
+    def search_release_by_barcode(
+        self, barcode: str
+    ) -> Optional[discogs_client.Release]:
         """Ищет релиз по штрих-коду.
 
         Args:

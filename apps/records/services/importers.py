@@ -29,11 +29,11 @@ class DiscogsReleaseImporter:
         self.image_downloader = image_downloader
 
     def import_release_by_identifier(
-            self,
-            identifier: str,
-            identifier_type: str,
-            record: Record,
-            save_image: bool = True
+        self,
+        identifier: str,
+        identifier_type: str,
+        record: Record,
+        save_image: bool = True,
     ) -> Optional[Record]:
         """Универсальный метод импорта релиза.
 
@@ -64,12 +64,12 @@ class DiscogsReleaseImporter:
         except Exception as e:
             logger.error(
                 f"Import error for {identifier_type} {identifier}: {str(e)}",
-                exc_info=True
+                exc_info=True,
             )
             return None
 
     def import_release_by_barcode(
-            self, barcode: str, record: Record, save_image: bool = True
+        self, barcode: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
         """Импортирует релиз по штрих-коду в модель Record.
 
@@ -82,14 +82,11 @@ class DiscogsReleaseImporter:
             Optional[Record]: Заполненная модель Record или None при ошибке.
         """
         return self.import_release_by_identifier(
-            barcode,
-            DiscogsConstants.IDENTIFIER_BARCODE,
-            record,
-            save_image
+            barcode, DiscogsConstants.IDENTIFIER_BARCODE, record, save_image
         )
 
     def import_release_by_catalog_number(
-            self, catalog_number: str, record: Record, save_image: bool = True
+        self, catalog_number: str, record: Record, save_image: bool = True
     ) -> Optional[Record]:
         """Импортирует релиз по каталожному номеру в модель Record.
 
@@ -102,14 +99,11 @@ class DiscogsReleaseImporter:
             Optional[Record]: Заполненная модель Record или None при ошибке.
         """
         return self.import_release_by_identifier(
-            catalog_number,
-            DiscogsConstants.IDENTIFIER_CATALOG,
-            record,
-            save_image
+            catalog_number, DiscogsConstants.IDENTIFIER_CATALOG, record, save_image
         )
 
     def _import_release_data(
-            self, release, record: Record, save_image: bool = True
+        self, release, record: Record, save_image: bool = True
     ) -> Optional[Record]:
         """Общий метод для импорта данных релиза.
 
@@ -126,10 +120,10 @@ class DiscogsReleaseImporter:
 
         # ВАЖНО: Проверяем все возможные дубликаты перед сохранением
         existing_record = self._find_existing_record(
-            discogs_id=release_data['discogs_id'],
-            barcode=release_data.get('barcode'),
-            catalog_number=release_data.get('catalog_number'),
-            exclude_pk=record.pk
+            discogs_id=release_data["discogs_id"],
+            barcode=release_data.get("barcode"),
+            catalog_number=release_data.get("catalog_number"),
+            exclude_pk=record.pk,
         )
 
         if existing_record:
@@ -160,12 +154,18 @@ class DiscogsReleaseImporter:
         except IntegrityError as e:
             logger.error(f"IntegrityError during import: {str(e)}")
             # Пытаемся найти конфликтующую запись
-            if 'discogs_id' in str(e):
-                existing = Record.objects.filter(discogs_id=release_data['discogs_id']).first()
-            elif 'catalog_number' in str(e):
-                existing = Record.objects.filter(catalog_number=release_data['catalog_number']).first()
-            elif 'barcode' in str(e):
-                existing = Record.objects.filter(barcode=release_data['barcode']).first()
+            if "discogs_id" in str(e):
+                existing = Record.objects.filter(
+                    discogs_id=release_data["discogs_id"]
+                ).first()
+            elif "catalog_number" in str(e):
+                existing = Record.objects.filter(
+                    catalog_number=release_data["catalog_number"]
+                ).first()
+            elif "barcode" in str(e):
+                existing = Record.objects.filter(
+                    barcode=release_data["barcode"]
+                ).first()
             else:
                 existing = None
 
@@ -192,30 +192,30 @@ class DiscogsReleaseImporter:
             dict: Словарь с данными релиза.
         """
         data = {
-            'discogs_id': release.id,
-            'title': release.title,
-            'year': getattr(release, 'year', None),
-            'country': getattr(release, 'country', None),
-            'notes': getattr(release, 'notes', None),
-            'catalog_number': release.labels[0].catno if release.labels else None,
-            'barcode': None
+            "discogs_id": release.id,
+            "title": release.title,
+            "year": getattr(release, "year", None),
+            "country": getattr(release, "country", None),
+            "notes": getattr(release, "notes", None),
+            "catalog_number": release.labels[0].catno if release.labels else None,
+            "barcode": None,
         }
 
         # Извлекаем barcode из identifiers
-        if hasattr(release, 'identifiers'):
+        if hasattr(release, "identifiers"):
             for identifier in release.identifiers:
-                if identifier.type == 'Barcode' and identifier.value:
-                    data['barcode'] = identifier.value
+                if identifier.type == "Barcode" and identifier.value:
+                    data["barcode"] = identifier.value
                     break
 
         return data
 
     def _find_existing_record(
-            self,
-            discogs_id: int = None,
-            barcode: str = None,
-            catalog_number: str = None,
-            exclude_pk: int = None
+        self,
+        discogs_id: int = None,
+        barcode: str = None,
+        catalog_number: str = None,
+        exclude_pk: int = None,
     ) -> Optional[Record]:
         """Ищет существующую запись по любому из идентификаторов.
 
@@ -263,22 +263,28 @@ class DiscogsReleaseImporter:
         updated = False
 
         # Обновляем barcode если его нет
-        if not record.barcode and release_data.get('barcode'):
-            record.barcode = release_data['barcode']
+        if not record.barcode and release_data.get("barcode"):
+            record.barcode = release_data["barcode"]
             updated = True
-            logger.info(f"Updated barcode for existing record: {release_data['barcode']}")
+            logger.info(
+                f"Updated barcode for existing record: {release_data['barcode']}"
+            )
 
         # Обновляем catalog_number если его нет
-        if not record.catalog_number and release_data.get('catalog_number'):
-            record.catalog_number = release_data['catalog_number']
+        if not record.catalog_number and release_data.get("catalog_number"):
+            record.catalog_number = release_data["catalog_number"]
             updated = True
-            logger.info(f"Updated catalog_number for existing record: {release_data['catalog_number']}")
+            logger.info(
+                f"Updated catalog_number for existing record: {release_data['catalog_number']}"
+            )
 
         # Обновляем discogs_id если его нет
-        if not record.discogs_id and release_data.get('discogs_id'):
-            record.discogs_id = release_data['discogs_id']
+        if not record.discogs_id and release_data.get("discogs_id"):
+            record.discogs_id = release_data["discogs_id"]
             updated = True
-            logger.info(f"Updated discogs_id for existing record: {release_data['discogs_id']}")
+            logger.info(
+                f"Updated discogs_id for existing record: {release_data['discogs_id']}"
+            )
 
         if updated:
             try:
@@ -302,9 +308,13 @@ class DiscogsReleaseImporter:
         record.discogs_id = release.id
 
         # Также пытаемся получить barcode из identifiers
-        if hasattr(release, 'identifiers'):
+        if hasattr(release, "identifiers"):
             for identifier in release.identifiers:
-                if identifier.type == 'Barcode' and identifier.value and not record.barcode:
+                if (
+                    identifier.type == "Barcode"
+                    and identifier.value
+                    and not record.barcode
+                ):
                     record.barcode = identifier.value
                     break
 

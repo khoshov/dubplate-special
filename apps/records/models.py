@@ -137,6 +137,8 @@ class Record(TimeStampedModel):
     catalog_number = models.CharField(
         max_length=50,
         unique=True,
+        null=True,
+        blank=True,
         verbose_name=_("Catalog number"),
     )
     barcode = models.CharField(

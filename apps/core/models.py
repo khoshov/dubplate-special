@@ -5,18 +5,12 @@ from django.db import models
 
 
 class CurrencyRate(SingletonModel, TimeStampedModel):
-    dollar_value = models.FloatField(
-        default=80.0,
-        verbose_name="Курс доллара к рублю"
-    )
+    dollar_value = models.FloatField(default=80.0, verbose_name="Курс доллара к рублю")
     dollar_auto_update = models.BooleanField(
         default=True,
         verbose_name="Автообновление Доллара",
     )
-    euro_value = models.FloatField(
-        default=100.0,
-        verbose_name="Курс евро к рублю"
-    )
+    euro_value = models.FloatField(default=100.0, verbose_name="Курс евро к рублю")
     euro_auto_update = models.BooleanField(
         default=True,
         verbose_name="Автообновление Евро",

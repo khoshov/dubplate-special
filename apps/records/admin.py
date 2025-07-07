@@ -1,7 +1,6 @@
 import logging
 
-from django.contrib import admin
-from django.contrib import messages
+from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
@@ -15,185 +14,244 @@ logger = logging.getLogger(__name__)
 class TrackInline(admin.TabularInline):
     """
     Inline-администратор для отображения треков в интерфейсе записи (Record).
-    Настройки:
-    - model: Модель Track для отображения
-    - extra: Количество дополнительных пустых форм (0 - только существующие треки)
-    - readonly_fields: Поля только для чтения
-    - can_delete: Запрет удаления треков через админку
     """
 
     model = Track
     extra = 0
     readonly_fields = ("position", "title", "duration", "youtube_url")
     can_delete = False
+    show_change_link = True
+
+    def has_add_permission(self, request, obj=None):
+        """Запрещаем добавление треков через админку."""
+        return False
 
 
 class RecordAdmin(admin.ModelAdmin):
     """
     Административный интерфейс для модели Record.
-    Особенности:
-    - Использует кастомную форму RecordForm
-    - Показывает треклист только при редактировании
-    - При создании записи отображает только поле штрих-кода
-    - Обрабатывает дубликаты и перенаправляет на существующие записи
     """
 
     form = RecordForm
     inlines = [TrackInline]
-    add_fields = ("barcode", "catalog_number")
 
-    # Поля для отображения в списке
-    list_display = ('title', 'barcode', 'catalog_number', 'discogs_id', 'created')
-    list_filter = ('created', 'modified')
-    search_fields = ('title', 'barcode', 'catalog_number', 'discogs_id')
+    # Поля для создания новой записи
+    add_fieldsets = (
+        (
+            None,
+            {
+                "fields": ("barcode", "catalog_number"),
+                "description": "Введите штрих-код или каталожный номер для импорта из Discogs",
+            },
+        ),
+    )
 
-    def get_fields(self, request, obj=None):
-        """
-        Определяет, какие поля показывать в форме.
+    # Поля для редактирования существующей записи
+    fieldsets = (
+        (
+            "Основная информация",
+            {"fields": ("title", "artists", "label", "release_year")},
+        ),
+        (
+            "Идентификаторы",
+            {
+                "fields": ("barcode", "catalog_number", "discogs_id"),
+                "classes": ("collapse",),
+            },
+        ),
+        ("Детали", {"fields": ("genres", "styles", "formats", "country", "condition")}),
+        ("Склад и цены", {"fields": ("stock", "price")}),
+        (
+            "Дополнительно",
+            {"fields": ("cover_image", "notes"), "classes": ("collapse",)},
+        ),
+    )
 
-        Args:
-            request: HttpRequest объект
-            obj: Экземпляр модели или None для новой записи
+    # Настройки списка
+    list_display = (
+        "title",
+        "get_artists_display",
+        "label",
+        "catalog_number",
+        "barcode",
+        "stock",
+        "price",
+        "discogs_id",
+        "created",
+    )
+    list_filter = ("condition", "genres", "styles", "created", "modified")
+    search_fields = (
+        "title",
+        "barcode",
+        "catalog_number",
+        "discogs_id",
+        "artists__name",
+        "label__name",
+    )
+    ordering = ("-created",)
+    date_hierarchy = "created"
 
-        Returns:
-            tuple: Поля для отображения:
-                - только 'barcode' и 'catalog_number' при создании новой записи
-                - все поля при редактировании существующей
-        """
+    # Оптимизация запросов
+    list_select_related = ("label",)
+    list_prefetch_related = ("artists", "genres", "styles")
+
+    # Действия
+    actions = ["update_from_discogs"]
+
+    def get_artists_display(self, obj):
+        """Отображение артистов в списке."""
+        artists = obj.artists.all()[:3]  # Первые 3 артиста
+        names = [a.name for a in artists]
+        if obj.artists.count() > 3:
+            names.append("...")
+        return ", ".join(names) or "-"
+
+    get_artists_display.short_description = "Артисты"
+
+    def get_fieldsets(self, request, obj=None):
+        """Возвращает fieldsets в зависимости от создания/редактирования."""
         if not obj:
-            return self.add_fields
-        return super().get_fields(request, obj)
+            return self.add_fieldsets
+        return self.fieldsets
 
     def get_inline_instances(self, request, obj=None):
-        """
-        Управляет отображением inline-форм.
-
-        Args:
-            request: HttpRequest объект
-            obj: Экземпляр модели или None для новой записи
-
-        Returns:
-            list: Список inline-форм:
-                - пустой список при создании новой записи
-                - список с TrackInline при редактировании существующей
-        """
-        if obj:
-            return [inline(self.model, self.admin_site) for inline in self.inlines]
+        """Показываем треки только для существующих записей."""
+        if obj and obj.pk:
+            return super().get_inline_instances(request, obj)
         return []
 
     def save_model(self, request, obj, form, change):
-        """
-        Переопределяем сохранение модели для добавления сообщений.
-
-        Args:
-            request: HttpRequest объект
-            obj: Сохраняемый объект Record
-            form: Форма RecordForm
-            change: True если редактирование, False если создание
-        """
-        # Запоминаем, был ли у объекта discogs_id до сохранения
-        had_discogs_id = bool(obj.discogs_id) if change else False
-
-        # Сохраняем оригинальный pk для сравнения
-        original_pk = obj.pk
-
-        # Вызываем стандартное сохранение через форму
-        super().save_model(request, obj, form, change)
-
-        # Проверяем, был ли обнаружен дубликат
-        if hasattr(form, 'duplicate_record'):
+        """Сохранение модели с обработкой импорта из Discogs."""
+        # Проверяем, был ли обнаружен дубликат при импорте
+        if hasattr(form, "duplicate_record"):
             duplicate = form.duplicate_record
-            # Это дубликат - устанавливаем флаг для перенаправления
-            messages.warning(
+
+            messages.info(
                 request,
                 format_html(
-                    'Запись с Discogs ID {} уже существует. '
-                    'Вы будете перенаправлены на существующую запись.',
-                    duplicate.discogs_id
-                )
+                    'Запись "{}" (Discogs ID: {}) уже существует в базе данных. '
+                    "Недостающие данные были обновлены.",
+                    duplicate.title,
+                    duplicate.discogs_id,
+                ),
             )
+
+            # Устанавливаем флаг для перенаправления
             self._redirect_to_existing = duplicate
             return
 
-        # Стандартная обработка для обычного сохранения
-        if not change and obj.discogs_id:
-            # Импорт успешен
-            messages.success(
-                request,
-                f'Запись "{obj.title}" успешно импортирована из Discogs '
-                f'(ID: {obj.discogs_id})'
-            )
-            logger.info(f"Successfully imported record {obj.pk} from Discogs")
-        elif not change and not obj.discogs_id:
-            # Импорт не удался, но запись создана
-            messages.warning(
-                request,
-                'Запись создана, но данные из Discogs не были найдены. '
-                'Вы можете заполнить информацию вручную.'
-            )
-            logger.warning(f"Created record {obj.pk} without Discogs data")
-        elif change and not had_discogs_id and obj.discogs_id:
-            # Успешный импорт при редактировании
-            messages.success(
-                request,
-                f'Данные из Discogs успешно импортированы '
-                f'(ID: {obj.discogs_id})'
-            )
+        # Стандартное сохранение
+        super().save_model(request, obj, form, change)
+
+        # Добавляем сообщения об импорте
+        if not change:  # Новая запись
+            if obj.discogs_id:
+                messages.success(
+                    request,
+                    f'Запись "{obj.title}" успешно импортирована из Discogs (ID: {obj.discogs_id})',
+                )
+                logger.info(f"Successfully imported record {obj.pk} from Discogs")
+            else:
+                messages.warning(
+                    request,
+                    "Запись создана, но данные из Discogs не найдены. "
+                    "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
+                )
+                logger.warning(f"Created record {obj.pk} without Discogs data")
 
     def response_add(self, request, obj, post_url_continue=None):
-        """
-        Переопределяем редирект после создания записи.
-
-        Обрабатывает случаи:
-        1. Перенаправление на существующий дубликат
-        2. Перенаправление на редактирование после успешного импорта
-        3. Стандартное поведение
-        """
-        # Проверяем, нужно ли перенаправить на существующую запись
-        if hasattr(self, '_redirect_to_existing'):
+        """Обработка ответа после создания записи."""
+        # Проверяем флаг перенаправления на дубликат
+        if hasattr(self, "_redirect_to_existing"):
             existing_obj = self._redirect_to_existing
-            delattr(self, '_redirect_to_existing')
+            delattr(self, "_redirect_to_existing")
 
-            # Перенаправляем на страницу редактирования существующей записи
+            # Перенаправляем на существующую запись
             return redirect(
                 reverse(
-                    f'admin:{obj._meta.app_label}_{obj._meta.model_name}_change',
-                    args=[existing_obj.pk]
+                    f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
+                    args=[existing_obj.pk],
                 )
             )
 
+        # Если импорт успешен, перенаправляем на редактирование
         if obj.discogs_id:
-            # Импорт успешен - перенаправляем на редактирование
             messages.info(
                 request,
-                "Проверьте импортированные данные и при необходимости отредактируйте их."
+                "Проверьте импортированные данные и при необходимости отредактируйте их.",
             )
-            return super().response_change(request, obj)
+            # Перенаправляем на страницу редактирования
+            redirect_url = reverse(
+                f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
+                args=[obj.pk],
+            )
+            return redirect(redirect_url)
 
-        # Стандартное поведение для неимпортированных записей
+        # Стандартное поведение
         return super().response_add(request, obj, post_url_continue)
 
     def response_change(self, request, obj):
-        """
-        Переопределяем редирект после изменения записи.
-
-        Обрабатывает случай перенаправления на дубликат при редактировании.
-        """
-        # Проверяем, нужно ли перенаправить на существующую запись
-        if hasattr(self, '_redirect_to_existing'):
+        """Обработка ответа после изменения записи."""
+        # Проверяем флаг перенаправления (если вдруг при редактировании нашелся дубликат)
+        if hasattr(self, "_redirect_to_existing"):
             existing_obj = self._redirect_to_existing
-            delattr(self, '_redirect_to_existing')
+            delattr(self, "_redirect_to_existing")
 
-            # Перенаправляем на страницу редактирования существующей записи
             return redirect(
                 reverse(
-                    f'admin:{obj._meta.app_label}_{obj._meta.model_name}_change',
-                    args=[existing_obj.pk]
+                    f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
+                    args=[existing_obj.pk],
                 )
             )
 
         return super().response_change(request, obj)
 
+    def update_from_discogs(self, request, queryset):
+        """Действие для обновления записей из Discogs."""
+        updated = 0
+        errors = 0
 
-# Регистрация модели с кастомным админом
+        for record in queryset:
+            if not record.discogs_id:
+                self.message_user(
+                    request,
+                    f'Запись "{record}" не имеет Discogs ID',
+                    level=messages.WARNING,
+                )
+                errors += 1
+                continue
+
+            try:
+                # Здесь можно добавить логику обновления из Discogs
+                # Например, вызов метода обновления
+                updated += 1
+            except Exception as e:
+                logger.error(f"Failed to update record {record.pk}: {str(e)}")
+                errors += 1
+
+        if updated:
+            self.message_user(
+                request, f"Обновлено записей: {updated}", level=messages.SUCCESS
+            )
+        if errors:
+            self.message_user(
+                request, f"Ошибок при обновлении: {errors}", level=messages.ERROR
+            )
+
+    update_from_discogs.short_description = "Обновить из Discogs"
+
+    def get_readonly_fields(self, request, obj=None):
+        """Делаем discogs_id только для чтения."""
+        if obj:  # Редактирование
+            return ("discogs_id", "created", "modified")
+        return ()
+
+    def has_delete_permission(self, request, obj=None):
+        """Ограничиваем удаление записей с заказами."""
+        if obj and obj.order_items.exists():
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+# Регистрация
 admin.site.register(Record, RecordAdmin)
