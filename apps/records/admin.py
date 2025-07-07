@@ -7,6 +7,7 @@ from django.utils.html import format_html
 
 from .forms import RecordForm
 from .models import Record, Track
+from .services.discogs_service import DiscogsService
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,7 @@ class RecordAdmin(admin.ModelAdmin):
         """Действие для обновления записей из Discogs."""
         updated = 0
         errors = 0
+        service = DiscogsService()  # Создаем экземпляр сервиса
 
         for record in queryset:
             if not record.discogs_id:
@@ -222,23 +224,42 @@ class RecordAdmin(admin.ModelAdmin):
                 continue
 
             try:
-                # Здесь можно добавить логику обновления из Discogs
-                # Например, вызов метода обновления
-                updated += 1
+                # Получаем релиз из Discogs по ID
+                release = service.api_client._make_request(
+                    service.api_client.client.release, record.discogs_id
+                )
+
+                if release:
+                    # Обновляем данные записи
+                    service.importer._update_record(release, record, save_image=True)
+                    updated += 1
+                    self.message_user(
+                        request,
+                        f'Запись "{record}" успешно обновлена',
+                        level=messages.SUCCESS,
+                    )
+                else:
+                    self.message_user(
+                        request,
+                        f'Не удалось получить данные для записи "{record}" из Discogs',
+                        level=messages.WARNING,
+                    )
+                    errors += 1
             except Exception as e:
                 logger.error(f"Failed to update record {record.pk}: {str(e)}")
+                self.message_user(
+                    request,
+                    f'Ошибка при обновлении записи "{record}": {str(e)}',
+                    level=messages.ERROR,
+                )
                 errors += 1
 
-        if updated:
-            self.message_user(
-                request, f"Обновлено записей: {updated}", level=messages.SUCCESS
-            )
-        if errors:
-            self.message_user(
-                request, f"Ошибок при обновлении: {errors}", level=messages.ERROR
-            )
-
-    update_from_discogs.short_description = "Обновить из Discogs"
+        # Итоговое сообщение
+        self.message_user(
+            request,
+            f"Обновлено записей: {updated}, ошибок: {errors}",
+            level=messages.INFO,
+        )
 
     def get_readonly_fields(self, request, obj=None):
         """Делаем discogs_id только для чтения."""
