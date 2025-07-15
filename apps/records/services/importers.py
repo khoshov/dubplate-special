@@ -137,15 +137,31 @@ class DiscogsReleaseImporter:
             self.image_downloader.download_cover(release, record)
 
     def _update_tracks(self, record: Record, tracklist):
-        """Обновляет треки для записи.
+        """Обновляет треки для записи, включая ссылки на видео.
 
         Args:
             record: Экземпляр модели Record.
             tracklist: Список треков из Discogs API.
         """
+        # Получаем все видео релиза
+        release_videos = self.api_client.get_release_videos(record.discogs_id) or []
+
         for track in tracklist:
+            track_url = None
+
+            # Пытаемся найти видео для этого трека
+            for video in release_videos:
+                # Простая проверка по названию трека
+                if track.title.lower() in video["title"].lower():
+                    track_url = video["url"]
+                    break
+
             Track.objects.update_or_create(
                 record=record,
                 position=track.position,
-                defaults={"title": track.title, "duration": track.duration},
+                defaults={
+                    "title": track.title,
+                    "duration": track.duration,
+                    "youtube_url": track_url,
+                },
             )

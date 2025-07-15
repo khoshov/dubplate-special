@@ -105,3 +105,27 @@ class DiscogsAPIClient:
             self._make_request(release.refresh)  # Получение полных данных
             return release
         return None
+
+    def get_release_videos(self, release_id: int) -> Optional[list]:
+        """Получает список видео для релиза.
+
+        Args:
+            release_id: ID релиза в Discogs.
+
+        Returns:
+            Optional[list]: Список словарей с видео или None при ошибке.
+        """
+        try:
+            release = self._make_request(self.client.release, release_id)
+            if hasattr(release, "videos") and release.videos:
+                return [
+                    {
+                        "title": video.title,
+                        "url": video.url,
+                    }
+                    for video in release.videos
+                ]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting videos for release {release_id}: {str(e)}")
+            return None

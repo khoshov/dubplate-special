@@ -65,9 +65,11 @@ INSTALLED_APPS = [
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
     "rest_framework.authtoken",  # Token authentication
+    "solo",  # https://github.com/lazybird/django-solo
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
     "accounts",
+    "core",
     "records",
 ]
 

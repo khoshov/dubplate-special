@@ -174,6 +174,13 @@ class Track(TimeStampedModel):
     duration = models.CharField(
         max_length=10, null=True, blank=True, verbose_name=_("Duration")
     )
+    youtube_url = models.URLField(
+        max_length=512,
+        null=True,
+        blank=True,
+        verbose_name=_("Track URL"),
+        help_text=_("URL to track (YouTube)"),
+    )
 
     def __str__(self):
         return f"{self.position}. {self.title}"
