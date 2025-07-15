@@ -44,6 +44,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     def validate_phone(self, value):
         if value and len(value) < 10:
             raise serializers.ValidationError("Номер телефона должен содержать минимум 10 цифр")
+        
+        # Проверяем уникальность телефона при обновлении
+        if value and hasattr(self, 'instance') and self.instance:
+            existing_user = User.objects.filter(phone=value).exclude(pk=self.instance.pk).first()
+            if existing_user:
+                raise serializers.ValidationError("Пользователь с таким номером телефона уже существует")
+        
         return value
 
 
@@ -134,7 +141,8 @@ class UserLoginSerializer(serializers.Serializer):
         if email and password:
             try:
                 user = User.objects.get(email=email)
-                user = authenticate(username=user.username, password=password)
+                # Используем email для аутентификации, так как USERNAME_FIELD = 'email'
+                user = authenticate(username=email, password=password)
                 if not user:
                     raise serializers.ValidationError("Неверный email или пароль")
                 if not user.is_active:
@@ -145,6 +153,100 @@ class UserLoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Необходимо указать email и пароль")
 
         attrs['user'] = user
+        return attrs
+
+
+class UniversalLoginSerializer(serializers.Serializer):
+    """
+    Универсальный сериализатор для входа по email или телефону
+    """
+    identifier = serializers.CharField(
+        help_text="Email или номер телефона"
+    )
+    password = serializers.CharField(
+        required=False,
+        help_text="Пароль (для входа по email)"
+    )
+    code = serializers.CharField(
+        max_length=6,
+        min_length=6,
+        required=False,
+        help_text="SMS код (для входа по телефону)"
+    )
+
+    def validate_identifier(self, value):
+        """Валидация идентификатора - может быть email или телефон"""
+        value = value.strip()
+        
+        # Проверяем, является ли это email
+        if '@' in value:
+            try:
+                serializers.EmailField().run_validation(value)
+                return value
+            except:
+                raise serializers.ValidationError("Неверный формат email")
+        else:
+            # Валидируем как номер телефона
+            is_valid, result = sms_service.validate_russian_phone(value)
+            if not is_valid:
+                raise serializers.ValidationError(result)
+            return result
+
+    def validate(self, attrs):
+        identifier = attrs.get('identifier')
+        password = attrs.get('password')
+        code = attrs.get('code')
+
+        if not identifier:
+            raise serializers.ValidationError("Необходимо указать email или номер телефона")
+
+        # Определяем тип входа
+        is_email = '@' in identifier
+        
+        if is_email:
+            # Вход по email/пароль
+            if not password:
+                raise serializers.ValidationError("Для входа по email необходимо указать пароль")
+            
+            try:
+                user = User.objects.get(email=identifier)
+                # Используем email для аутентификации, так как USERNAME_FIELD = 'email'
+                user = authenticate(username=identifier, password=password)
+                if not user:
+                    raise serializers.ValidationError("Неверный email или пароль")
+                if not user.is_active:
+                    raise serializers.ValidationError("Аккаунт деактивирован")
+            except User.DoesNotExist:
+                raise serializers.ValidationError("Неверный email или пароль")
+        else:
+            # Вход по телефону/SMS код
+            if not code:
+                raise serializers.ValidationError("Для входа по телефону необходимо указать SMS код")
+            
+            # Проверяем SMS код
+            try:
+                verification = SMSVerification.objects.filter(
+                    phone_number=identifier,
+                    is_verified=False
+                ).latest('created_at')
+            except SMSVerification.DoesNotExist:
+                raise serializers.ValidationError("SMS код не найден или уже использован")
+            
+            # Проверяем код
+            is_valid, message = verification.verify_code(code)
+            if not is_valid:
+                raise serializers.ValidationError(message)
+            
+            # Ищем пользователя по номеру телефона
+            try:
+                user = User.objects.get(phone=identifier)
+                if not user.is_active:
+                    raise serializers.ValidationError("Аккаунт деактивирован")
+            except User.DoesNotExist:
+                raise serializers.ValidationError("Пользователь с таким номером не найден")
+
+        attrs['user'] = user
+        attrs['login_type'] = 'email' if is_email else 'phone'
         return attrs
 
 
@@ -230,6 +332,20 @@ class SendSMSSerializer(serializers.Serializer):
     
     def save(self):
         phone_number = self.validated_data['phone_number']
+        
+        # Проверяем, есть ли активная верификация
+        try:
+            existing_verification = SMSVerification.objects.filter(
+                phone_number=phone_number,
+                is_verified=False
+            ).latest('created_at')
+            
+            # Если есть активная верификация и прошло меньше минуты, возвращаем ошибку
+            if not existing_verification.can_resend():
+                raise serializers.ValidationError("SMS уже отправлена. Повторить можно через 1 минуту")
+        except SMSVerification.DoesNotExist:
+            # Нет активной верификации - это нормально
+            pass
         
         # Создаем код верификации
         verification = SMSVerification.create_verification(phone_number)
@@ -341,7 +457,19 @@ class SMSRegistrationSerializer(VerifySMSSerializer):
         last_name = validated_data.get('last_name', '')
         
         # Генерируем username на основе номера телефона
-        username = f"user_{phone_number}"
+        phone_clean = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+        username_base = f"user_{phone_clean}"
+        username = username_base
+        
+        # Проверяем уникальность username
+        counter = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{username_base}_{counter}"
+            counter += 1
+        
+        # Если email не указан, генерируем фиктивный email на основе телефона
+        if not email:
+            email = f"{username}@phone.local"
         
         # Создаем пользователя
         user = User.objects.create_user(
@@ -404,4 +532,82 @@ class ResendSMSSerializer(serializers.Serializer):
             'message': message,
             'phone_number': phone_number,
             'expires_in': 300
+        }
+
+
+class UniversalSMSAuthSerializer(VerifySMSSerializer):
+    """
+    Универсальный сериализатор для SMS авторизации
+    Автоматически определяет нужно ли регистрировать пользователя или войти
+    """
+    email = serializers.EmailField(required=False, allow_blank=True)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    
+    def validate_email(self, value):
+        if value and User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Пользователь с таким email уже существует")
+        return value
+    
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        phone_number = attrs['phone_number']
+        
+        # Проверяем, есть ли пользователь с таким номером
+        user_exists = User.objects.filter(phone=phone_number).exists()
+        attrs['user_exists'] = user_exists
+        
+        if user_exists:
+            # Пользователь существует - получаем его
+            user = User.objects.get(phone=phone_number)
+            attrs['user'] = user
+        else:
+            # Пользователь не существует - подготавливаем данные для создания
+            attrs['user'] = None
+        
+        return attrs
+    
+    def save(self):
+        phone_number = self.validated_data['phone_number']
+        user_exists = self.validated_data['user_exists']
+        
+        if user_exists:
+            # Пользователь существует - просто возвращаем его
+            user = self.validated_data['user']
+            action = 'login'
+        else:
+            # Пользователь не существует - создаем нового
+            email = self.validated_data.get('email', '')
+            first_name = self.validated_data.get('first_name', '')
+            last_name = self.validated_data.get('last_name', '')
+            
+            # Генерируем username на основе номера телефона
+            phone_clean = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+            username_base = f"user_{phone_clean}"
+            username = username_base
+            
+            # Проверяем уникальность username
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{username_base}_{counter}"
+                counter += 1
+            
+            # Если email не указан, генерируем фиктивный
+            if not email:
+                email = f"{username}@phone.local"
+            
+            # Создаем пользователя
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                phone=phone_number,
+                first_name=first_name,
+                last_name=last_name
+            )
+            action = 'register'
+        
+        return {
+            'user': user,
+            'action': action,
+            'message': f'Пользователь успешно {"зарегистрирован" if action == "register" else "вошел"} через SMS'
         }

@@ -148,6 +148,18 @@ wheels = [
 ]
 
 [[package]]
+name = "django-solo"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/69/c550d3bf82c7b4e75295b2e13c41b8f15c8d63b9379ee7ce2f7b7615f919/django_solo-2.4.0.tar.gz", hash = "sha256:ec92dc00aec75034a3f93b3a85152e57c4b03d7987f8cfd0ea8a47cc6e3c2084", size = 13571, upload-time = "2024-10-19T13:09:09.971Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/3a/c5332bb9d3d58e2b6b7ed2a4c09ea2b0b1a8e3c5fe9d8169c0867922b6f4/django_solo-2.4.0-py3-none-any.whl", hash = "sha256:62e9c7d929620a61848515839833750ca142840051595cf5c8e617dcefc9e5cf", size = 16862, upload-time = "2024-10-19T13:09:08.465Z" },
+]
+
+[[package]]
 name = "djangorestframework"
 version = "3.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -187,6 +199,7 @@ dependencies = [
     { name = "django-environ" },
     { name = "django-extensions" },
     { name = "django-filter" },
+    { name = "django-solo" },
     { name = "djangorestframework" },
     { name = "drf-spectacular" },
     { name = "gunicorn" },
@@ -213,6 +226,7 @@ requires-dist = [
     { name = "django-environ", specifier = ">=0.12.0" },
     { name = "django-extensions", specifier = ">=4.1" },
     { name = "django-filter", specifier = ">=25.1" },
+    { name = "django-solo", specifier = ">=2.4.0" },
     { name = "djangorestframework", specifier = ">=3.16.0" },
     { name = "drf-spectacular", specifier = ">=0.28.0" },
     { name = "gunicorn", specifier = ">=23.0.0" },

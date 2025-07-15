@@ -16,13 +16,11 @@ from .serializers import (
     ChangePasswordSerializer,
     UserRegistrationSerializer,
     UserLoginSerializer,
+    UniversalLoginSerializer,
     OrderHistorySerializer,
     OrderStatusUpdateSerializer,
     SendSMSSerializer,
-    VerifySMSSerializer,
-    SMSLoginSerializer,
-    SMSRegistrationSerializer,
-    ResendSMSSerializer,
+    UniversalSMSAuthSerializer,
 )
 
 
@@ -106,6 +104,25 @@ class AuthViewSet(GenericViewSet):
                 'user': UserProfileSerializer(user).data,
                 'token': token.key,
                 'message': 'Успешный вход в систему'
+            }, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], serializer_class=UniversalLoginSerializer)
+    def universal_login(self, request):
+        """
+        Универсальный вход через email/пароль или телефон/SMS код
+        """
+        serializer = self.get_serializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+            login_type = serializer.validated_data['login_type']
+            login(request, user)
+            token, created = Token.objects.get_or_create(user=user)
+            return Response({
+                'user': UserProfileSerializer(user).data,
+                'token': token.key,
+                'login_type': login_type,
+                'message': f'Успешный вход через {login_type}'
             }, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -238,7 +255,12 @@ class OrderHistoryViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
 
 class SMSAuthViewSet(GenericViewSet):
     """
-    ViewSet для SMS аутентификации
+    Упрощенный ViewSet для SMS аутентификации
+    
+    Эндпоинты:
+    - send_code: отправка SMS кода (с автоматической переотправкой)
+    - auth: универсальная авторизация (автоматический вход/регистрация)
+    - check_phone: проверка существования номера телефона
     """
     permission_classes = [permissions.AllowAny]
 
@@ -246,6 +268,7 @@ class SMSAuthViewSet(GenericViewSet):
     def send_code(self, request):
         """
         Отправка SMS кода для верификации номера телефона
+        Автоматически поддерживает переотправку (если прошло больше 1 минуты)
         """
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
@@ -259,69 +282,28 @@ class SMSAuthViewSet(GenericViewSet):
                 )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=False, methods=['post'], serializer_class=VerifySMSSerializer)
-    def verify_code(self, request):
+    @action(detail=False, methods=['post'], serializer_class=UniversalSMSAuthSerializer)
+    def auth(self, request):
         """
-        Проверка SMS кода (без аутентификации)
-        """
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            return Response(
-                {'message': 'Код подтвержден успешно'}, 
-                status=status.HTTP_200_OK
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=False, methods=['post'], serializer_class=SMSLoginSerializer)
-    def login(self, request):
-        """
-        Вход через SMS для существующих пользователей
+        Универсальная SMS авторизация
+        Автоматически определяет нужно ли регистрировать пользователя или войти
         """
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.validated_data['user']
+            result = serializer.save()
+            user = result['user']
+            action = result['action']
+            
+            # Авторизуем пользователя
             login(request, user)
             token, created = Token.objects.get_or_create(user=user)
             
             return Response({
                 'user': UserProfileSerializer(user).data,
                 'token': token.key,
-                'message': 'Успешный вход через SMS'
-            }, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=False, methods=['post'], serializer_class=SMSRegistrationSerializer)
-    def register(self, request):
-        """
-        Регистрация через SMS для новых пользователей
-        """
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            token, created = Token.objects.get_or_create(user=user)
-            
-            return Response({
-                'user': UserProfileSerializer(user).data,
-                'token': token.key,
-                'message': 'Пользователь успешно зарегистрирован через SMS'
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=False, methods=['post'], serializer_class=ResendSMSSerializer)
-    def resend_code(self, request):
-        """
-        Повторная отправка SMS кода
-        """
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                result = serializer.save()
-                return Response(result, status=status.HTTP_200_OK)
-            except Exception as e:
-                return Response(
-                    {'error': str(e)}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                'action': action,
+                'message': result['message']
+            }, status=status.HTTP_200_OK if action == 'login' else status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['get'])
@@ -353,3 +335,4 @@ class SMSAuthViewSet(GenericViewSet):
             'user_exists': user_exists,
             'action': 'login' if user_exists else 'register'
         })
+

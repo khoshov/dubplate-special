@@ -8,7 +8,7 @@ import string
 
 class User(AbstractUser):
     email = models.EmailField(_('email address'), unique=True)
-    phone = models.CharField(_('phone number'), max_length=20, blank=True)
+    phone = models.CharField(_('phone number'), max_length=20, blank=True, null=True, db_index=True)
     birth_date = models.DateField(_('birth date'), null=True, blank=True)
     address = models.TextField(_('address'), blank=True)
     city = models.CharField(_('city'), max_length=100, blank=True)
@@ -29,6 +29,19 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+
+    def save(self, *args, **kwargs):
+        # Проверяем уникальность номера телефона, если он указан
+        if self.phone:
+            existing_user = User.objects.filter(phone=self.phone).exclude(pk=self.pk).first()
+            if existing_user:
+                raise ValueError(f"Пользователь с номером телефона {self.phone} уже существует")
+        
+        # Если телефон пустой, устанавливаем None вместо пустой строки
+        if not self.phone:
+            self.phone = None
+            
+        super().save(*args, **kwargs)
 
 
 class SMSVerification(models.Model):
