@@ -105,7 +105,16 @@ class OrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ["id", "name", "phone", "address", "status", "total_price", "items", "created"]
+        fields = [
+            "id",
+            "name",
+            "phone",
+            "address",
+            "status",
+            "total_price",
+            "items",
+            "created",
+        ]
         read_only_fields = ["id", "total_price", "created", "status"]
 
     def create(self, validated_data):
@@ -121,7 +130,11 @@ class OrderSerializer(serializers.ModelSerializer):
         try:
             with transaction.atomic():
                 # Присваиваем пользователя, если он аутентифицирован
-                user = self.context.get('request').user if self.context.get('request').user.is_authenticated else None
+                user = (
+                    self.context.get("request").user
+                    if self.context.get("request").user.is_authenticated
+                    else None
+                )
                 order = Order.objects.create(user=user, **validated_data)
                 total_price = 0
 
