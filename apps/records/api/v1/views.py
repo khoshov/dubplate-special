@@ -46,6 +46,7 @@ class StyleViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class OrderViewSet(viewsets.ModelViewSet):
+    queryset = Order.objects.all()
     serializer_class = OrderSerializer
     http_method_names = ["get", "post"]
     permission_classes = []
