@@ -46,13 +46,17 @@ class StyleViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class OrderViewSet(viewsets.ModelViewSet):
-    queryset = Order.objects.all()
     serializer_class = OrderSerializer
     http_method_names = ["get", "post"]
     permission_classes = []
 
+    def get_queryset(self):
+        if self.request.user.is_authenticated:
+            return Order.objects.filter(user=self.request.user)
+        return Order.objects.none()
+
     def get_object(self):
-        return get_object_or_404(self.queryset, pk=self.kwargs.get("pk"))
+        return get_object_or_404(self.get_queryset(), pk=self.kwargs.get("pk"))
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
