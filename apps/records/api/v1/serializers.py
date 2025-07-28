@@ -127,48 +127,44 @@ class OrderSerializer(serializers.ModelSerializer):
                 }
             )
 
-        try:
-            with transaction.atomic():
-                # Присваиваем пользователя, если он аутентифицирован
-                user = (
-                    self.context.get("request").user
-                    if self.context.get("request").user.is_authenticated
-                    else None
-                )
-                order = Order.objects.create(user=user, **validated_data)
-                total_price = 0
+        with transaction.atomic():
+            # Присваиваем пользователя, если он аутентифицирован
+            user = (
+                self.context.get("request").user
+                if self.context.get("request").user.is_authenticated
+                else None
+            )
+            order = Order.objects.create(user=user, **validated_data)
+            total_price = 0
 
-                for item_data in items_data:
-                    record = item_data["record"]
-                    quantity = item_data["quantity"]
+            for item_data in items_data:
+                record = item_data["record"]
+                quantity = item_data["quantity"]
 
-                    # Проверяем наличие на складе
-                    if record.stock < quantity:
-                        raise serializers.ValidationError(
-                            {
-                                "stock": [
-                                    f"Недостаточно '{record.title}' в наличии: "
-                                    f"доступно {record.stock}, заказано {quantity}"
-                                ]
-                            }
-                        )
-
-                    # Уменьшаем остаток и сохраняем
-                    record.stock -= quantity
-                    record.save()
-
-                    # Создаем позицию заказа с текущей ценой
-                    item = OrderItem.objects.create(
-                        order=order,
-                        record=record,
-                        price=record.price,
-                        quantity=quantity,
+                # Проверяем наличие на складе
+                if record.stock < quantity:
+                    raise serializers.ValidationError(
+                        {
+                            "stock": [
+                                f"Недостаточно '{record.title}' в наличии: "
+                                f"доступно {record.stock}, заказано {quantity}"
+                            ]
+                        }
                     )
-                    total_price += item.get_cost()
 
-                order.total_price = total_price
-                order.save()
-                return order
+                # Уменьшаем остаток и сохраняем
+                record.stock -= quantity
+                record.save()
 
-        except serializers.ValidationError:
-            order.delete()
+                # Создаем позицию заказа с текущей ценой
+                item = OrderItem.objects.create(
+                    order=order,
+                    record=record,
+                    price=record.price,
+                    quantity=quantity,
+                )
+                total_price += item.get_cost()
+
+            order.total_price = total_price
+            order.save()
+            return order
