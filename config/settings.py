@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     "accounts",
     "core",
     "records",
+    "orders",
 ]
 
 MIDDLEWARE = [

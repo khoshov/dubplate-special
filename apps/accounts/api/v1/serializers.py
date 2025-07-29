@@ -1,4 +1,3 @@
-from records.models import Order, OrderItem
 from rest_framework import serializers
 
 from django.contrib.auth import authenticate
@@ -266,78 +265,6 @@ class UniversalLoginSerializer(serializers.Serializer):
         attrs["user"] = user
         attrs["login_type"] = "email" if is_email else "phone"
         return attrs
-
-
-class OrderItemHistorySerializer(serializers.ModelSerializer):
-    record_title = serializers.CharField(source="record.title", read_only=True)
-    record_artists = serializers.SerializerMethodField()
-    record_cover_image = serializers.ImageField(
-        source="record.cover_image", read_only=True
-    )
-    total_cost = serializers.SerializerMethodField()
-
-    class Meta:
-        model = OrderItem
-        fields = [
-            "id",
-            "record_title",
-            "record_artists",
-            "record_cover_image",
-            "price",
-            "quantity",
-            "total_cost",
-        ]
-
-    def get_record_artists(self, obj):
-        return ", ".join([artist.name for artist in obj.record.artists.all()])
-
-    def get_total_cost(self, obj):
-        return obj.get_cost()
-
-
-class OrderHistorySerializer(serializers.ModelSerializer):
-    items = OrderItemHistorySerializer(many=True, read_only=True)
-    status_display = serializers.CharField(source="get_status_display", read_only=True)
-    status_color = serializers.SerializerMethodField()
-    items_count = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Order
-        fields = [
-            "id",
-            "name",
-            "phone",
-            "address",
-            "status",
-            "status_display",
-            "status_color",
-            "total_price",
-            "notes",
-            "items_count",
-            "items",
-            "created",
-            "modified",
-        ]
-
-    def get_status_color(self, obj):
-        return obj.get_status_display_color()
-
-    def get_items_count(self, obj):
-        return obj.items.count()
-
-
-class OrderStatusUpdateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Order
-        fields = ["status"]
-
-    def validate_status(self, value):
-        valid_statuses = [
-            choice[0] for choice in Order._meta.get_field("status").choices
-        ]
-        if value not in valid_statuses:
-            raise serializers.ValidationError("Недопустимый статус заказа")
-        return value
 
 
 class SendSMSSerializer(serializers.Serializer):
