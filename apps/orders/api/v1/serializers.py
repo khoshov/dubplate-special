@@ -8,7 +8,7 @@ from records.models import Record
 
 class OrderItemSerializer(serializers.HyperlinkedModelSerializer):
     id = serializers.PrimaryKeyRelatedField(
-        queryset=Record.objects.all(), write_only=True, source="record"
+        queryset=Record.objects.all(), source="record"
     )
     title = serializers.CharField(source="record.title", read_only=True)
 
