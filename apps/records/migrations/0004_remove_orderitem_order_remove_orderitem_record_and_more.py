@@ -4,24 +4,23 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('records', '0003_alter_order_options_order_notes_order_status_and_more'),
+        ("records", "0003_alter_order_options_order_notes_order_status_and_more"),
     ]
 
     operations = [
         migrations.RemoveField(
-            model_name='orderitem',
-            name='order',
+            model_name="orderitem",
+            name="order",
         ),
         migrations.RemoveField(
-            model_name='orderitem',
-            name='record',
+            model_name="orderitem",
+            name="record",
         ),
         migrations.DeleteModel(
-            name='Order',
+            name="Order",
         ),
         migrations.DeleteModel(
-            name='OrderItem',
+            name="OrderItem",
         ),
     ]

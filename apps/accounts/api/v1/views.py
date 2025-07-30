@@ -1,13 +1,12 @@
 from rest_framework import permissions, status
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
-from rest_framework.mixins import ListModelMixin, RetrieveModelMixin, UpdateModelMixin
+from rest_framework.mixins import RetrieveModelMixin, UpdateModelMixin
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet
 
 from django.contrib.auth import login, logout
-from django.shortcuts import get_object_or_404
 
 from accounts.models import User
 
@@ -167,6 +166,7 @@ class UserDetailView(APIView):
     def get(self, request):
         serializer = UserProfileSerializer(request.user)
         return Response(serializer.data)
+
 
 class SMSAuthViewSet(GenericViewSet):
     """

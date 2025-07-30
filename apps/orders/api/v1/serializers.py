@@ -1,9 +1,9 @@
+from records.models import Record
 from rest_framework import serializers
 
 from django.db import transaction
 
-from orders.models import  Order, OrderItem
-from records.models import Record
+from orders.models import Order, OrderItem
 
 
 class OrderItemSerializer(serializers.HyperlinkedModelSerializer):
