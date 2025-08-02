@@ -5,16 +5,19 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
 
-from .forms import RecordForm
-from .models import Record, Track
-from .services.discogs_service import DiscogsService
+from records.forms import RecordForm
+from records.models import Record, Track
+from records.services import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
 
 
 class TrackInline(admin.TabularInline):
-    """
-    Inline-администратор для отображения треков в интерфейсе записи (Record).
+    """Inline-администратор для треков.
+
+    Отображает треки записи в табличном виде.
+    Треки доступны только для чтения и не могут быть
+    добавлены через админку.
     """
 
     model = Track
@@ -24,13 +27,30 @@ class TrackInline(admin.TabularInline):
     show_change_link = True
 
     def has_add_permission(self, request, obj=None):
-        """Запрещаем добавление треков через админку."""
+        """Запрещает добавление треков через админку.
+
+        Треки импортируются только из Discogs.
+
+        Args:
+            request: HTTP запрос.
+            obj: Родительский объект (Record).
+
+        Returns:
+            False - добавление запрещено.
+        """
         return False
 
 
+@admin.register(Record)
 class RecordAdmin(admin.ModelAdmin):
-    """
-    Административный интерфейс для модели Record.
+    """Административный интерфейс для записей.
+
+    Интегрирован с Discogs для импорта и обновления данных.
+    При создании новой записи автоматически импортирует данные
+    из Discogs по штрих-коду или каталожному номеру.
+
+    Attributes:
+        record_service: Сервис для работы с записями.
     """
 
     form = RecordForm
@@ -64,7 +84,10 @@ class RecordAdmin(admin.ModelAdmin):
         ("Склад и цены", {"fields": ("stock", "price")}),
         (
             "Дополнительно",
-            {"fields": ("cover_image", "notes"), "classes": ("collapse",)},
+            {
+                "fields": ("cover_image", "notes"),
+                "classes": ("collapse",),
+            },
         ),
     )
 
@@ -99,9 +122,31 @@ class RecordAdmin(admin.ModelAdmin):
     # Действия
     actions = ["update_from_discogs"]
 
+    def __init__(self, *args, **kwargs):
+        """Инициализация админки.
+
+        Args:
+            *args: Позиционные аргументы.
+            **kwargs: Именованные аргументы.
+        """
+        super().__init__(*args, **kwargs)
+        # Инициализируем сервис
+        self.record_service = RecordService(
+            discogs_service=DiscogsService(), image_service=ImageService()
+        )
+
     def get_artists_display(self, obj):
-        """Отображение артистов в списке."""
-        artists = obj.artists.all()[:3]  # Первые 3 артиста
+        """Отображение артистов в списке.
+
+        Показывает первых трёх артистов, если больше - добавляет "...".
+
+        Args:
+            obj: Экземпляр Record.
+
+        Returns:
+            Строка с именами артистов.
+        """
+        artists = obj.artists.all()[:3]
         names = [a.name for a in artists]
         if obj.artists.count() > 3:
             names.append("...")
@@ -110,28 +155,55 @@ class RecordAdmin(admin.ModelAdmin):
     get_artists_display.short_description = "Артисты"
 
     def get_fieldsets(self, request, obj=None):
-        """Возвращает fieldsets в зависимости от создания/редактирования."""
+        """Возвращает fieldsets в зависимости от операции.
+
+        Args:
+            request: HTTP запрос.
+            obj: Экземпляр Record или None для новой записи.
+
+        Returns:
+            Кортеж fieldsets.
+        """
         if not obj:
             return self.add_fieldsets
         return self.fieldsets
 
     def get_inline_instances(self, request, obj=None):
-        """Показываем треки только для существующих записей."""
+        """Возвращает inline-формы.
+
+        Треки показываются только для существующих записей.
+
+        Args:
+            request: HTTP запрос.
+            obj: Экземпляр Record или None.
+
+        Returns:
+            Список inline-форм.
+        """
         if obj and obj.pk:
             return super().get_inline_instances(request, obj)
         return []
 
     def save_model(self, request, obj, form, change):
-        """Сохранение модели с обработкой импорта из Discogs."""
-        # Проверяем, был ли обнаружен дубликат при импорте
+        """Сохранение модели с обработкой импорта из Discogs.
+
+        При создании новой записи проверяет наличие дубликатов
+        и выводит соответствующие сообщения.
+
+        Args:
+            request: HTTP запрос.
+            obj: Сохраняемый объект.
+            form: Форма с данными.
+            change: True если редактирование, False если создание.
+        """
+        # Проверяем дубликат при импорте
         if hasattr(form, "duplicate_record"):
             duplicate = form.duplicate_record
 
             messages.info(
                 request,
                 format_html(
-                    'Запись "{}" (Discogs ID: {}) уже существует в базе данных. '
-                    "Недостающие данные были обновлены.",
+                    'Запись "{}" (Discogs ID: {}) уже существует в базе данных.',
                     duplicate.title,
                     duplicate.discogs_id,
                 ),
@@ -144,24 +216,34 @@ class RecordAdmin(admin.ModelAdmin):
         # Стандартное сохранение
         super().save_model(request, obj, form, change)
 
-        # Добавляем сообщения об импорте
-        if not change:  # Новая запись
+        # Сообщения об импорте для новых записей
+        if not change:
             if obj.discogs_id:
                 messages.success(
                     request,
                     f'Запись "{obj.title}" успешно импортирована из Discogs (ID: {obj.discogs_id})',
                 )
-                logger.info(f"Successfully imported record {obj.pk} from Discogs")
             else:
                 messages.warning(
                     request,
                     "Запись создана, но данные из Discogs не найдены. "
                     "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
                 )
-                logger.warning(f"Created record {obj.pk} without Discogs data")
 
     def response_add(self, request, obj, post_url_continue=None):
-        """Обработка ответа после создания записи."""
+        """Обработка ответа после создания записи.
+
+        Перенаправляет на существующую запись при обнаружении дубликата
+        или на страницу редактирования при успешном импорте.
+
+        Args:
+            request: HTTP запрос.
+            obj: Созданный объект.
+            post_url_continue: URL для продолжения.
+
+        Returns:
+            HTTP ответ.
+        """
         # Проверяем флаг перенаправления на дубликат
         if hasattr(self, "_redirect_to_existing"):
             existing_obj = self._redirect_to_existing
@@ -181,37 +263,23 @@ class RecordAdmin(admin.ModelAdmin):
                 request,
                 "Проверьте импортированные данные и при необходимости отредактируйте их.",
             )
-            # Перенаправляем на страницу редактирования
             redirect_url = reverse(
                 f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
                 args=[obj.pk],
             )
             return redirect(redirect_url)
 
-        # Стандартное поведение
         return super().response_add(request, obj, post_url_continue)
 
-    def response_change(self, request, obj):
-        """Обработка ответа после изменения записи."""
-        # Проверяем флаг перенаправления (если вдруг при редактировании нашелся дубликат)
-        if hasattr(self, "_redirect_to_existing"):
-            existing_obj = self._redirect_to_existing
-            delattr(self, "_redirect_to_existing")
-
-            return redirect(
-                reverse(
-                    f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
-                    args=[existing_obj.pk],
-                )
-            )
-
-        return super().response_change(request, obj)
-
     def update_from_discogs(self, request, queryset):
-        """Действие для обновления записей из Discogs."""
+        """Массовое обновление записей из Discogs.
+
+        Args:
+            request: HTTP запрос.
+            queryset: QuerySet выбранных записей.
+        """
         updated = 0
         errors = 0
-        service = DiscogsService()  # Создаем экземпляр сервиса
 
         for record in queryset:
             if not record.discogs_id:
@@ -224,27 +292,13 @@ class RecordAdmin(admin.ModelAdmin):
                 continue
 
             try:
-                # Получаем релиз из Discogs по ID
-                release = service.api_client._make_request(
-                    service.api_client.client.release, record.discogs_id
+                self.record_service.update_from_discogs(record)
+                updated += 1
+                self.message_user(
+                    request,
+                    f'Запись "{record}" успешно обновлена',
+                    level=messages.SUCCESS,
                 )
-
-                if release:
-                    # Обновляем данные записи
-                    service.importer._update_record(release, record, save_image=True)
-                    updated += 1
-                    self.message_user(
-                        request,
-                        f'Запись "{record}" успешно обновлена',
-                        level=messages.SUCCESS,
-                    )
-                else:
-                    self.message_user(
-                        request,
-                        f'Не удалось получить данные для записи "{record}" из Discogs',
-                        level=messages.WARNING,
-                    )
-                    errors += 1
             except Exception as e:
                 logger.error(f"Failed to update record {record.pk}: {str(e)}")
                 self.message_user(
@@ -254,25 +308,78 @@ class RecordAdmin(admin.ModelAdmin):
                 )
                 errors += 1
 
-        # Итоговое сообщение
         self.message_user(
             request,
             f"Обновлено записей: {updated}, ошибок: {errors}",
             level=messages.INFO,
         )
 
+    update_from_discogs.short_description = "Обновить из Discogs"
+
     def get_readonly_fields(self, request, obj=None):
-        """Делаем discogs_id только для чтения."""
-        if obj:  # Редактирование
+        """Возвращает поля только для чтения.
+
+        Args:
+            request: HTTP запрос.
+            obj: Экземпляр Record или None.
+
+        Returns:
+            Кортеж полей только для чтения.
+        """
+        if obj:
             return ("discogs_id", "created", "modified")
         return ()
 
     def has_delete_permission(self, request, obj=None):
-        """Ограничиваем удаление записей с заказами."""
-        if obj and obj.order_items.exists():
+        """Проверка прав на удаление.
+
+        Запрещает удаление записей, которые есть в заказах.
+
+        Args:
+            request: HTTP запрос.
+            obj: Экземпляр Record или None.
+
+        Returns:
+            True если удаление разрешено.
+        """
+        if obj and hasattr(obj, "order_items") and obj.order_items.exists():
             return False
         return super().has_delete_permission(request, obj)
 
 
-# Регистрация
-admin.site.register(Record, RecordAdmin)
+# # Регистрация остальных моделей
+# @admin.register(Artist)
+# class ArtistAdmin(admin.ModelAdmin):
+#     """Админка для артистов."""
+#     list_display = ("name", "discogs_id", "created")
+#     search_fields = ("name",)
+#     readonly_fields = ("discogs_id", "created", "modified")
+#
+#
+# @admin.register(Label)
+# class LabelAdmin(admin.ModelAdmin):
+#     """Админка для лейблов."""
+#     list_display = ("name", "discogs_id", "created")
+#     search_fields = ("name",)
+#     readonly_fields = ("discogs_id", "created", "modified")
+#
+#
+# @admin.register(Genre)
+# class GenreAdmin(admin.ModelAdmin):
+#     """Админка для жанров."""
+#     list_display = ("name", "created")
+#     search_fields = ("name",)
+#
+#
+# @admin.register(Style)
+# class StyleAdmin(admin.ModelAdmin):
+#     """Админка для стилей."""
+#     list_display = ("name", "created")
+#     search_fields = ("name",)
+#
+#
+# @admin.register(Format)
+# class FormatAdmin(admin.ModelAdmin):
+#     """Админка для форматов."""
+#     list_display = ("name", "created")
+#     search_fields = ("name",)
