@@ -1,6 +1,7 @@
 import logging
 
 from django.contrib import admin, messages
+from django.conf import settings
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
@@ -8,6 +9,7 @@ from django.utils.html import format_html
 from records.forms import RecordForm
 from records.models import Record, Track
 from records.services import DiscogsService, ImageService, RecordService
+from records.services.collection_sync_service import CollectionSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +122,7 @@ class RecordAdmin(admin.ModelAdmin):
     list_prefetch_related = ("artists", "genres", "styles")
 
     # Действия
-    actions = ["update_from_discogs"]
+    actions = ["update_from_discogs", "sync_discogs_collection"]
 
     def __init__(self, *args, **kwargs):
         """Инициализация админки.
@@ -315,6 +317,75 @@ class RecordAdmin(admin.ModelAdmin):
         )
 
     update_from_discogs.short_description = "Обновить из Discogs"
+
+    def sync_discogs_collection(self, request, queryset):
+        """Синхронизация коллекции пользователя из Discogs.
+
+        Это action работает независимо от выбранных записей,
+        синхронизирует всю коллекцию указанного пользователя.
+        """
+        # Можно сделать форму для ввода username, но для простоты используем settings
+        username = settings.DISCOGS_COLLECTION_USERNAME
+
+        self.message_user(
+            request,
+            f"Начата синхронизация коллекции пользователя {username}...",
+            level=messages.INFO
+        )
+
+        sync_service = CollectionSyncService()
+
+        try:
+            results = sync_service.sync_user_collection(username)
+
+            # Формируем сообщение с результатами
+            message_parts = []
+
+            if results['added'] > 0:
+                message_parts.append(f"Добавлено: {results['added']}")
+
+            if results['updated'] > 0:
+                message_parts.append(f"Обновлено: {results['updated']}")
+
+            if results['out_of_stock'] > 0:
+                message_parts.append(f"Снято с наличия: {results['out_of_stock']}")
+
+            if results['errors'] > 0:
+                message_parts.append(f"Ошибок: {results['errors']}")
+
+            if message_parts:
+                self.message_user(
+                    request,
+                    f"Синхронизация завершена. {', '.join(message_parts)}",
+                    level=messages.SUCCESS
+                )
+            else:
+                self.message_user(
+                    request,
+                    "Синхронизация завершена. Изменений не требуется.",
+                    level=messages.INFO
+                )
+
+            # Показываем ошибки если есть
+            if results['errors'] > 0:
+                for detail in results['details']:
+                    if detail['status'] == 'error':
+                        self.message_user(
+                            request,
+                            f"Ошибка при обработке Discogs ID {detail['discogs_id']}: {detail['error']}",
+                            level=messages.ERROR
+                        )
+
+        except Exception as e:
+            self.message_user(
+                request,
+                f"Ошибка синхронизации: {str(e)}",
+                level=messages.ERROR
+            )
+            logger.error(f"Collection sync failed: {e}", exc_info=True)
+
+    sync_discogs_collection.short_description = f"Синхронизировать коллекцию из Discogs"
+
 
     def get_readonly_fields(self, request, obj=None):
         """Возвращает поля только для чтения.

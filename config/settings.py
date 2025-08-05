@@ -41,6 +41,8 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 DISCOGS_TOKEN = env("DISCOGS_API_KEY")
 # User Agent
 DISCOGS_USER_AGENT = env("DISCOGS_USER_AGENT")
+# Discogs username for parsing collections
+DISCOGS_COLLECTION_USERNAME = env("DISCOGS_COLLECTION_USERNAME")
 
 # =====================
 # APPLICATION DEFINITION
