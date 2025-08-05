@@ -5,6 +5,7 @@ import requests
 from django.core.files.base import ContentFile
 
 from records.models import Record
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class ImageService:
     """
 
     TIMEOUT = 20
-    USER_AGENT = "VinylCollector/1.0"
+    USER_AGENT = settings.DISCOGS_USER_AGENT
 
     def download_cover(self, record: Record, image_url: str) -> bool:
         """Загрузка и сохранение обложки для записи.
