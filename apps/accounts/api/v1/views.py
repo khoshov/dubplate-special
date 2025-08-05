@@ -1,20 +1,17 @@
-from records.models import Order
 from rest_framework import permissions, status
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
-from rest_framework.mixins import ListModelMixin, RetrieveModelMixin, UpdateModelMixin
+from rest_framework.mixins import RetrieveModelMixin, UpdateModelMixin
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet
 
 from django.contrib.auth import login, logout
-from django.shortcuts import get_object_or_404
 
 from accounts.models import User
 
 from .serializers import (
     ChangePasswordSerializer,
-    OrderHistorySerializer,
     SendSMSSerializer,
     UniversalLoginSerializer,
     UniversalSMSAuthSerializer,
@@ -169,98 +166,6 @@ class UserDetailView(APIView):
     def get(self, request):
         serializer = UserProfileSerializer(request.user)
         return Response(serializer.data)
-
-
-class OrderHistoryViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
-    """
-    ViewSet для работы с историей заказов пользователя
-    """
-
-    serializer_class = OrderHistorySerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        """
-        Возвращает только заказы текущего пользователя
-        """
-        return (
-            Order.objects.filter(user=self.request.user)
-            .prefetch_related("items__record__artists", "items__record")
-            .order_by("-created")
-        )
-
-    def list(self, request, *args, **kwargs):
-        """
-        Получить список всех заказов пользователя
-        """
-        queryset = self.get_queryset()
-
-        # Фильтрация по статусу
-        status_filter = request.query_params.get("status", None)
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-
-        # Фильтрация по дате
-        date_from = request.query_params.get("date_from", None)
-        date_to = request.query_params.get("date_to", None)
-        if date_from:
-            queryset = queryset.filter(created__date__gte=date_from)
-        if date_to:
-            queryset = queryset.filter(created__date__lte=date_to)
-
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-    def retrieve(self, request, *args, **kwargs):
-        """
-        Получить детальную информацию о конкретном заказе
-        """
-        order = get_object_or_404(self.get_queryset(), pk=kwargs.get("pk"))
-        serializer = self.get_serializer(order)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=["get"])
-    def statistics(self, request):
-        """
-        Получить статистику заказов пользователя
-        """
-        orders = self.get_queryset()
-
-        # Подсчет заказов по статусам
-        status_counts = {}
-        for status_choice in Order._meta.get_field("status").choices:
-            status_code = status_choice[0]
-            status_counts[status_code] = orders.filter(status=status_code).count()
-
-        # Общая статистика
-        total_orders = orders.count()
-        total_spent = sum(order.total_price for order in orders if order.total_price)
-
-        return Response(
-            {
-                "total_orders": total_orders,
-                "total_spent": total_spent,
-                "status_counts": status_counts,
-                "average_order_value": total_spent / total_orders
-                if total_orders > 0
-                else 0,
-            }
-        )
-
-    @action(detail=False, methods=["get"])
-    def status_choices(self, request):
-        """
-        Получить список доступных статусов заказов
-        """
-        choices = []
-        for status_choice in Order._meta.get_field("status").choices:
-            choices.append({"value": status_choice[0], "label": status_choice[1]})
-        return Response(choices)
 
 
 class SMSAuthViewSet(GenericViewSet):

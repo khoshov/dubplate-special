@@ -26,6 +26,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("ckeditor5/", include("django_ckeditor_5.urls")),
     path("api/v1/records/", include("records.api.v1.urls")),
+    path("api/v1/orders/", include("orders.api.v1.urls")),
     path("api/v1/accounts/", include("accounts.api.v1.urls")),
     path("openapi.json", SpectacularAPIView.as_view(), name="schema"),
     path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
