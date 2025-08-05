@@ -1,3 +1,5 @@
+exclude = ["migrations"]
+
 [lint.isort]
 section-order = ["future","standard-library","third-party","django","first-party","local-folder"]
 

@@ -1,64 +1,276 @@
 import logging
 import time
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import discogs_client
+from rest_framework import status
 
 from django.conf import settings
-
-from records.services.factories import DiscogsModelFactory
-from records.services.image_downloader import DiscogsImageDownloader
-from records.services.importers import DiscogsReleaseImporter
 
 logger = logging.getLogger(__name__)
 
 
 class DiscogsService:
-    """Фасад для работы с Discogs API и связанными сервисами.
+    """Сервис для работы с Discogs API.
+
+    Инкапсулирует всю логику работы с Discogs API, включая
+    поиск релизов, обработку ошибок и rate limiting.
 
     Attributes:
-        api_client (DiscogsAPIClient): Клиент для запросов к API.
-        model_factory (DiscogsModelFactory): Фабрика моделей Django.
-        image_downloader (DiscogsImageDownloader): Загрузчик обложек.
-        importer (DiscogsReleaseImporter): Импортер данных релизов.
-
-    Example:
-        >>> service = DiscogsService()
-        >>> record = service.importer.import_release(barcode="123456789")
+        RATE_LIMIT_WAIT_TIME: Время ожидания при превышении лимита запросов (сек).
+        client: Клиент для работы с Discogs API.
     """
+
+    RATE_LIMIT_WAIT_TIME = 60
 
     def __init__(self):
-        self.api_client = DiscogsAPIClient(
-            user_agent=settings.DISCOGS_USER_AGENT, user_token=settings.DISCOGS_TOKEN
-        )
-        self.model_factory = DiscogsModelFactory()
-        self.image_downloader = DiscogsImageDownloader()
-        self.importer = DiscogsReleaseImporter(
-            api_client=self.api_client,
-            model_factory=self.model_factory,
-            image_downloader=self.image_downloader,
-        )
-
-
-class DiscogsAPIClient:
-    """Клиент для работы с Discogs API.
-
-    Args:
-        user_agent (str): Идентификатор приложения.
-        user_token (str): Токен аутентификации.
-
-    Attributes:
-        client: Экземпляр клиента discogs_client.
-    """
-
-    def __init__(self, user_agent: str, user_token: str):
+        """Инициализация сервиса с настройками из Django settings."""
         self.client = discogs_client.Client(
-            user_agent=user_agent,
-            user_token=user_token,
+            settings.DISCOGS_USER_AGENT, user_token=settings.DISCOGS_TOKEN
         )
+
+    def search_by_barcode(self, barcode: str) -> Optional[discogs_client.Release]:
+        """Поиск релиза по штрих-коду.
+
+        Args:
+            barcode: Штрих-код для поиска.
+
+        Returns:
+            Объект релиза или None, если не найден.
+        """
+        try:
+            results = self._make_request(
+                self.client.search, barcode=barcode, type="release"
+            )
+
+            if results:
+                search_result = results[0]
+                # Пробуем refresh для получения полных данных
+                try:
+                    self._make_request(search_result.refresh)
+                except Exception as e:
+                    logger.warning(f"Failed to refresh search result: {e}")
+
+                return search_result
+
+        except Exception as e:
+            logger.error(f"Barcode search failed for {barcode}: {e}")
+
+        return None
+
+    def search_by_catalog_number(
+        self, catalog_number: str
+    ) -> Optional[discogs_client.Release]:
+        """Поиск релиза по каталожному номеру.
+
+        Args:
+            catalog_number: Каталожный номер для поиска.
+
+        Returns:
+            Объект релиза или None, если не найден.
+        """
+        try:
+            results = self._make_request(
+                self.client.search, catno=catalog_number, type="release"
+            )
+
+            if results:
+                search_result = results[0]
+                # Пробуем refresh для получения полных данных
+                try:
+                    self._make_request(search_result.refresh)
+                except Exception as e:
+                    logger.warning(f"Failed to refresh search result: {e}")
+
+                return search_result
+
+        except Exception as e:
+            logger.error(f"Catalog number search failed for {catalog_number}: {e}")
+
+        return None
+
+    def get_release(self, discogs_id: int) -> Optional[discogs_client.Release]:
+        """Получение релиза по Discogs ID.
+
+        Args:
+            discogs_id: Идентификатор релиза в Discogs.
+
+        Returns:
+            Объект релиза или None, если не найден.
+        """
+        try:
+            return self._make_request(self.client.release, discogs_id)
+        except Exception as e:
+            logger.error(f"Failed to get release {discogs_id}: {e}")
+            return None
+
+    def get_release_videos(self, discogs_id: int) -> List[Dict[str, str]]:
+        """Получение списка видео для релиза.
+
+        Args:
+            discogs_id: Идентификатор релиза в Discogs.
+
+        Returns:
+            Список словарей с информацией о видео.
+            Каждый словарь содержит ключи 'title' и 'url'.
+        """
+        try:
+            release = self._make_request(self.client.release, discogs_id)
+            if hasattr(release, "videos") and release.videos:
+                return [
+                    {"title": video.title, "url": video.url} for video in release.videos
+                ]
+        except Exception as e:
+            logger.error(f"Failed to get videos for release {discogs_id}: {e}")
+        return []
+
+    def extract_release_data(self, release: discogs_client.Release) -> Dict[str, Any]:
+        """Извлечение данных из объекта релиза Discogs.
+
+        Работает как с SearchResult (из search), так и с полным Release (из release).
+
+        Args:
+            release: Объект релиза из Discogs API.
+
+        Returns:
+            Словарь с извлечёнными данными релиза.
+        """
+        # Базовые данные
+        data = {
+            "discogs_id": release.id,
+            "title": release.title,
+            "year": getattr(release, "year", None),
+            "country": getattr(release, "country", None),
+            "notes": getattr(release, "notes", None),
+            "catalog_number": None,
+            "barcode": None,
+        }
+
+        # Извлечение catalog_number
+        data["catalog_number"] = self._extract_catalog_number(release)
+
+        # Извлечение barcode
+        data["barcode"] = self._extract_barcode(release)
+
+        logger.debug(
+            f"Extracted from Discogs - "
+            f"ID: {data['discogs_id']}, "
+            f"Title: {data['title']}, "
+            f"Barcode: {data.get('barcode', 'None')}, "
+            f"Catalog: {data.get('catalog_number', 'None')}"
+        )
+
+        return data
+
+    def _extract_catalog_number(self, release) -> Optional[str]:
+        """Извлечение каталожного номера из релиза.
+
+        Args:
+            release: Объект релиза.
+
+        Returns:
+            Каталожный номер или None.
+        """
+        # Из labels (полный Release)
+        try:
+            if hasattr(release, "labels") and release.labels:
+                return release.labels[0].catno
+        except (IndexError, AttributeError):
+            pass
+
+        # Из data (SearchResult)
+        if hasattr(release, "data") and isinstance(release.data, dict):
+            if "catno" in release.data:
+                return release.data["catno"]
+
+        return None
+
+    def _extract_barcode(self, release) -> Optional[str]:
+        """Извлечение штрих-кода из релиза.
+
+        Args:
+            release: Объект релиза.
+
+        Returns:
+            Штрих-код или None.
+        """
+        # Из release.data['barcode'] (SearchResult)
+        if hasattr(release, "data") and isinstance(release.data, dict):
+            if "barcode" in release.data:
+                return self._parse_barcode_data(release.data["barcode"])
+
+            # Из release.data['identifiers'] (полный Release в data)
+            if "identifiers" in release.data:
+                barcode = self._extract_barcode_from_identifiers_list(
+                    release.data["identifiers"]
+                )
+                if barcode:
+                    return barcode
+
+        # Из release.identifiers (полный Release объект)
+        if hasattr(release, "identifiers"):
+            try:
+                for identifier in release.identifiers:
+                    if hasattr(identifier, "type") and hasattr(identifier, "value"):
+                        if (
+                            identifier.type in ["Barcode", "barcode"]
+                            and identifier.value
+                        ):
+                            return str(identifier.value).strip()
+            except Exception as e:
+                logger.debug(f"Failed to extract from identifiers: {e}")
+
+        return None
+
+    def _parse_barcode_data(self, barcode_data) -> Optional[str]:
+        """Парсинг данных штрих-кода.
+
+        Args:
+            barcode_data: Данные штрих-кода (строка или список).
+
+        Returns:
+            Очищенный штрих-код или None.
+        """
+        if isinstance(barcode_data, list) and barcode_data:
+            # Ищем первый элемент, содержащий только цифры
+            for bc in barcode_data:
+                bc_clean = str(bc).strip()
+                if bc_clean and bc_clean.isdigit():
+                    return bc_clean
+
+            # Если не нашли чисто цифровой, берём первый
+            if barcode_data[0]:
+                return str(barcode_data[0]).strip()
+
+        elif isinstance(barcode_data, str) and barcode_data:
+            return barcode_data.strip()
+
+        return None
+
+    def _extract_barcode_from_identifiers_list(self, identifiers) -> Optional[str]:
+        """Извлечение штрих-кода из списка идентификаторов.
+
+        Args:
+            identifiers: Список идентификаторов.
+
+        Returns:
+            Штрих-код или None.
+        """
+        if isinstance(identifiers, list):
+            for identifier in identifiers:
+                if isinstance(identifier, dict):
+                    if identifier.get("type") in [
+                        "Barcode",
+                        "barcode",
+                    ] and identifier.get("value"):
+                        return str(identifier["value"]).strip()
+        return None
 
     def _make_request(self, func, *args, **kwargs):
-        """Выполняет запрос с обработкой ошибок и rate limiting.
+        """Выполнение запроса к API с обработкой ошибок.
+
+        Обрабатывает ошибки аутентификации и превышения лимита запросов.
+        При превышении лимита автоматически повторяет запрос после ожидания.
 
         Args:
             func: Функция для выполнения.
@@ -69,63 +281,16 @@ class DiscogsAPIClient:
             Результат выполнения функции.
 
         Raises:
-            Exception: При ошибках аутентификации или API.
-            После превышения лимита запросов делает паузу 60 секунд.
+            Exception: При ошибке аутентификации.
+            discogs_client.exceptions.HTTPError: При других HTTP ошибках.
         """
         try:
             return func(*args, **kwargs)
         except discogs_client.exceptions.HTTPError as e:
-            if e.status_code == 401:
-                logger.error("Discogs authentication error")
+            if e.status_code == status.HTTP_401_UNAUTHORIZED:
                 raise Exception("Discogs authentication error. Check your token.")
-            elif e.status_code == 429:
-                logger.warning("Rate limit exceeded, waiting before retry...")
-                time.sleep(60)
+            elif e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                logger.warning("Rate limit exceeded, waiting...")
+                time.sleep(self.RATE_LIMIT_WAIT_TIME)
                 return self._make_request(func, *args, **kwargs)
-            logger.error(f"Discogs API error: {str(e)}")
             raise
-
-    def search_release_by_barcode(
-        self, barcode: str
-    ) -> Optional[discogs_client.Release]:
-        """Ищет релиз по штрих-коду.
-
-        Args:
-            barcode: Штрих-код для поиска.
-
-        Returns:
-            Optional[discogs_client.Release]: Объект релиза или None, если не найден.
-
-        Note:
-            Возвращает первый найденный релиз и обновляет его данные через refresh().
-        """
-        results = self._make_request(self.client.search, barcode, type="release")
-        if results:
-            release = results[0]
-            self._make_request(release.refresh)  # Получение полных данных
-            return release
-        return None
-
-    def get_release_videos(self, release_id: int) -> Optional[list]:
-        """Получает список видео для релиза.
-
-        Args:
-            release_id: ID релиза в Discogs.
-
-        Returns:
-            Optional[list]: Список словарей с видео или None при ошибке.
-        """
-        try:
-            release = self._make_request(self.client.release, release_id)
-            if hasattr(release, "videos") and release.videos:
-                return [
-                    {
-                        "title": video.title,
-                        "url": video.url,
-                    }
-                    for video in release.videos
-                ]
-            return None
-        except Exception as e:
-            logger.error(f"Error getting videos for release {release_id}: {str(e)}")
-            return None
