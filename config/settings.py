@@ -43,6 +43,10 @@ DISCOGS_TOKEN = env("DISCOGS_API_KEY")
 DISCOGS_USER_AGENT = env("DISCOGS_USER_AGENT")
 # Discogs username for parsing collections
 DISCOGS_COLLECTION_USERNAME = env("DISCOGS_COLLECTION_USERNAME")
+# SMS Settings
+SMS_API_KEY = env("SMS_API_KEY", default=None)
+SMS_PROVIDER = env("SMS_PROVIDER", default="sms_ru")
+SMS_TEST_MODE = env.bool("SMS_TEST_MODE", default=True)
 
 # =====================
 # APPLICATION DEFINITION
@@ -62,11 +66,14 @@ INSTALLED_APPS = [
     "django_filters",  # https://www.django-rest-framework.org/api-guide/filtering/
     "drf_spectacular",  # https://pypi.org/project/drf-spectacular/
     "rest_framework",  # https://www.django-rest-framework.org/
+    "rest_framework.authtoken",  # Token authentication
     "solo",  # https://github.com/lazybird/django-solo
     "sorl.thumbnail",  # https://sorl-thumbnail.readthedocs.io/
     # Project apps
+    "accounts",
     "core",
     "records",
+    "orders",
 ]
 
 MIDDLEWARE = [
@@ -162,6 +169,11 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 # DEFAULT PRIMARY KEY
 # ====================
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# =================
+# CUSTOM USER MODEL
+# =================
+AUTH_USER_MODEL = "accounts.User"
 
 # =============
 # MEDIA FILES
@@ -323,6 +335,10 @@ CKEDITOR_5_CONFIGS = {
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
+    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_FILTER_BACKENDS": (
         "django_filters.rest_framework.DjangoFilterBackend",
