@@ -308,9 +308,26 @@ class RecordService:
         # Извлекаем данные
         record_data = self.discogs_service.extract_release_data(discogs_release)
 
-        # Приоритет у идентификаторов из поиска
-        if search_barcode:
-            record_data["barcode"] = search_barcode
+        # ВАЖНО: Правильная логика приоритетов
+        # 1. Если из Discogs пришел валидный barcode - используем его
+        # 2. Если нет, но пользователь ввел валидный barcode для поиска - используем его
+        # 3. Если пользователь ввел невалидный barcode - игнорируем его
+
+        # Проверяем валидность search_barcode
+        if search_barcode and not search_barcode.strip().replace("-", "").isdigit():
+            # Если пользователь ввел невалидный barcode, игнорируем его
+            logger.warning(f"Ignoring invalid search barcode: {search_barcode}")
+            search_barcode = None
+
+        # Устанавливаем barcode
+        if record_data.get("barcode"):
+            # Приоритет у данных из Discogs (они уже провалидированы)
+            pass
+        elif search_barcode:
+            # Если из Discogs не пришел barcode, но есть валидный от пользователя
+            record_data["barcode"] = search_barcode.strip().replace("-", "")
+
+        # Для catalog_number используем search_catalog_number если указан
         if search_catalog_number:
             record_data["catalog_number"] = search_catalog_number
 
@@ -344,17 +361,28 @@ class RecordService:
 
     @staticmethod
     def _is_empty_identifier(value: Optional[str]) -> bool:
-        """Проверка, является ли идентификатор пустым.
+        """Проверка, является ли идентификатор пустым или невалидным.
 
-        В Django пустые CharField сохраняются как '', а не None.
+        Для barcode дополнительно проверяем валидность (только цифры).
 
         Args:
             value: Значение для проверки.
 
         Returns:
-            True если значение пустое (None, пустая строка или только пробелы).
+            True если значение пустое, None, или невалидное для barcode.
         """
-        return value is None or (isinstance(value, str) and value.strip() == "")
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            return True
+
+        # Для barcode проверяем, что это цифры
+        # Это нужно для случая, когда в БД сохранен невалидный barcode типа "test"
+        if isinstance(value, str):
+            clean_value = value.strip().replace(" ", "").replace("-", "")
+            # Если значение не состоит из цифр, считаем его пустым/невалидным
+            if not clean_value.isdigit():
+                return True
+
+        return False
 
     def _update_missing_identifiers(
         self,
@@ -395,7 +423,7 @@ class RecordService:
         - country (всегда)
         - notes (всегда)
         - catalog_number (только если пустой)
-        - barcode (только если пустой)
+        - barcode (только если пустой или невалидный)
 
         Args:
             record: Запись для обновления.
@@ -418,16 +446,17 @@ class RecordService:
         record.country = record_data.get("country")
         record.notes = record_data.get("notes")
 
-        # Обновляем идентификаторы если они пустые
+        # Обновляем catalog_number если пустой
         if self._is_empty_identifier(record.catalog_number) and record_data.get(
             "catalog_number"
         ):
             record.catalog_number = record_data["catalog_number"]
             logger.info(f"Added missing catalog_number: {record.catalog_number}")
 
+        # Обновляем barcode если пустой или невалидный
         if self._is_empty_identifier(record.barcode) and record_data.get("barcode"):
             record.barcode = record_data["barcode"]
-            logger.info(f"Added missing barcode: {record.barcode}")
+            logger.info(f"Replaced invalid/empty barcode with: {record.barcode}")
 
         # Логируем изменения
         changes = []

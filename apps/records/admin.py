@@ -1,7 +1,7 @@
 import logging
 
-from django.contrib import admin, messages
 from django.conf import settings
+from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
@@ -330,7 +330,7 @@ class RecordAdmin(admin.ModelAdmin):
         self.message_user(
             request,
             f"Начата синхронизация коллекции пользователя {username}...",
-            level=messages.INFO
+            level=messages.INFO,
         )
 
         sync_service = CollectionSyncService()
@@ -341,51 +341,51 @@ class RecordAdmin(admin.ModelAdmin):
             # Формируем сообщение с результатами
             message_parts = []
 
-            if results['added'] > 0:
+            if results["added"] > 0:
                 message_parts.append(f"Добавлено: {results['added']}")
 
-            if results['updated'] > 0:
-                message_parts.append(f"Обновлено: {results['updated']}")
+            # Changed from 'updated' to 'restocked' which is the actual key
+            if results["restocked"] > 0:
+                message_parts.append(f"Возвращено в наличие: {results['restocked']}")
 
-            if results['out_of_stock'] > 0:
+            if results["already_in_stock"] > 0:
+                message_parts.append(f"Уже в наличии: {results['already_in_stock']}")
+
+            if results["out_of_stock"] > 0:
                 message_parts.append(f"Снято с наличия: {results['out_of_stock']}")
 
-            if results['errors'] > 0:
+            if results["errors"] > 0:
                 message_parts.append(f"Ошибок: {results['errors']}")
 
             if message_parts:
                 self.message_user(
                     request,
                     f"Синхронизация завершена. {', '.join(message_parts)}",
-                    level=messages.SUCCESS
+                    level=messages.SUCCESS,
                 )
             else:
                 self.message_user(
                     request,
                     "Синхронизация завершена. Изменений не требуется.",
-                    level=messages.INFO
+                    level=messages.INFO,
                 )
 
             # Показываем ошибки если есть
-            if results['errors'] > 0:
-                for detail in results['details']:
-                    if detail['status'] == 'error':
-                        self.message_user(
-                            request,
-                            f"Ошибка при обработке Discogs ID {detail['discogs_id']}: {detail['error']}",
-                            level=messages.ERROR
-                        )
+            if results["errors"] > 0 and results.get("error_details"):
+                for detail in results["error_details"]:
+                    self.message_user(
+                        request,
+                        f"Ошибка при обработке Discogs ID {detail['discogs_id']}: {detail['error']}",
+                        level=messages.ERROR,
+                    )
 
         except Exception as e:
             self.message_user(
-                request,
-                f"Ошибка синхронизации: {str(e)}",
-                level=messages.ERROR
+                request, f"Ошибка синхронизации: {str(e)}", level=messages.ERROR
             )
             logger.error(f"Collection sync failed: {e}", exc_info=True)
 
-    sync_discogs_collection.short_description = f"Синхронизировать коллекцию из Discogs"
-
+    sync_discogs_collection.short_description = "Синхронизировать коллекцию из Discogs"
 
     def get_readonly_fields(self, request, obj=None):
         """Возвращает поля только для чтения.

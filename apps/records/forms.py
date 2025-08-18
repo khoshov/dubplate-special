@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from django import forms
+from django.core.exceptions import ValidationError
 
 from records.models import Record
 from records.services import DiscogsService, ImageService, RecordService
@@ -92,13 +93,33 @@ class RecordForm(forms.ModelForm):
     def clean_barcode(self) -> Optional[str]:
         """Валидация штрих-кода.
 
+        Принимает только значения, состоящие из цифр.
+
         Returns:
             Валидированный штрих-код или None.
 
         Raises:
-            ValidationError: Если штрих-код уже используется.
+            ValidationError: Если штрих-код уже используется или невалидный.
         """
         barcode = self.cleaned_data.get("barcode")
+
+        if barcode:
+            # Очищаем от пробелов и дефисов
+            barcode = barcode.strip().replace(" ", "").replace("-", "")
+
+            # Проверяем, что это только цифры
+            if not barcode.isdigit():
+                # Для новых записей просто игнорируем невалидный barcode
+                if not self.instance.pk:
+                    return None
+                # Для существующих - показываем ошибку
+                raise ValidationError("Штрих-код должен состоять только из цифр")
+
+            # Проверяем длину
+            if len(barcode) < 6 or len(barcode) > 20:
+                raise ValidationError("Штрих-код должен содержать от 6 до 20 цифр")
+
+        # Проверяем уникальность
         return self.validator.validate_barcode(barcode, self.instance.pk)
 
     def clean_catalog_number(self) -> Optional[str]:

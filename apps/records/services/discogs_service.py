@@ -21,7 +21,7 @@ class DiscogsService:
         client: Клиент для работы с Discogs API.
     """
 
-    RATE_LIMIT_WAIT_TIME = 60
+    RATE_LIMIT_WAIT_TIME = 30
 
     def __init__(self):
         """Инициализация сервиса с настройками из Django settings."""
@@ -223,27 +223,48 @@ class DiscogsService:
         return None
 
     def _parse_barcode_data(self, barcode_data) -> Optional[str]:
-        """Парсинг данных штрих-кода.
+        """Парсинг данных штрих-кода с валидацией.
+
+        Принимает только значения, состоящие из цифр.
 
         Args:
             barcode_data: Данные штрих-кода (строка или список).
 
         Returns:
-            Очищенный штрих-код или None.
+            Очищенный и валидированный штрих-код или None.
         """
-        if isinstance(barcode_data, list) and barcode_data:
-            # Ищем первый элемент, содержащий только цифры
-            for bc in barcode_data:
-                bc_clean = str(bc).strip()
-                if bc_clean and bc_clean.isdigit():
-                    return bc_clean
 
-            # Если не нашли чисто цифровой, берём первый
-            if barcode_data[0]:
-                return str(barcode_data[0]).strip()
+        def is_valid_barcode(value: str) -> bool:
+            """Проверка, является ли значение валидным штрих-кодом.
+
+            Валидный штрих-код должен состоять только из цифр.
+            """
+            if not value:
+                return False
+
+            # Очищаем от пробелов и дефисов
+            clean_value = value.replace(" ", "").replace("-", "")
+
+            # Проверяем, что это только цифры и длина разумная
+            return clean_value.isdigit() and 6 <= len(clean_value) <= 20
+
+        if isinstance(barcode_data, list) and barcode_data:
+            # Ищем первый валидный штрих-код в списке
+            for bc in barcode_data:
+                bc_str = str(bc).strip()
+                if is_valid_barcode(bc_str):
+                    # Возвращаем очищенный от пробелов и дефисов
+                    return bc_str.replace(" ", "").replace("-", "")
+
+            # Не нашли валидный штрих-код
+            return None
 
         elif isinstance(barcode_data, str) and barcode_data:
-            return barcode_data.strip()
+            # Проверяем одиночное значение
+            if is_valid_barcode(barcode_data):
+                return barcode_data.strip().replace(" ", "").replace("-", "")
+            else:
+                return None
 
         return None
 
