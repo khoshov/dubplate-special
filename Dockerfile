@@ -41,7 +41,9 @@ RUN uv sync --dev --locked
 COPY . .
 
 # Making the file executable
-RUN chmod +x entrypoint.sh
+# Fix Windows line endings (CRLF -> LF) and make entrypoint executable
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
+#RUN chmod +x entrypoint.sh
 
 # ======================
 # RUNTIME CONFIGURATION
