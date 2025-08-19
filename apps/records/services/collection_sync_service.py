@@ -1,13 +1,14 @@
 import logging
 import time
-from typing import List, Dict, Set, Optional
-from django.db import transaction, IntegrityError
-from django.conf import settings
+from typing import Dict, List, Optional, Set
 
 import discogs_client
 
+from django.conf import settings
+from django.db import transaction
+
 from records.models import Record, RecordConditions
-from records.services import RecordService, DiscogsService, ImageService
+from records.services import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +26,16 @@ class CollectionSyncService:
     def __init__(self):
         """Инициализация сервиса."""
         self.client = discogs_client.Client(
-            settings.DISCOGS_USER_AGENT,
-            user_token=settings.DISCOGS_TOKEN
+            settings.DISCOGS_USER_AGENT, user_token=settings.DISCOGS_TOKEN
         )
         self.record_service = RecordService(
-            discogs_service=DiscogsService(),
-            image_service=ImageService()
+            discogs_service=DiscogsService(), image_service=ImageService()
         )
         self.discogs_service = DiscogsService()
 
-    def sync_user_collection(self, username: str, update_stock: bool = True) -> Dict[str, any]:
+    def sync_user_collection(
+        self, username: str, update_stock: bool = True
+    ) -> Dict[str, any]:
         """Синхронизация коллекции пользователя.
 
         Args:
@@ -61,12 +62,12 @@ class CollectionSyncService:
         )
 
         # Получаем все записи из БД с discogs_id одним запросом
-        db_records = Record.objects.filter(
-            discogs_id__isnull=False
-        ).values('id', 'discogs_id', 'stock')
+        db_records = Record.objects.filter(discogs_id__isnull=False).values(
+            "id", "discogs_id", "stock"
+        )
 
         # Создаем словари для быстрого доступа
-        db_by_discogs = {r['discogs_id']: r for r in db_records}
+        db_by_discogs = {r["discogs_id"]: r for r in db_records}
         db_discogs_ids = set(db_by_discogs.keys())
 
         logger.info(f"Found {len(db_discogs_ids)} records with discogs_id in database")
@@ -78,34 +79,32 @@ class CollectionSyncService:
 
         # Результаты
         results = {
-            'total_in_collection': len(collection_set),
-            'added': 0,
-            'restocked': 0,
-            'already_in_stock': 0,
-            'out_of_stock': 0,
-            'errors': 0,
-            'error_details': []
+            "total_in_collection": len(collection_set),
+            "added": 0,
+            "restocked": 0,
+            "already_in_stock": 0,
+            "out_of_stock": 0,
+            "errors": 0,
+            "error_details": [],
         }
 
         # 1. Обновляем stock для существующих записей (batch операция)
         if in_both:
-            results['restocked'] = self._update_existing_records_stock(
+            results["restocked"] = self._update_existing_records_stock(
                 in_both, db_by_discogs
             )
-            results['already_in_stock'] = len(in_both) - results['restocked']
+            results["already_in_stock"] = len(in_both) - results["restocked"]
 
         # 2. Снимаем с наличия записи вне коллекции (batch операция)
         if update_stock and only_in_db:
-            results['out_of_stock'] = self._remove_from_stock(
-                only_in_db, db_by_discogs
-            )
+            results["out_of_stock"] = self._remove_from_stock(only_in_db, db_by_discogs)
 
         # 3. Добавляем новые записи
         if to_add:
             add_results = self._add_new_records(to_add)
-            results['added'] = add_results['added']
-            results['errors'] = add_results['errors']
-            results['error_details'] = add_results['error_details']
+            results["added"] = add_results["added"]
+            results["errors"] = add_results["errors"]
+            results["error_details"] = add_results["error_details"]
 
         # Логируем результаты
         elapsed_time = time.time() - start_time
@@ -140,19 +139,19 @@ class CollectionSyncService:
         releases = main_folder.releases
 
         # Обработка с пагинацией
-        if hasattr(releases, 'page'):
+        if hasattr(releases, "page"):
             page = 1
             while True:
                 try:
                     releases_page = releases.page(page)
 
                     for item in releases_page:
-                        if hasattr(item, 'release'):
+                        if hasattr(item, "release"):
                             discogs_ids.append(item.release.id)
                         else:
                             discogs_ids.append(item.id)
 
-                    if hasattr(releases_page, 'pages') and page >= releases_page.pages:
+                    if hasattr(releases_page, "pages") and page >= releases_page.pages:
                         break
 
                     if len(releases_page) == 0:
@@ -169,9 +168,9 @@ class CollectionSyncService:
             # Простой итератор
             for item in releases:
                 try:
-                    if hasattr(item, 'release'):
+                    if hasattr(item, "release"):
                         discogs_ids.append(item.release.id)
-                    elif hasattr(item, 'id'):
+                    elif hasattr(item, "id"):
                         discogs_ids.append(item.id)
 
                     if len(discogs_ids) % 100 == 0:
@@ -184,9 +183,7 @@ class CollectionSyncService:
         return discogs_ids
 
     def _update_existing_records_stock(
-            self,
-            discogs_ids: Set[int],
-            db_records_dict: Dict[int, dict]
+        self, discogs_ids: Set[int], db_records_dict: Dict[int, dict]
     ) -> int:
         """Обновление stock для существующих записей.
 
@@ -195,25 +192,21 @@ class CollectionSyncService:
         """
         # Находим записи с stock=0 которые нужно вернуть в наличие
         to_restock_ids = [
-            db_records_dict[did]['id']
+            db_records_dict[did]["id"]
             for did in discogs_ids
-            if db_records_dict[did]['stock'] == 0
+            if db_records_dict[did]["stock"] == 0
         ]
 
         if to_restock_ids:
             with transaction.atomic():
-                updated = Record.objects.filter(
-                    id__in=to_restock_ids
-                ).update(stock=1)
+                updated = Record.objects.filter(id__in=to_restock_ids).update(stock=1)
                 logger.info(f"Restocked {updated} records (stock: 0 → 1)")
                 return updated
 
         return 0
 
     def _remove_from_stock(
-            self,
-            discogs_ids: Set[int],
-            db_records_dict: Dict[int, dict]
+        self, discogs_ids: Set[int], db_records_dict: Dict[int, dict]
     ) -> int:
         """Снятие с наличия записей вне коллекции.
 
@@ -222,16 +215,14 @@ class CollectionSyncService:
         """
         # Находим записи с stock>0 которые нужно снять с наличия
         to_remove_ids = [
-            db_records_dict[did]['id']
+            db_records_dict[did]["id"]
             for did in discogs_ids
-            if db_records_dict[did]['stock'] > 0
+            if db_records_dict[did]["stock"] > 0
         ]
 
         if to_remove_ids:
             with transaction.atomic():
-                updated = Record.objects.filter(
-                    id__in=to_remove_ids
-                ).update(stock=0)
+                updated = Record.objects.filter(id__in=to_remove_ids).update(stock=0)
                 logger.info(f"Removed {updated} records from stock (stock → 0)")
                 return updated
 
@@ -243,11 +234,7 @@ class CollectionSyncService:
         Returns:
             Словарь с количеством добавленных записей и ошибок.
         """
-        results = {
-            'added': 0,
-            'errors': 0,
-            'error_details': []
-        }
+        results = {"added": 0, "errors": 0, "error_details": []}
 
         # Сортируем для стабильности
         sorted_ids = sorted(discogs_ids)
@@ -266,7 +253,7 @@ class CollectionSyncService:
                 # Создаем запись
                 record = self._create_record_from_discogs(discogs_id)
                 if record:
-                    results['added'] += 1
+                    results["added"] += 1
                     logger.info(
                         f"Added record: {record.title} "
                         f"(ID={record.id}, Discogs={discogs_id})"
@@ -274,11 +261,10 @@ class CollectionSyncService:
 
             except Exception as e:
                 logger.error(f"Failed to add discogs_id={discogs_id}: {e}")
-                results['errors'] += 1
-                results['error_details'].append({
-                    'discogs_id': discogs_id,
-                    'error': str(e)
-                })
+                results["errors"] += 1
+                results["error_details"].append(
+                    {"discogs_id": discogs_id, "error": str(e)}
+                )
 
         return results
 
@@ -309,8 +295,8 @@ class CollectionSyncService:
         record_data = self.discogs_service.extract_release_data(release)
 
         # Валидируем barcode
-        if record_data.get('barcode'):
-            record_data['barcode'] = self._validate_barcode(record_data['barcode'])
+        if record_data.get("barcode"):
+            record_data["barcode"] = self._validate_barcode(record_data["barcode"])
 
         # Проверяем конфликты уникальности
         record_data = self._handle_uniqueness_conflicts(record_data)
@@ -318,15 +304,15 @@ class CollectionSyncService:
         # Создаем запись
         with transaction.atomic():
             record = Record.objects.create(
-                title=record_data['title'],
-                discogs_id=record_data['discogs_id'],
-                release_year=record_data.get('year'),
-                catalog_number=record_data.get('catalog_number'),
-                barcode=record_data.get('barcode'),
-                country=record_data.get('country'),
-                notes=record_data.get('notes'),
+                title=record_data["title"],
+                discogs_id=record_data["discogs_id"],
+                release_year=record_data.get("year"),
+                catalog_number=record_data.get("catalog_number"),
+                barcode=record_data.get("barcode"),
+                country=record_data.get("country"),
+                notes=record_data.get("notes"),
                 condition=RecordConditions.M,
-                stock=1  # Всегда 1 для записей из коллекции
+                stock=1,  # Всегда 1 для записей из коллекции
             )
 
             logger.debug(
@@ -343,7 +329,7 @@ class CollectionSyncService:
                 # Загружаем обложку
                 if release.images:
                     self.record_service.image_service.download_cover(
-                        record, release.images[0]['uri']
+                        record, release.images[0]["uri"]
                     )
             except Exception as e:
                 logger.warning(f"Failed to create relations/cover: {e}")
@@ -363,7 +349,7 @@ class CollectionSyncService:
             return None
 
         # Очищаем от пробелов и дефисов
-        clean_barcode = str(barcode).strip().replace(' ', '').replace('-', '')
+        clean_barcode = str(barcode).strip().replace(" ", "").replace("-", "")
 
         # Проверяем что только цифры
         if not clean_barcode.isdigit():
@@ -390,12 +376,12 @@ class CollectionSyncService:
             Обработанные данные записи.
         """
         # Проверяем catalog_number
-        if record_data.get('catalog_number'):
-            existing = Record.objects.filter(
-                catalog_number=record_data['catalog_number']
-            ).exclude(
-                discogs_id=record_data['discogs_id']
-            ).first()
+        if record_data.get("catalog_number"):
+            existing = (
+                Record.objects.filter(catalog_number=record_data["catalog_number"])
+                .exclude(discogs_id=record_data["discogs_id"])
+                .first()
+            )
 
             if existing:
                 logger.warning(
@@ -403,15 +389,15 @@ class CollectionSyncService:
                     f"already exists (record {existing.id}). "
                     f"Creating without it for discogs_id={record_data['discogs_id']}"
                 )
-                record_data['catalog_number'] = None
+                record_data["catalog_number"] = None
 
         # Проверяем barcode
-        if record_data.get('barcode'):
-            existing = Record.objects.filter(
-                barcode=record_data['barcode']
-            ).exclude(
-                discogs_id=record_data['discogs_id']
-            ).first()
+        if record_data.get("barcode"):
+            existing = (
+                Record.objects.filter(barcode=record_data["barcode"])
+                .exclude(discogs_id=record_data["discogs_id"])
+                .first()
+            )
 
             if existing:
                 logger.warning(
@@ -419,7 +405,7 @@ class CollectionSyncService:
                     f"already exists (record {existing.id}). "
                     f"Creating without it for discogs_id={record_data['discogs_id']}"
                 )
-                record_data['barcode'] = None
+                record_data["barcode"] = None
 
         return record_data
 
@@ -437,42 +423,46 @@ class CollectionSyncService:
         collection_set = set(discogs_ids)
 
         # Получаем записи из БД
-        db_records = Record.objects.filter(
-            discogs_id__isnull=False
-        ).values('id', 'discogs_id', 'stock', 'title')
+        db_records = Record.objects.filter(discogs_id__isnull=False).values(
+            "id", "discogs_id", "stock", "title"
+        )
 
         # Анализируем проблемы
         issues = []
 
         for record in db_records:
-            discogs_id = record['discogs_id']
-            stock = record['stock']
+            discogs_id = record["discogs_id"]
+            stock = record["stock"]
 
             # Должно быть в наличии, но stock=0
             if discogs_id in collection_set and stock == 0:
-                issues.append({
-                    'type': 'should_be_in_stock',
-                    'id': record['id'],
-                    'discogs_id': discogs_id,
-                    'title': record['title'][:50],
-                    'current_stock': 0,
-                    'expected_stock': 1
-                })
+                issues.append(
+                    {
+                        "type": "should_be_in_stock",
+                        "id": record["id"],
+                        "discogs_id": discogs_id,
+                        "title": record["title"][:50],
+                        "current_stock": 0,
+                        "expected_stock": 1,
+                    }
+                )
 
             # Не должно быть в наличии, но stock>0
             elif discogs_id not in collection_set and stock > 0:
-                issues.append({
-                    'type': 'should_be_out_of_stock',
-                    'id': record['id'],
-                    'discogs_id': discogs_id,
-                    'title': record['title'][:50],
-                    'current_stock': stock,
-                    'expected_stock': 0
-                })
+                issues.append(
+                    {
+                        "type": "should_be_out_of_stock",
+                        "id": record["id"],
+                        "discogs_id": discogs_id,
+                        "title": record["title"][:50],
+                        "current_stock": stock,
+                        "expected_stock": 0,
+                    }
+                )
 
         return {
-            'collection_size': len(collection_set),
-            'db_records': len(list(db_records)),
-            'issues_found': len(issues),
-            'issues': issues
+            "collection_size": len(collection_set),
+            "db_records": len(list(db_records)),
+            "issues_found": len(issues),
+            "issues": issues,
         }
