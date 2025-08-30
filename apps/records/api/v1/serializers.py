@@ -1,7 +1,3 @@
-from rest_framework import serializers
-
-from django.db import transaction
-
 from records.models import (
     Artist,
     Format,
@@ -13,6 +9,9 @@ from records.models import (
     Style,
     Track,
 )
+from rest_framework import serializers
+
+from django.db import transaction
 
 
 class ArtistSerializer(serializers.ModelSerializer):
@@ -48,7 +47,7 @@ class StyleSerializer(serializers.ModelSerializer):
 class TrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = Track
-        fields = ["id", "position", "title", "duration"]
+        fields = ["id", "position", "title", "duration", "audio_file"]
         read_only_fields = ["id", "created", "modified"]
 
 

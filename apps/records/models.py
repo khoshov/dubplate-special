@@ -1,3 +1,5 @@
+import os
+
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
 from sorl.thumbnail import ImageField
@@ -161,6 +163,11 @@ class Record(TimeStampedModel):
         ordering = ("title",)
 
 
+def track_upload_to(instance, filename):
+    # Формируем путь: tracks/{record_id}/{filename}
+    return os.path.join("tracks", str(instance.record.id), filename)
+
+
 class Track(TimeStampedModel):
     record = models.ForeignKey(
         Record,
@@ -179,6 +186,13 @@ class Track(TimeStampedModel):
         blank=True,
         verbose_name=_("Track URL"),
         help_text=_("URL to track (YouTube)"),
+    )
+    audio_file = models.FileField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name=_("Audio"),
+        upload_to=track_upload_to,
     )
 
     def __str__(self):

@@ -1,6 +1,8 @@
 services:
   django:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file:
@@ -16,6 +18,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
+
   postgres:
     image: postgres
     ports:
@@ -26,3 +31,21 @@ services:
       - ./pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+
+  redis:
+    image: redis:7-alpine
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile-celery
+    volumes:
+      - ./apps:/app/apps
+      - ./config:/app/config
+      - ./media:/app/media
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+      - django

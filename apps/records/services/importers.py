@@ -3,6 +3,10 @@ from typing import Optional
 
 from records.models import Record, RecordConditions, Track
 
+from apps.records.services.tasks import dl_track
+from django.db import transaction
+from functools import partial
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,22 +150,61 @@ class DiscogsReleaseImporter:
         # Получаем все видео релиза
         release_videos = self.api_client.get_release_videos(record.discogs_id) or []
 
-        for track in tracklist:
-            track_url = None
+        # Получаем список всех Исполнителей
+        artists = [artist.name for artist in record.artists.all()]
 
-            # Пытаемся найти видео для этого трека
-            for video in release_videos:
-                # Простая проверка по названию трека
-                if track.title.lower() in video["title"].lower():
-                    track_url = video["url"]
-                    break
+        with transaction.atomic():
+            for track in tracklist:
+                track_url = None
 
-            Track.objects.update_or_create(
-                record=record,
-                position=track.position,
-                defaults={
-                    "title": track.title,
-                    "duration": track.duration,
-                    "youtube_url": track_url,
-                },
-            )
+                # Пытаемся найти видео для этого трека
+                for video in release_videos:
+                    # Простая проверка по названию трека
+                    if track.title.lower() in video["title"].lower():
+                        track_url = video["url"]
+                        break
+
+                track_instance, status = Track.objects.update_or_create(
+                    record=record,
+                    position=track.position,
+                    defaults={
+                        "title": track.title,
+                        "duration": track.duration,
+                        "youtube_url": track_url,
+                    },
+                )
+
+                if status:
+                    # Создаем частично примененную функцию с текущими значениями
+                    task = partial(
+                        dl_track.delay,
+                        record_id=record.id,
+                        track_id=track_instance.id,
+                        url=track_url,
+                        expected_artists=artists,
+                    )
+                    transaction.on_commit(task)
+
+            # print(track_instance.id)
+            #
+            # transaction.commit()
+            #
+            # if status:  # Скачивание трека в фоне Celery
+            #     dl_track.delay(
+            #         record_id=record.id,
+            #         track_id=track_instance.id,
+            #         url=track_url,
+            #         expected_artists=artists,
+            #     )
+
+
+
+            # if status:
+            #     transaction.on_commit(
+            #         lambda: dl_track.delay(
+            #             record_id=record.id,
+            #             track_id=track_instance.id,
+            #             url=track_url,
+            #             expected_artists=artists,
+            #         )
+            #     )
