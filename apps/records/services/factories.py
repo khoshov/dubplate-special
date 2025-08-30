@@ -1,8 +1,8 @@
 from typing import List, Type, TypeVar
 
-from django.db import models
-
 from records.models import Artist, Format, Genre, Label, Style
+
+from django.db import models
 
 T = TypeVar("T", bound=models.Model)
 

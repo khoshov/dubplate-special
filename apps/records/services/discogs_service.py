@@ -3,12 +3,11 @@ import time
 from typing import Optional
 
 import discogs_client
-
-from django.conf import settings
-
 from records.services.factories import DiscogsModelFactory
 from records.services.image_downloader import DiscogsImageDownloader
 from records.services.importers import DiscogsReleaseImporter
+
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
