@@ -5,7 +5,8 @@ FROM python:3.13-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Ensure Python output is sent straight to terminal without buffering
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # ======================
 # SYSTEM DEPENDENCIES

@@ -7,8 +7,19 @@ from sorl.thumbnail import ImageField
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from records.managers import (
+    ArtistManager,
+    FormatManager,
+    GenreManager,
+    LabelManager,
+    RecordManager,
+    StyleManager,
+)
+
 
 class RecordConditions:
+    """Константы состояния пластинок."""
+
     M = "M"
     NM = "NM"
     VGP = "VG+"
@@ -17,6 +28,7 @@ class RecordConditions:
     G = "G"
     F = "F"
     P = "P"
+
     CONDITION_CHOICES = (
         (M, "Mint (M)"),
         (NM, "Near Mint (NM)"),
@@ -30,9 +42,13 @@ class RecordConditions:
 
 
 class Artist(TimeStampedModel):
+    """Модель артиста."""
+
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     bio = CKEditor5Field(null=True, blank=True, verbose_name=_("Bio"))
+
+    objects = ArtistManager()
 
     def __str__(self):
         return self.name
@@ -44,9 +60,13 @@ class Artist(TimeStampedModel):
 
 
 class Label(TimeStampedModel):
+    """Модель лейбла."""
+
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
     description = CKEditor5Field(null=True, blank=True, verbose_name=_("Description"))
+
+    objects = LabelManager()
 
     def __str__(self):
         return self.name
@@ -58,7 +78,11 @@ class Label(TimeStampedModel):
 
 
 class Genre(TimeStampedModel):
-    name = models.CharField(max_length=100, verbose_name=_("Name"))
+    """Модель жанра."""
+
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
+
+    objects = GenreManager()
 
     def __str__(self):
         return self.name
@@ -69,20 +93,12 @@ class Genre(TimeStampedModel):
         ordering = ("name",)
 
 
-class Format(TimeStampedModel):
-    name = models.CharField(max_length=100, verbose_name=_("Name"))
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        verbose_name = _("Format")
-        verbose_name_plural = _("Formats")
-        ordering = ("name",)
-
-
 class Style(TimeStampedModel):
-    name = models.CharField(max_length=100, verbose_name=_("Name"))
+    """Модель стиля."""
+
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
+
+    objects = StyleManager()
 
     def __str__(self):
         return self.name
@@ -93,10 +109,28 @@ class Style(TimeStampedModel):
         ordering = ("name",)
 
 
+class Format(TimeStampedModel):
+    """Модель формата."""
+
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
+
+    objects = FormatManager()
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = _("Format")
+        verbose_name_plural = _("Formats")
+        ordering = ("name",)
+
+
 class Record(TimeStampedModel):
+    """Модель записи (пластинки)."""
+
     title = models.CharField(max_length=255, verbose_name=_("Record title"))
     artists = models.ManyToManyField(
-        Artist, related_name="records", verbose_name=_("Artist")
+        Artist, related_name="records", verbose_name=_("Artists")
     )
     label = models.ForeignKey(
         Label,
@@ -110,15 +144,17 @@ class Record(TimeStampedModel):
         null=True, blank=True, verbose_name=_("Release year")
     )
     genres = models.ManyToManyField(
-        Genre, related_name="records", verbose_name=_("Genre")
+        Genre, related_name="records", verbose_name=_("Genres")
     )
     formats = models.ManyToManyField(
-        Format, related_name="records", verbose_name=_("Format")
+        Format, related_name="records", verbose_name=_("Formats")
     )
     styles = models.ManyToManyField(
-        Style, related_name="records", verbose_name=_("Style")
+        Style, related_name="records", verbose_name=_("Styles")
     )
-    discogs_id = models.IntegerField(unique=True, null=True, blank=True)
+    discogs_id = models.IntegerField(
+        unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
+    )
     cover_image = ImageField(
         upload_to="images/",
         null=True,
@@ -139,9 +175,13 @@ class Record(TimeStampedModel):
     catalog_number = models.CharField(
         max_length=50,
         unique=True,
+        null=True,
+        blank=True,
         verbose_name=_("Catalog number"),
     )
-    barcode = models.CharField(max_length=20, unique=True, verbose_name=_("Barcode"))
+    barcode = models.CharField(
+        max_length=20, unique=True, null=True, blank=True, verbose_name=_("Barcode")
+    )
     country = models.CharField(
         null=True, blank=True, verbose_name=_("Country"), max_length=50
     )
@@ -153,6 +193,8 @@ class Record(TimeStampedModel):
         help_text=_("Manual price in Russian Rubles"),
         verbose_name=_("Price"),
     )
+
+    objects = RecordManager()
 
     def __str__(self):
         return self.title
@@ -169,6 +211,8 @@ def track_upload_to(instance, filename):
 
 
 class Track(TimeStampedModel):
+    """Модель трека."""
+
     record = models.ForeignKey(
         Record,
         on_delete=models.CASCADE,
@@ -201,54 +245,4 @@ class Track(TimeStampedModel):
     class Meta:
         verbose_name = _("Track")
         verbose_name_plural = _("Tracks")
-        ordering = (
-            "record",
-            "position",
-        )
-
-
-class Order(TimeStampedModel):
-    name = models.CharField(max_length=100, verbose_name=_("Full name"))
-    phone = models.CharField(max_length=20, verbose_name=_("Phone"))
-    address = models.CharField(max_length=100, verbose_name=_("Adress"))
-    total_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0, verbose_name=_("Total price")
-    )
-
-    class Meta:
-        verbose_name = _("Order")
-        verbose_name_plural = _("Orders")
-
-    def __str__(self):
-        return f"{_('Order')} - {self.id}"
-
-
-class OrderItem(TimeStampedModel):
-    order = models.ForeignKey(
-        Order, related_name="items", on_delete=models.CASCADE, verbose_name=_("Order")
-    )
-    record = models.ForeignKey(
-        Record,
-        related_name="order_items",
-        on_delete=models.CASCADE,
-        verbose_name=_("Record"),
-    )
-    price = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        verbose_name=_("Price"),
-    )
-    quantity = models.PositiveIntegerField(
-        default=1,
-        verbose_name=_("Count"),
-    )
-
-    class Meta:
-        verbose_name = "Позиция заказа"
-        verbose_name_plural = "Позиции заказа"
-
-    def __str__(self):
-        return f"{self.quantity} x {self.record.title}"
-
-    def get_cost(self):
-        return self.price * self.quantity
+        ordering = ("record", "position")
