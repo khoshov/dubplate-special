@@ -1,5 +1,3 @@
-from rest_framework import serializers
-
 from records.models import (
     Artist,
     Format,
@@ -9,6 +7,7 @@ from records.models import (
     Style,
     Track,
 )
+from rest_framework import serializers
 
 
 class ArtistSerializer(serializers.ModelSerializer):

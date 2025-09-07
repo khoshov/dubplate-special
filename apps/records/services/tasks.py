@@ -1,10 +1,11 @@
-from celery import shared_task
-import re
 import os
+import re
 
-from django.conf import settings
+from celery import shared_task
 from records.models import Track
 from yt_dlp import YoutubeDL
+
+from django.conf import settings
 
 
 @shared_task
@@ -18,10 +19,10 @@ def dl_track(record_id, track_id, url: str, expected_artists: list[str]):
 
     if url:
         # 1. Проверяем метаданные без скачивания
-        with YoutubeDL({'quiet': True, 'extract_flat': True}) as ydl:
+        with YoutubeDL({"quiet": True, "extract_flat": True}) as ydl:
             try:
                 info = ydl.extract_info(url, download=False)
-                video_title = info.get('title', '').lower()
+                video_title = info.get("title", "").lower()
             except Exception as e:
                 print(f"Ошибка получения информации: {str(e)}")
                 return
@@ -44,23 +45,25 @@ def dl_track(record_id, track_id, url: str, expected_artists: list[str]):
         # Формируем имя файла
         filename = f"{', '.join(expected_artists)} - {track.title}"
         # Формируем путь для сохранения (относительно MEDIA_ROOT)
-        relative_path = os.path.join('tracks', str(record_id), f'{filename}.%(ext)s')
+        relative_path = os.path.join("tracks", str(record_id), f"{filename}.%(ext)s")
         full_path = os.path.join(settings.MEDIA_ROOT, relative_path)
 
         # Создаем директорию если не существует
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': full_path,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '320',
-            }],
-            'embed-metadata': True,
-            'embed-thumbnail': False,
-            'quiet': True
+            "format": "bestaudio/best",
+            "outtmpl": full_path,
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "320",
+                }
+            ],
+            "embed-metadata": True,
+            "embed-thumbnail": False,
+            "quiet": True,
         }
 
         try:
@@ -68,7 +71,7 @@ def dl_track(record_id, track_id, url: str, expected_artists: list[str]):
                 ydl.download([url])
             print("Загрузка успешно завершена!")
 
-            track.audio_file = os.path.join('tracks', str(record_id), f'{filename}.mp3')
+            track.audio_file = os.path.join("tracks", str(record_id), f"{filename}.mp3")
             track.save()
 
             return True

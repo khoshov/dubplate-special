@@ -2,11 +2,6 @@ import os
 
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
-from sorl.thumbnail import ImageField
-
-from django.db import models
-from django.utils.translation import gettext_lazy as _
-
 from records.managers import (
     ArtistManager,
     FormatManager,
@@ -15,6 +10,10 @@ from records.managers import (
     RecordManager,
     StyleManager,
 )
+from sorl.thumbnail import ImageField
+
+from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 
 class RecordConditions:

@@ -1,11 +1,11 @@
 import logging
 from typing import Optional
 
-from django import forms
-
 from records.models import Record
 from records.services import DiscogsService, ImageService, RecordService
 from records.validators import RecordIdentifierValidator
+
+from django import forms
 
 logger = logging.getLogger(__name__)
 

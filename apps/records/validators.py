@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional
 
-from django.core.exceptions import ValidationError
-
 from records.models import Record
+
+from django.core.exceptions import ValidationError
 
 
 class RecordIdentifierValidator:

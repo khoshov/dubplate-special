@@ -1,13 +1,13 @@
 import logging
 
+from records.forms import RecordForm
+from records.models import Record, Track
+from records.services import DiscogsService, ImageService, RecordService
+
 from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
-
-from records.forms import RecordForm
-from records.models import Record, Track
-from records.services import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
 

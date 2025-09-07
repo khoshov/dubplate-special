@@ -1,10 +1,9 @@
+from accounts.models import SMSVerification, User
+from accounts.services import sms_service
 from rest_framework import serializers
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
-
-from accounts.models import SMSVerification, User
-from accounts.services import sms_service
 
 
 class UserProfileSerializer(serializers.ModelSerializer):

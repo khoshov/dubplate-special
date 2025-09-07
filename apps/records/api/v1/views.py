@@ -1,6 +1,5 @@
-from rest_framework import viewsets
-
 from records.models import Record, Style
+from rest_framework import viewsets
 
 from .filters import RecordFilter
 from .serializers import RecordSerializer, StyleSerializer

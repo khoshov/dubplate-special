@@ -1,7 +1,6 @@
 import logging
+from functools import partial
 from typing import List, Optional, Tuple
-
-from django.db import transaction
 
 from records.models import (
     Artist,
@@ -15,9 +14,10 @@ from records.models import (
 )
 from records.services.discogs_service import DiscogsService
 from records.services.image_service import ImageService
-from apps.records.services.tasks import dl_track
+
 from django.db import transaction
-from functools import partial
+
+from apps.records.services.tasks import dl_track
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +684,7 @@ class RecordService:
 
         # Удаляем старые треки
         record.tracks.all().delete()
+        # TODO: Написать функцию удаления mp3 с хранилища
         logger.info(f"Deleted {old_tracks_count} old tracks for record {record.id}")
 
         # Создаём новые
