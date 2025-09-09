@@ -22,6 +22,8 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
+from apps.core.views import storage_proxy
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("ckeditor5/", include("django_ckeditor_5.urls")),
@@ -30,6 +32,7 @@ urlpatterns = [
     path("api/v1/accounts/", include("accounts.api.v1.urls")),
     path("openapi.json", SpectacularAPIView.as_view(), name="schema"),
     path("docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
+    path("_storage/<path:name>/<str:signature>/", storage_proxy, name="storage-proxy"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 if settings.SILK_ENABLED:

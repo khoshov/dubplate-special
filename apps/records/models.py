@@ -14,6 +14,8 @@ from records.managers import (
     StyleManager,
 )
 
+from apps.core.storage import WebDavStorage
+
 
 class RecordConditions:
     """Константы состояния пластинок."""
@@ -223,6 +225,11 @@ class Track(TimeStampedModel):
         blank=True,
         verbose_name=_("Track URL"),
         help_text=_("URL to track (YouTube)"),
+    )
+    file = models.FileField(
+        upload_to="tracks/",
+        null=True,
+        blank=True,
     )
 
     def __str__(self):

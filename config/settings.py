@@ -173,11 +173,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # =================
 AUTH_USER_MODEL = "accounts.User"
 
-# =============
-# MEDIA FILES
-# =============
-MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+# # =============
+# # MEDIA FILES
+# # =============
+# MEDIA_URL = "/media/"
+# MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # ===================
 # CKEDITOR 5 CONFIG
@@ -375,3 +375,37 @@ CORS_ALLOW_HEADERS = [
     "x-csrftoken",
     "x-requested-with",
 ]
+
+# ===================
+# WEBDAV STORAGE
+# ===================
+STORAGES = {
+    "default": {
+        "BACKEND": "core.storage.WebDavStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+WEBDAV_URL = "https://webdav.yandex.ru"          # База WebDAV
+WEBDAV_PUBLIC_URL = "https://webdav.yandex.ru"   # Можно оставить так же
+WEBDAV_ROOT_PATH = "media"                       # Префикс в диске (опц.)
+
+# # Авторизация — используйте ОДИН из вариантов:
+# WEBDAV_TOKEN = "ya_oauth_token_here"             # РЕКОМЕНДУЕТСЯ для Я.Диска
+# # или
+WEBDAV_USERNAME = ""
+WEBDAV_PASSWORD = ""
+
+# Доп. опции
+WEBDAV_TIMEOUT = 30.0
+WEBDAV_VERIFY_SSL = True
+WEBDAV_MAX_RETRIES = 3
+WEBDAV_RECURSIVE_MKCOL = True
+
+WEBDAV_PROXY_ENABLED = True
+WEBDAV_PROXY_URL_NAME = "storage-proxy"     # имя urlpattern (см. ниже)
+WEBDAV_PROXY_SALT = "storage-proxy"         # соль для подписи (замените на свою)
+# Если хотите абсолютные ссылки:
+# WEBDAV_PROXY_ABSOLUTE_BASE = "https://admin.example.com"
