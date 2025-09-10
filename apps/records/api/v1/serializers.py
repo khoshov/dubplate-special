@@ -43,7 +43,7 @@ class StyleSerializer(serializers.ModelSerializer):
 class TrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = Track
-        fields = ["id", "position", "title", "duration", "audio_file"]
+        fields = ["id", "position", "title", "duration", "file"]
         read_only_fields = ["id", "created", "modified"]
 
 

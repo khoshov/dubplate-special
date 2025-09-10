@@ -71,7 +71,7 @@ def dl_track(record_id, track_id, url: str, expected_artists: list[str]):
                 ydl.download([url])
             print("Загрузка успешно завершена!")
 
-            track.audio_file = os.path.join("tracks", str(record_id), f"{filename}.mp3")
+            track.file = os.path.join("tracks", str(record_id), f"{filename}.mp3")
             track.save()
 
             return True

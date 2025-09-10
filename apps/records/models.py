@@ -230,7 +230,7 @@ class Track(TimeStampedModel):
         verbose_name=_("Track URL"),
         help_text=_("URL to track (YouTube)"),
     )
-    audio_file = models.FileField(
+    file = models.FileField(
         max_length=255,
         null=True,
         blank=True,
