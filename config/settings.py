@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import environ
+from celery import Celery
 
 # Initialize environment variables
 env = environ.Env()
@@ -382,3 +383,11 @@ CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
+
+CELERY_APP = Celery("config")
+
+# Загрузка настроек с префиксом CELERY_
+# app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# Явно регистрируем задачи
+CELERY_APP.autodiscover_tasks(packages=["apps.records.services"], related_name="tasks")
