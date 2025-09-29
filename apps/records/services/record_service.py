@@ -1,8 +1,8 @@
 import logging
-from typing import List, Optional, Tuple
+from typing import List
+from typing import Optional, Tuple
 
 from django.db import transaction
-
 from records.models import (
     Artist,
     Format,
@@ -13,8 +13,17 @@ from records.models import (
     Style,
     Track,
 )
+from records.models import Record
 from records.services.discogs_service import DiscogsService
 from records.services.image_service import ImageService
+from records.services.redeye_service import RedeyeService
+
+# добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
+# Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.
+try:
+    from records.services.redeye_service import RedeyeService  # type: ignore
+except Exception:  # pragma: no cover  # на случай, если файл ещё не создан
+    RedeyeService = None  # подменим на None; метод import_from_redeye отработает с понятной ошибкой
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +50,10 @@ class RecordService:
         self.image_service = image_service
 
     def import_from_discogs(
-        self,
-        barcode: Optional[str] = None,
-        catalog_number: Optional[str] = None,
-        save_image: bool = True,
+            self,
+            barcode: Optional[str] = None,
+            catalog_number: Optional[str] = None,
+            save_image: bool = True,
     ) -> Tuple[Record, bool]:
         """Импорт записи из Discogs.
 
@@ -103,8 +112,45 @@ class RecordService:
         logger.info(f"Record imported successfully: {record.id}")
         return record, True
 
-    def import_from_redeye(self):
-        pass
+    # добавлен: импорт из Redeye — ключевой метод для новой функциональности
+    def import_from_redeye(
+            self,
+            catalog_number: Optional[str] = None,
+            save_image: bool = True,
+    ) -> Tuple[Record, bool]:
+        if not catalog_number:
+            raise ValueError("catalog_number is required for Redeye import")
+
+        # 1) локальный дубликат
+        existing = Record.objects.find_by_catalog_number(catalog_number)
+        if existing:
+            logger.info(f"Found existing record by catalog_number (Redeye): {existing.id}")
+            return existing, False
+
+        # 2) тянем с сайта
+        redeye = RedeyeService()
+        res = redeye.fetch_by_catalog_number(catalog_number)
+        data = res.payload  # RedeyeFetchResult → берём дикт
+
+        # подстрахуем кат.№ (то, что искали — то и записываем)
+        wanted = catalog_number.strip().upper()
+        parsed = (data.get("catalog_number") or "").strip().upper()
+        if parsed != wanted:
+            logger.info("Override catalog_number: parsed='%s' → '%s'", parsed, wanted)
+            data["catalog_number"] = wanted
+
+        # 3) создаём запись + связи + треки
+        with transaction.atomic():
+            record = self._create_record_from_vendor(data)
+
+            # 4) обложка
+            cover_url = data.get("image_url")
+            if save_image and cover_url:
+                if self.image_service.download_cover(record, cover_url):
+                    logger.info(f"Cover downloaded for record {record.id} (Redeye)")
+
+        logger.info(f"Record imported successfully from Redeye: {record.id}")
+        return record, True
 
     def update_from_discogs(self, record: Record, update_image: bool = True) -> Record:
         """Обновление существующей записи из Discogs.
@@ -151,7 +197,7 @@ class RecordService:
             self._update_record_fields(record, discogs_release)
 
             # 2. Обновляем связи (полная замена)
-            self._update_record_relations(record, discogs_release)
+            self._update_record_relations(record, disccogs_release=discogs_release)
 
             # 3. Обновляем треки (полная замена)
             self._update_tracks(record, discogs_release)
@@ -159,7 +205,7 @@ class RecordService:
             # 4. Обновляем обложку если нужно
             if update_image and not record.cover_image and discogs_release.images:
                 if self.image_service.download_cover(
-                    record, discogs_release.images[0]["uri"]
+                        record, discogs_release.images[0]["uri"]
                 ):
                     logger.info(f"Cover image updated for record {record.id}")
 
@@ -173,11 +219,11 @@ class RecordService:
         return record
 
     def check_duplicate(
-        self,
-        barcode: Optional[str] = None,
-        catalog_number: Optional[str] = None,
-        discogs_id: Optional[int] = None,
-        exclude_pk: Optional[int] = None,
+            self,
+            barcode: Optional[str] = None,
+            catalog_number: Optional[str] = None,
+            discogs_id: Optional[int] = None,
+            exclude_pk: Optional[int] = None,
     ) -> Optional[Record]:
         """Проверка на дубликаты по идентификаторам.
 
@@ -235,7 +281,7 @@ class RecordService:
         return None
 
     def update_stock(
-        self, record: Record, quantity: int, operation: str = "set"
+            self, record: Record, quantity: int, operation: str = "set"
     ) -> Record:
         """Обновление остатков записи.
 
@@ -271,7 +317,7 @@ class RecordService:
     # === Приватные методы ===
 
     def _find_existing_record(
-        self, barcode: Optional[str], catalog_number: Optional[str]
+            self, barcode: Optional[str], catalog_number: Optional[str]
     ) -> Optional[Record]:
         """Поиск существующей записи по идентификаторам.
 
@@ -293,10 +339,10 @@ class RecordService:
         return None
 
     def _create_record_from_discogs(
-        self,
-        discogs_release,
-        search_barcode: Optional[str] = None,
-        search_catalog_number: Optional[str] = None,
+            self,
+            discogs_release,
+            search_barcode: Optional[str] = None,
+            search_catalog_number: Optional[str] = None,
     ) -> Record:
         """Создание записи из данных Discogs.
 
@@ -360,10 +406,10 @@ class RecordService:
         return value is None or (isinstance(value, str) and value.strip() == "")
 
     def _update_missing_identifiers(
-        self,
-        record: Record,
-        barcode: Optional[str] = None,
-        catalog_number: Optional[str] = None,
+            self,
+            record: Record,
+            barcode: Optional[str] = None,
+            catalog_number: Optional[str] = None,
     ):
         """Обновляет недостающие идентификаторы в существующей записи.
 
@@ -423,7 +469,7 @@ class RecordService:
 
         # Обновляем идентификаторы если они пустые
         if self._is_empty_identifier(record.catalog_number) and record_data.get(
-            "catalog_number"
+                "catalog_number"
         ):
             record.catalog_number = record_data["catalog_number"]
             logger.info(f"Added missing catalog_number: {record.catalog_number}")
@@ -482,7 +528,106 @@ class RecordService:
         formats = self._create_formats(getattr(discogs_release, "formats", []))
         record.formats.set(formats)
 
-    def _update_record_relations(self, record: Record, discogs_release):
+    # добавлено: создание записи/связей из "вендорских" данных (Redeye)
+    def _create_record_from_vendor(self, data: dict) -> Record:
+        """Создание записи из словаря, полученного от стороннего источника (Redeye).
+
+        Ожидаемые ключи словаря см. в описании метода import_from_redeye().
+        """
+        logger.info(
+            "Creating record from vendor data: "
+            f"catalog={data.get('catalog_number')}, title='{data.get('title')}'"
+        )
+
+        record = Record.objects.create(
+            title=data["title"],
+            # у Redeye нет discogs_id — поле оставляем пустым
+            discogs_id=None,
+            release_year=data.get("release_year"),
+            catalog_number=data.get("catalog_number"),
+            barcode=data.get("barcode"),
+            country=data.get("country"),
+            notes=data.get("notes"),
+            condition=RecordConditions.M,
+            stock=1,
+            # price: поле в проекте в рублях, конвертацию здесь специально НЕ делаем
+            # (на будущее — можно конвертировать во внешнем слое по курсу)
+        )
+
+        # связи
+        self._create_vendor_relations(record, data)
+        # треки
+        self._create_vendor_tracks(record, data)
+
+        return record
+
+    def _create_vendor_relations(self, record: Record, data: dict) -> None:
+        """Создание связей (артисты/лейбл/жанры/стили/форматы) из словаря."""
+        # Артисты (по имени)
+        artist_objs: List[Artist] = []
+        for name in data.get("artists", []) or []:
+            if not name:
+                continue
+            artist = Artist.objects.find_by_name(name) or Artist.objects.create(
+                name=name
+            )
+            artist_objs.append(artist)
+        if artist_objs:
+            record.artists.set(artist_objs)
+
+        # Лейбл (по имени)
+        label_name = data.get("label")
+        if label_name:
+            label = Label.objects.find_by_name(label_name) or Label.objects.create(
+                name=label_name
+            )
+            record.label = label
+            record.save()
+
+        # Жанры
+        genres_objs: List[Genre] = []
+        for name in data.get("genres", []) or []:
+            if not name:
+                continue
+            genre = Genre.objects.find_by_name(name) or Genre.objects.create(name=name)
+            genres_objs.append(genre)
+        if genres_objs:
+            record.genres.set(genres_objs)
+
+        # Стили
+        styles_objs: List[Style] = []
+        for name in data.get("styles", []) or []:
+            if not name:
+                continue
+            style = Style.objects.find_by_name(name) or Style.objects.create(name=name)
+            styles_objs.append(style)
+        if styles_objs:
+            record.styles.set(styles_objs)
+
+        # Форматы (строки, например '12"' или 'LP')
+        formats_objs: List[Format] = []
+        for name in data.get("formats", []) or []:
+            if not name:
+                continue
+            fmt = Format.objects.find_by_name(name) or Format.objects.create(name=name)
+            formats_objs.append(fmt)
+        if formats_objs:
+            record.formats.set(formats_objs)
+
+    def _create_vendor_tracks(self, record: Record, data: dict) -> None:
+        """Создание треков из словаря (позиция/название/длительность)."""
+        for t in data.get("tracks", []) or []:
+            if not t or not t.get("title"):
+                continue
+            Track.objects.create(
+                record=record,
+                position=t.get("position") or "",
+                title=t["title"],
+                duration=t.get("duration"),
+                youtube_url=t.get("youtube_url"),  # обычно у Redeye нет; оставим на будущее
+            )
+
+    def _update_record_relations(self, record: Record, disccogs_release):
         """Обновление связей записи.
 
         ПОЛНОСТЬЮ ЗАМЕНЯЕТ:
@@ -494,7 +639,7 @@ class RecordService:
 
         Args:
             record: Запись для обновления связей.
-            discogs_release: Объект релиза из Discogs API.
+            disccogs_release: Объект релиза из Discogs API.
         """
         logger.info(f"Updating relations for record {record.id}")
 
@@ -506,7 +651,7 @@ class RecordService:
         old_label = record.label.name if record.label else None
 
         # Обновляем все связи
-        self._create_record_relations(record, discogs_release)
+        self._create_record_relations(record, disccogs_release)
 
         # Логируем изменения
         new_artists = list(record.artists.values_list("name", flat=True))

@@ -61,8 +61,13 @@ class RecordAdmin(admin.ModelAdmin):
         (
             None,
             {
-                "fields": ("barcode", "catalog_number"),
-                "description": "Введите штрих-код или каталожный номер для импорта из Discogs",
+                # добавлено: поле source для выбора источника (Discogs | Redeye)
+                "fields": ("source", "barcode", "catalog_number"),
+                # добавлено: уточнили описание, что теперь доступен Redeye
+                "description": (
+                    "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
+                    "Для Redeye используется только каталожный номер."
+                ),
             },
         ),
     )
@@ -218,17 +223,33 @@ class RecordAdmin(admin.ModelAdmin):
 
         # Сообщения об импорте для новых записей
         if not change:
+            # добавлено: учитываем выбранный источник, чтобы сообщения были релевантны
+            source = getattr(form, "cleaned_data", {}).get("source") or request.POST.get(
+                "source"
+            )
+
             if obj.discogs_id:
+                # старое поведение оставляем — это для импорта из Discogs
                 messages.success(
                     request,
                     f'Запись "{obj.title}" успешно импортирована из Discogs (ID: {obj.discogs_id})',
                 )
             else:
-                messages.warning(
-                    request,
-                    "Запись создана, но данные из Discogs не найдены. "
-                    "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
-                )
+                # добавлено: если выбрали Redeye — даём нейтральное инфо-сообщение,
+                # т.к. у записей с Redeye не будет discogs_id.
+                if source == "redeye":
+                    messages.info(
+                        request,
+                        "Попытка импорта из Redeye завершена. "
+                        "Если данные не подтянулись автоматически, заполните карточку вручную "
+                        "или повторите импорт позже.",
+                    )
+                else:
+                    messages.warning(
+                        request,
+                        "Запись создана, но данные из Discogs не найдены. "
+                        "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
+                    )
 
     def response_add(self, request, obj, post_url_continue=None):
         """Обработка ответа после создания записи.
@@ -263,6 +284,16 @@ class RecordAdmin(admin.ModelAdmin):
                 request,
                 "Проверьте импортированные данные и при необходимости отредактируйте их.",
             )
+            redirect_url = reverse(
+                f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
+                args=[obj.pk],
+            )
+            return redirect(redirect_url)
+
+        # добавлено: для Redeye discogs_id не заполняется; всё равно ведём на редактирование,
+        # чтобы пользователь увидел, что подтянулось, и мог сохранить/дополнить.
+        source = request.POST.get("source")
+        if source == "redeye":
             redirect_url = reverse(
                 f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
                 args=[obj.pk],
@@ -346,40 +377,9 @@ class RecordAdmin(admin.ModelAdmin):
             return False
         return super().has_delete_permission(request, obj)
 
-
-# # Регистрация остальных моделей
-# @admin.register(Artist)
-# class ArtistAdmin(admin.ModelAdmin):
-#     """Админка для артистов."""
-#     list_display = ("name", "discogs_id", "created")
-#     search_fields = ("name",)
-#     readonly_fields = ("discogs_id", "created", "modified")
-#
-#
-# @admin.register(Label)
-# class LabelAdmin(admin.ModelAdmin):
-#     """Админка для лейблов."""
-#     list_display = ("name", "discogs_id", "created")
-#     search_fields = ("name",)
-#     readonly_fields = ("discogs_id", "created", "modified")
-#
-#
-# @admin.register(Genre)
-# class GenreAdmin(admin.ModelAdmin):
-#     """Админка для жанров."""
-#     list_display = ("name", "created")
-#     search_fields = ("name",)
-#
-#
-# @admin.register(Style)
-# class StyleAdmin(admin.ModelAdmin):
-#     """Админка для стилей."""
-#     list_display = ("name", "created")
-#     search_fields = ("name",)
-#
-#
-# @admin.register(Format)
-# class FormatAdmin(admin.ModelAdmin):
-#     """Админка для форматов."""
-#     list_display = ("name", "created")
-#     search_fields = ("name",)
+    # Добавлено: делаем M2M не обязательными на форме редактирования (без миграций)
+    def formfield_for_manytomany(self, db_field, request, **kwargs):
+        field = super().formfield_for_manytomany(db_field, request, **kwargs)
+        # genres / styles / formats могут отсутствовать у Redeye
+        field.required = False  # <-- ключевая строка
+        return field
