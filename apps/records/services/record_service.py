@@ -103,6 +103,9 @@ class RecordService:
         logger.info(f"Record imported successfully: {record.id}")
         return record, True
 
+    def import_from_redeye(self):
+        pass
+
     def update_from_discogs(self, record: Record, update_image: bool = True) -> Record:
         """Обновление существующей записи из Discogs.
 

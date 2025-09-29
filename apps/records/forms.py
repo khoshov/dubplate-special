@@ -31,6 +31,7 @@ class RecordForm(forms.ModelForm):
         }
 
         help_texts = {
+            "source": "Выберите источник для добавления",
             "barcode": "Штрих-код для поиска в Discogs",
             "catalog_number": "Каталожный номер для поиска в Discogs",
             "discogs_id": "ID релиза в базе Discogs (заполняется автоматически)",
