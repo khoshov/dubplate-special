@@ -538,26 +538,35 @@ class RecordService:
     def _create_record_from_vendor(self, data: dict) -> Record:
         """Создание записи из словаря, полученного от стороннего источника (Redeye).
 
-        Ожидаемые ключи словаря см. в описании метода import_from_redeye().
+        Ожидаемые ключи:
+          title, artists[], label, catalog_number, barcode, country, notes,
+          formats[], tracks[],
+          image_url,
+          price_gbp, availability,
+          release_year, release_month, release_day  <-- парсится из "Expected ..."
         """
         logger.info(
             "Creating record from vendor data: "
             f"catalog={data.get('catalog_number')}, title='{data.get('title')}'"
         )
 
+        # поддержим обратную совместимость: если пришёл "year", но нет release_year — подставим
+        release_year = data.get("release_year", data.get("year"))
+        release_month = data.get("release_month")
+        release_day = data.get("release_day")
+
         record = Record.objects.create(
             title=data["title"],
-            # у Redeye нет discogs_id — поле оставляем пустым
-            discogs_id=None,
-            release_year=data.get("year"),
+            discogs_id=None,  # у Redeye нет discogs_id
+            release_year=release_year,
+            release_month=release_month,
+            release_day=release_day,
             catalog_number=data.get("catalog_number"),
             barcode=data.get("barcode"),
             country=data.get("country"),
             notes=data.get("notes"),
             condition=RecordConditions.M,
             stock=1,
-            # price: поле в проекте в рублях, конвертацию здесь специально НЕ делаем
-            # (на будущее — можно конвертировать во внешнем слое по курсу)
         )
 
         # связи

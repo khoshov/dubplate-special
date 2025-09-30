@@ -1,9 +1,9 @@
+# apps/records/forms.py
 import logging
 from typing import Optional
 
 from django import forms
 from django.core.exceptions import ValidationError
-
 from records.models import Record
 from records.services import DiscogsService, ImageService, RecordService
 from records.validators import RecordIdentifierValidator
@@ -15,16 +15,11 @@ class RecordForm(forms.ModelForm):
     """
     Форма создания/редактирования Record.
 
-    Главное изменение: добавили поле `source` (Discogs | Redeye).
-    При создании запись подтягивается из выбранного источника:
-      - Discogs: по barcode или catalog_number (как было).
-      - Redeye: по catalog_number.
-
-    Также на этапе рендера формы (создание) скрываем "лишние" поля
-    в зависимости от выбранного источника.
+    - При СОЗДАНИИ: показываем поле источника (Discogs | Redeye) и тянем данные из него.
+    - При РЕДАКТИРОВАНИИ: поле источника скрыто и НЕ участвует в валидации/сохранении.
     """
 
-    # Поле ИСТОЧНИКА — это НЕ модельное поле, используется только на форме "создать".
+    # НЕМОДЕЛЬНОЕ поле источника — используем ТОЛЬКО при создании
     SOURCE_DISCOGS = "discogs"
     SOURCE_REDEYE = "redeye"
     SOURCE_CHOICES = (
@@ -42,27 +37,16 @@ class RecordForm(forms.ModelForm):
     class Meta:
         model = Record
         fields = "__all__"
-
         widgets = {
             "notes": forms.Textarea(attrs={"rows": 4}),
         }
         help_texts = {
-            # ВНИМАНИЕ: source — не модельное, но Django позволит help_text,
-            # т.к. поле определено на форме (см. выше).
             "barcode": "Штрих-код для поиска в Discogs",
             "catalog_number": "Каталожный номер для поиска (Discogs/Redeye)",
             "discogs_id": "ID релиза в базе Discogs (заполняется автоматически)",
         }
 
     def __init__(self, *args, **kwargs):
-        """
-        Инициализация:
-        - Поднимаем сервисы (RecordService использует DiscogsService/ImageService;
-          для Redeye мы добавим метод в RecordService).
-        - Делает поля barcode/catalog_number необязательными.
-        - Если создаём НОВУЮ запись — показываем только поля идентификаторов
-          + поле выбора источника, причём набор полей зависит от выбранного `source`.
-        """
         super().__init__(*args, **kwargs)
 
         self.record_service = RecordService(
@@ -70,35 +54,37 @@ class RecordForm(forms.ModelForm):
         )
         self.validator = RecordIdentifierValidator()
 
-        # Оба поля не обязательные на уровне формы;
-        # обязательность контролируем нашей общей валидацией в .clean()
-        self.fields["barcode"].required = False
-        self.fields["catalog_number"].required = False
+        # Эти поля не обязательные на уровне формы;
+        # обязательность контролируем в clean() для кейса "создание"
+        if "barcode" in self.fields:
+            self.fields["barcode"].required = False
+        if "catalog_number" in self.fields:
+            self.fields["catalog_number"].required = False
 
-        # При создании записи конфигурируем набор видимых полей
-        if not self.instance.pk:
-            # Какой источник выбран сейчас?
-            # При первом открытии формы берём initial/дефолт, при сабмите — self.data.
+        is_creating = not (self.instance and self.instance.pk)
+
+        if is_creating:
+            # ---- Конфигурация формы СОЗДАНИЯ ----
             current_source = (
                 (self.data.get("source") if self.data else None)
                 or self.initial.get("source")
                 or self.SOURCE_DISCOGS
             )
             self._setup_fields_for_new_record(current_source)
+        else:
+            # ---- РЕДАКТИРОВАНИЕ: поле "source" НЕ нужно и НЕ должно валидироваться ----
+            if "source" in self.fields:
+                del self.fields["source"]
 
     # ---- Рендер/настройка полей при создании ----
     def _setup_fields_for_new_record(self, current_source: str):
         """
         Для формы "создать":
-        - Оставляем только нужные поля.
-        - Плейсхолдеры, классы и т.п.
+        - оставляем только нужные поля,
+        - выставляем плейсхолдеры и классы.
         """
-        # Сохраняем все поля (если когда-то понадобится восстановить)
-        self._all_fields = dict(self.fields)
-
-        # Разрешённые поля для каждого источника
         if current_source == self.SOURCE_REDEYE:
-            # На Redeye ищем ТОЛЬКО по каталожному номеру
+            # Redeye: ищем ТОЛЬКО по каталожному номеру
             allowed_fields = ["source", "catalog_number"]
         else:
             # Discogs: можно по barcode И/ИЛИ по catalog_number
@@ -108,7 +94,6 @@ class RecordForm(forms.ModelForm):
             if name not in allowed_fields:
                 del self.fields[name]
 
-        # Немного UX
         if "barcode" in self.fields:
             self.fields["barcode"].widget.attrs.update(
                 {
@@ -124,8 +109,8 @@ class RecordForm(forms.ModelForm):
                     "class": "form-control catalog-input",
                 }
             )
-        # Поле источника — чтобы было сверху
-        self.fields["source"].widget.attrs.update({"class": "form-control source-input"})
+        if "source" in self.fields:
+            self.fields["source"].widget.attrs.update({"class": "form-control source-input"})
 
     # ---- Чистим индивидуальные поля ----
     def clean_barcode(self) -> Optional[str]:
@@ -140,88 +125,99 @@ class RecordForm(forms.ModelForm):
     def clean(self):
         """
         Для НОВОЙ записи:
-        - Discogs: требуется хотя бы ОДИН идентификатор (как было — валидатор validate_identifiers_required)
-        - Redeye: обязателен catalog_number (штрих-код не используется)
+        - Redeye: обязателен catalog_number;
+        - Discogs: обязателен barcode ИЛИ catalog_number.
+
+        Для РЕДАКТИРОВАНИЯ: ничего доп. не требуем.
         """
         cleaned = super().clean()
 
-        if not self.instance.pk:
-            source = cleaned.get("source") or self.data.get("source") or self.SOURCE_DISCOGS
+        is_creating = not (self.instance and self.instance.pk)
+        if not is_creating:
+            # редактирование — без требований к идентификаторам
+            return cleaned
 
-            if source == self.SOURCE_REDEYE:
-                # Требуем именно catalog_number
-                if not cleaned.get("catalog_number"):
-                    raise ValidationError(
-                        {"catalog_number": "Для импорта из Redeye укажите каталожный номер."}
-                    )
-                return cleaned
+        source = cleaned.get("source") or self.data.get("source") or self.SOURCE_DISCOGS
 
-            # Иначе — Discogs: нужен хотя бы один идентификатор
-            return self.validator.validate_identifiers_required(cleaned)
+        if source == self.SOURCE_REDEYE:
+            if not cleaned.get("catalog_number"):
+                raise ValidationError(
+                    {"catalog_number": "Для импорта из Redeye укажите каталожный номер."}
+                )
+            return cleaned
 
-        return cleaned
+        # Discogs: нужен хотя бы один идентификатор
+        return self.validator.validate_identifiers_required(cleaned)
 
     # ---- Сохранение ----
     def save(self, commit: bool = True):
         """
-        Логика сохранения:
-        1) Создаём "черновик" Record (как и раньше).
-        2) Если это новая запись — импортируем из выбранного источника.
-        3) Если найден дубликат — прокидываем его в admin через self.duplicate_record.
-        4) Если импорт создал/нашёл другую запись — удаляем временную.
+        - Редактирование существующей записи: обычное сохранение ModelForm.
+        - Создание новой записи: импорт из выбранного источника и применение значений формы.
         """
-        instance = super().save(commit=False)
+        is_creating = not (self.instance and self.instance.pk)
 
-        if commit:
-            instance.save()
-            self.save_m2m()
+        if not is_creating:
+            # === РЕДАКТИРОВАНИЕ СУЩЕСТВУЮЩЕЙ ЗАПИСИ ===
+            return super().save(commit=commit)
 
-        # Импорт выполняем только для НОВЫХ записей
-        if not self.instance.pk:
-            # Определим источник: сначала cleaned_data (надёжнее), затем POST.
-            source = self.cleaned_data.get("source") or self.data.get("source") or self.SOURCE_DISCOGS
-            barcode = self.cleaned_data.get("barcode")
-            catalog_number = self.cleaned_data.get("catalog_number")
+        # === СОЗДАНИЕ НОВОЙ ЗАПИСИ (импорт) ===
+        source = self.cleaned_data.get("source") or self.SOURCE_DISCOGS
+        barcode = self.cleaned_data.get("barcode")
+        catalog_number = self.cleaned_data.get("catalog_number")
 
-            try:
-                # Ветвление по источнику
-                if source == self.SOURCE_REDEYE:
-                    # Метод добавим в RecordService на следующем шаге
-                    record, imported = self.record_service.import_from_redeye(
-                        catalog_number=catalog_number
-                    )
-                    log_source = "Redeye"
-                else:
-                    record, imported = self.record_service.import_from_discogs(
-                        barcode=barcode, catalog_number=catalog_number
-                    )
-                    log_source = "Discogs"
+        try:
+            if source == self.SOURCE_REDEYE:
+                record, imported = self.record_service.import_from_redeye(
+                    catalog_number=catalog_number
+                )
+            else:
+                record, imported = self.record_service.import_from_discogs(
+                    barcode=barcode,
+                    catalog_number=catalog_number,
+                )
 
-                if imported:
-                    logger.info(f"Record imported from {log_source}: {record.id}")
-                else:
-                    logger.info(f"Found existing record ({log_source}): {record.id}")
-                    # Сообщаем админке, что нужно редиректнуть на найденную запись
-                    self.duplicate_record = record
+            if imported:
+                logger.info("Record imported: %s", record.id)
+            else:
+                logger.info("Found existing record: %s", record.id)
+                self.duplicate_record = record  # для возможного редиректа в админке
 
-                # Удаляем временную запись, если импорт вернул другой объект
-                if imported and instance.pk and record.pk != instance.pk:
-                    instance.delete()
+            # Применим значения из формы (если они были заданы)
+            for field in (
+                "title",
+                "release_year",
+                "label",
+                "country",
+                "notes",
+                "catalog_number",
+                "barcode",
+            ):
+                if field in self.cleaned_data and self.cleaned_data[field] not in (None, ""):
+                    setattr(record, field, self.cleaned_data[field])
+            record.save()
 
-                return record
+            # M2M из формы (ровно то, что выбрал пользователь)
+            if "artists" in self.cleaned_data:
+                record.artists.set(self.cleaned_data["artists"])
+            if "genres" in self.cleaned_data:
+                record.genres.set(self.cleaned_data["genres"])
+            if "styles" in self.cleaned_data:
+                record.styles.set(self.cleaned_data["styles"])
+            if "formats" in self.cleaned_data:
+                record.formats.set(self.cleaned_data["formats"])
 
-            except ValueError as e:
-                # Нормальная ситуация: ничего не нашли / парсер не смог — оставляем пустую запись
-                logger.warning(f"Failed to import record ({source}): {e}")
+            # Админка потом вызовет form.save_m2m(); подставляем no-op
+            self.save_m2m = lambda: None  # type: ignore[attr-defined]
+            return record
 
-        return instance
+        except ValueError as e:
+            logger.warning(f"Failed to import record ({source}): {e}")
+            # Привязываем ошибку к каталожному номеру (для обоих источников это уместно)
+            raise ValidationError({"catalog_number": f"Не удалось импортировать из {source}: {e}"})
 
     class Media:
         """
-        (Опционально) Если хочешь live-переключение полей в админке без перезагрузки —
-        подключи маленький JS. Ниже — объявление, сам файл положим в
-        `apps/records/static/records/js/record_source_toggle.js` и подключим статику.
-        Если не добавлять этот файл — всё равно будет работать сервер-сайд скрытие
-        при каждом сабмите/перезагрузке формы.
+        live-переключение полей в админке при выборе источника для парсинга
         """
         js = ("records/js/record_source_toggle.js",)

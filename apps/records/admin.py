@@ -76,7 +76,11 @@ class RecordAdmin(admin.ModelAdmin):
     fieldsets = (
         (
             "Основная информация",
-            {"fields": ("title", "artists", "label", "release_year")},
+            {"fields": ("title", "artists", "label")},
+        ),
+        (
+            "Дата релиза",
+            {"fields": ("release_year", "release_month", "release_day", "is_expected")},
         ),
         (
             "Идентификаторы",
@@ -107,8 +111,12 @@ class RecordAdmin(admin.ModelAdmin):
         "price",
         "discogs_id",
         "created",
+        "release_year",
+        "release_month",
+        "release_day",
+        "is_expected",
     )
-    list_filter = ("condition", "genres", "styles", "created", "modified")
+    list_filter = ("condition", "genres", "styles", "created", "modified","is_expected")
     search_fields = (
         "title",
         "barcode",
@@ -117,7 +125,7 @@ class RecordAdmin(admin.ModelAdmin):
         "artists__name",
         "label__name",
     )
-    ordering = ("-created",)
+    ordering = ("is_expected", "release_year", "release_month", "release_day", "-created")
     date_hierarchy = "created"
 
     # Оптимизация запросов
@@ -357,9 +365,11 @@ class RecordAdmin(admin.ModelAdmin):
         Returns:
             Кортеж полей только для чтения.
         """
+        # is_expected вычисляется автоматически в save() -> делаем его read-only
+        base = ("is_expected",)
         if obj:
-            return ("discogs_id", "created", "modified")
-        return ()
+            return base + ("discogs_id", "created", "modified")
+        return base
 
     def has_delete_permission(self, request, obj=None):
         """Проверка прав на удаление.

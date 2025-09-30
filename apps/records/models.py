@@ -1,4 +1,9 @@
+import os
+from datetime import date
+
 from django.db import models
+from django.utils import timezone
+from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
@@ -11,6 +16,13 @@ from records.managers import (
     StyleManager,
 )
 from sorl.thumbnail import ImageField
+
+
+def record_upload_to(instance, filename):
+    # Папка по названию пластинки (slug), файл — cover.<ext>
+    base, ext = os.path.splitext(filename or "")
+    slug = slugify(instance.title or "record")
+    return f"records/{slug}/cover{ext or '.jpg'}"
 
 
 class GenreChoices(models.TextChoices):
@@ -186,9 +198,61 @@ class Record(TimeStampedModel):
         related_name="records",
         verbose_name=_("Label"),
     )
-    release_year = models.PositiveIntegerField(
-        null=True, blank=True, verbose_name=_("Release year")
-    )
+
+    @property
+    def release_date_effective(self) -> str:
+        """
+        Строка для админки: итоговая дата релиза, которую используем для статуса.
+        """
+        d = self.get_release_date()
+        return d.isoformat() if d else "—"
+
+    def get_release_date(self) -> date | None:
+        """
+        Возвращает конкретную дату релиза, если она однозначно определена.
+        Если задан только год — возвращаем последнюю дату года (31 декабря),
+        если год+месяц — последнюю дату месяца.
+        Это позволяет корректно сравнивать с сегодняшним днём.
+        """
+        if not self.release_year:
+            return None
+
+        year = int(self.release_year)
+
+        if self.release_month:
+            month = int(self.release_month)
+            # если указан день — используем его, иначе берём последний день месяца
+            if self.release_day:
+                day = int(self.release_day)
+            else:
+                day = calendar.monthrange(year, month)[1]
+            return date(year, month, day)
+
+        # только год — считаем «до конца года»
+        return date(year, 12, 31)
+
+    def refresh_expected_flag(self) -> None:
+        """
+        Обновляет флаг is_expected: True, если релиз в будущем (предзаказ),
+        False — если дата уже наступила или неизвестна.
+        """
+        d = self.get_release_date()
+        today = timezone.localdate()
+        self.is_expected = bool(d and d > today)
+
+    def save(self, *args, **kwargs):
+        # перед сохранением всегда пересчитываем флаг
+        self.refresh_expected_flag()
+        super().save(*args, **kwargs)
+
+    release_year = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Год релиза")
+
+    release_month = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Месяц релиза")
+    release_day = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="День релиза")
+
+    # ФЛАГ для быстрого фильтра и сортировок
+    is_expected = models.BooleanField(default=False, db_index=True, verbose_name="Предзаказ (ожидается)")
+
     genres = models.ManyToManyField(
         Genre, related_name="records", verbose_name=_("Genres")
     )
@@ -202,7 +266,7 @@ class Record(TimeStampedModel):
         unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
     )
     cover_image = ImageField(
-        upload_to="images/",
+        upload_to=record_upload_to,
         null=True,
         blank=True,
         verbose_name=_("Record image"),
@@ -260,7 +324,7 @@ class Track(TimeStampedModel):
         related_name="tracks",
         verbose_name=_("Record"),
     )
-    position = models.CharField(max_length=10, verbose_name=_("Position"))
+    position = models.CharField(max_length=10, blank=True, verbose_name=_("Position"))
     title = models.CharField(max_length=255, verbose_name=_("Track title"))
     duration = models.CharField(
         max_length=10, null=True, blank=True, verbose_name=_("Duration")

@@ -5,15 +5,80 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, List, Dict, Tuple
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+_MONTHS_EN_TO_RU = {
+    "jan": "января",
+    "feb": "февраля",
+    "mar": "марта",
+    "apr": "апреля",
+    "may": "мая",
+    "jun": "июня",
+    "jul": "июля",
+    "aug": "августа",
+    "sep": "сентября",
+    "oct": "октября",
+    "nov": "ноября",
+    "dec": "декабря",
+}
 
 logger = logging.getLogger(__name__)
+
+
+
+def _format_expected_date_ru(text: str) -> Optional[str]:
+    """
+    Ищет в произвольном тексте фразу вида:
+      'Expected 24 Oct 2025' / 'expected 7 September 2025'
+    Возвращает строку: '24 октября 2025 года' или None.
+    """
+    m = re.search(
+        r"Expected\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    day = int(m.group(1))
+    mon = m.group(2).lower().strip(".")
+    year = int(m.group(3))
+
+    # принимаем как полные, так и сокращённые названия месяцев
+    key = mon[:3]
+    mon_ru = _MONTHS_EN_TO_RU.get(key)
+    if not mon_ru:
+        return None
+
+    return f"{day} {mon_ru} {year} года"
 
 
 @dataclass
 class RedeyeFetchResult:
     source_url: str
     payload: Dict
+
+
+def _parse_expected_date_parts(text: str):
+    """
+    Ищет 'Expected 24 Oct 2025' / 'Expected 7 September 2025' и
+    возвращает кортеж (year, month, day) как ints, либо (None, None, None).
+    """
+    m = re.search(r"Expected\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})", text, re.I)
+    if not m:
+        return None, None, None
+    day = int(m.group(1))
+    mon_raw = m.group(2).lower().strip(".")
+    mon = _MONTHS.get(mon_raw[:3])
+    year = int(m.group(3))
+    if not mon:
+        return None, None, None
+    return year, mon, day
 
 
 class RedeyeService:
@@ -107,6 +172,11 @@ class RedeyeService:
 
         # 3) Цена/наличие
         price, availability = self._extract_price_and_availability(soup)
+        # --- Expected date parts (если это предзаказ) ---
+        y, m, d = _parse_expected_date_parts(soup.get_text(" ", strip=True))
+        release_year = y or None
+        release_month = m or None
+        release_day = d or None
 
         # 4) Картинка
         image_url = self._extract_image_url(soup, base=url)
@@ -120,6 +190,12 @@ class RedeyeService:
         # аккуратная длина label (у тебя CharField(255))
         if label_name:
             label_name = label_name[:255]
+
+        # 7) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
+        notes = None
+        if price:
+            # форматируем 2 знака после запятой, точка как в исходнике
+            notes = (f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP")
 
         logger.info(
             "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s avail=%s img=%s",
@@ -141,6 +217,10 @@ class RedeyeService:
             "price_gbp": str(price) if price is not None else None,
             "availability": availability,
             "image_url": image_url,
+            "notes": notes,
+            "release_year": release_year,
+            "release_month": release_month,
+            "release_day": release_day,
             "source": {"name": "redeye", "url": url},
         }
 
@@ -163,31 +243,24 @@ class RedeyeService:
             return artists, title_part.strip()
         return [], full
 
-    def _extract_catalog_and_label(self, soup: BeautifulSoup) -> Tuple[Optional[str], Optional[str]]:
-        catno: Optional[str] = None
-        label: Optional[str] = None
+    def _extract_catalog_and_label(self, soup: BeautifulSoup):
+        catno = None
+        label = None
 
-        # Label: ищем подпись "Label" и из того же блока выбираем ссылку на раздел лейблов
-        label_node = soup.find(string=re.compile(r"^\s*Label\s*$", re.I))
-        if label_node:
-            block = label_node.find_parent()
-            if block:
-                for a in block.select('a[href]'):
-                    href = a.get("href", "")
-                    if re.search(r"/labels?/", href, re.I) or re.search(r"/label/", href, re.I):
-                        txt = a.get_text(strip=True)
-                        if txt:
-                            label = txt
-                            break
-                if not label:
-                    sib = block.find_next_sibling()
-                    if sib:
-                        cand = sib.get_text(" ", strip=True)
-                        # отсечь мусор вроде shopping_cart0
-                        if not re.search(r"shopping_cart\d+", cand, re.I):
-                            label = re.sub(r"^\s*Label\s*", "", cand, flags=re.I).strip()
+        # --- LABEL ---
+        # Ищем <p>Label <span><a href="...">Liquid Luve Discs</a></span></p>
+        for p in soup.find_all("p"):
+            # первый узел в <p> — текст "Label"
+            if not p.contents:
+                continue
+            first = p.contents[0]
+            if isinstance(first, NavigableString) and first.strip().lower() == "label":
+                a = p.find("a")
+                if a and a.get_text(strip=True):
+                    label = a.get_text(strip=True)[:255]
+                    break
 
-        # Catalogue No.
+        # --- CATALOG NO. ---
         cat_node = soup.find(string=re.compile(r"Catalogue\s*No\.?", re.I))
         if cat_node:
             sib = cat_node.find_parent().find_next_sibling()
@@ -248,32 +321,40 @@ class RedeyeService:
 
     @staticmethod
     def _extract_tracks_from_subtitle(soup: BeautifulSoup) -> List[Dict]:
-        # собираем текстовые блоки вокруг заголовка
-        areas: List[str] = []
-        h1 = soup.find("h1")
-        if h1:
-            nxt = h1.find_next(["h2", "div", "p"])
-            if nxt:
-                areas.append(nxt.get_text("\n", strip=True))
+        """
+        Берём треклист из элемента с class="tracks".
+        Поддерживаем два формата:
+          1) "A1 Flow Key 06:19<br>A2 Reso 02 05:58<br>..."
+          2) "Moon Cruise / Never Stop / ..."
+        """
+        node = soup.find(attrs={"class": "tracks"})
+        if not node:
+            return []
 
-        # fallback: правая колонка
-        right = soup.find(string=re.compile(r"Redeye\s*No\.", re.I))
-        if right:
-            areas.append(right.find_parent().get_text("\n", strip=True))
+        # Берём сырой HTML, чтобы надёжно выловить <br>, <br />, <br/> и т.п.
+        html = node.decode_contents()
 
-        blob = "\n".join(areas)
+        # 1) Если есть слеши и нет <br> — это формат "A / B / C"
+        if "<br" not in html and "/" in html:
+            parts = [p.strip(" \t\r\n-–—") for p in html.split("/") if p.strip()]
+            return [{"position": "", "title": BeautifulSoup(p, "html.parser").get_text(" ", strip=True)} for p in parts]
 
-        # структурный парс "A1 Flow Key 06:19"
-        rx = re.compile(r"\b([A-D]\d)\s+(.+?)\s+(\d{2}:\d{2})\b")
+        # 2) Иначе режем по <br>, <br/>, <br />
+        for token in ("<br>", "<br/>", "<br />"):
+            html = html.replace(token, "\n")
+        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         out: List[Dict] = []
-        for line in blob.splitlines():
-            for m in rx.finditer(line):
-                out.append({"position": m.group(1), "title": m.group(2).strip(), "duration": m.group(3)})
-        # если ничего не нашли — мягкий фоллбек как раньше
-        if not out:
-            for chunk in [p.strip(" .") for p in re.split(r"[\/\n]+", blob) if p.strip()]:
-                if len(chunk) <= 80:
-                    out.append({"title": chunk})
+        rx_pos = re.compile(r"^\s*([A-D]\d)\s+(.*)$")
+        for ln in lines:
+            m = rx_pos.match(ln)
+            if m:
+                # В title оставляем и тайминг, как просили
+                out.append({"position": m.group(1), "title": m.group(2).strip()})
+            else:
+                out.append({"position": "", "title": ln})
         return out
+
 
 
