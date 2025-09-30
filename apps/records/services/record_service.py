@@ -1,6 +1,5 @@
 import logging
-from typing import List
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from django.db import transaction
 from records.models import (
@@ -13,19 +12,26 @@ from records.models import (
     Style,
     Track,
 )
-from records.models import Record
 from records.services.discogs_service import DiscogsService
 from records.services.image_service import ImageService
 from records.services.redeye_service import RedeyeService
 
 # добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
 # Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.
+DEFAULT_NAME = "not specified"
 try:
     from records.services.redeye_service import RedeyeService  # type: ignore
 except Exception:  # pragma: no cover  # на случай, если файл ещё не создан
     RedeyeService = None  # подменим на None; метод import_from_redeye отработает с понятной ошибкой
 
 logger = logging.getLogger(__name__)
+
+
+def _get_or_create_default(model_cls):
+    obj = model_cls.objects.find_by_name(DEFAULT_NAME)
+    if not obj:
+        obj = model_cls.objects.create(name=DEFAULT_NAME)
+    return obj
 
 
 class RecordService:
@@ -543,7 +549,7 @@ class RecordService:
             title=data["title"],
             # у Redeye нет discogs_id — поле оставляем пустым
             discogs_id=None,
-            release_year=data.get("release_year"),
+            release_year=data.get("year"),
             catalog_number=data.get("catalog_number"),
             barcode=data.get("barcode"),
             country=data.get("country"),
@@ -613,6 +619,13 @@ class RecordService:
             formats_objs.append(fmt)
         if formats_objs:
             record.formats.set(formats_objs)
+
+        if not record.genres.exists():
+            record.genres.set([_get_or_create_default(Genre)])
+        if not record.styles.exists():
+            record.styles.set([_get_or_create_default(Style)])
+        if not record.formats.exists():
+            record.formats.set([_get_or_create_default(Format)])
 
     def _create_vendor_tracks(self, record: Record, data: dict) -> None:
         """Создание треков из словаря (позиция/название/длительность)."""
