@@ -1,3 +1,4 @@
+# apps/records/admin.py
 import logging
 
 from django.contrib import admin, messages
@@ -41,6 +42,32 @@ class TrackInline(admin.TabularInline):
         return False
 
 
+# Поля для создания новой записи (ДВА варианта: Discogs/Redeye)
+add_fieldsets_discogs = (
+    (
+        None,
+        {
+            # добавлено: поле source для выбора источника (Discogs | Redeye)
+            "fields": ("source", "barcode", "catalog_number"),
+            # добавлено: уточнили описание, что теперь доступен Redeye
+            "description": (
+                "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
+                "Для Redeye используется только каталожный номер."
+            ),
+        },
+    ),
+)
+add_fieldsets_redeye = (
+    (
+        None,
+        {
+            "fields": ("source", "catalog_number"),
+            "description": "Импорт из Redeye использует только каталожный номер.",
+        },
+    ),
+)
+
+
 @admin.register(Record)
 class RecordAdmin(admin.ModelAdmin):
     """Административный интерфейс для записей.
@@ -55,22 +82,6 @@ class RecordAdmin(admin.ModelAdmin):
 
     form = RecordForm
     inlines = [TrackInline]
-
-    # Поля для создания новой записи
-    add_fieldsets = (
-        (
-            None,
-            {
-                # добавлено: поле source для выбора источника (Discogs | Redeye)
-                "fields": ("source", "barcode", "catalog_number"),
-                # добавлено: уточнили описание, что теперь доступен Redeye
-                "description": (
-                    "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
-                    "Для Redeye используется только каталожный номер."
-                ),
-            },
-        ),
-    )
 
     # Поля для редактирования существующей записи
     fieldsets = (
@@ -116,7 +127,7 @@ class RecordAdmin(admin.ModelAdmin):
         "release_day",
         "is_expected",
     )
-    list_filter = ("condition", "genres", "styles", "created", "modified","is_expected")
+    list_filter = ("condition", "genres", "styles", "created", "modified", "is_expected")
     search_fields = (
         "title",
         "barcode",
@@ -130,7 +141,6 @@ class RecordAdmin(admin.ModelAdmin):
 
     # Оптимизация запросов
     list_select_related = ("label",)
-    list_prefetch_related = ("artists", "genres", "styles")
 
     # Действия
     actions = ["update_from_discogs"]
@@ -177,9 +187,14 @@ class RecordAdmin(admin.ModelAdmin):
         Returns:
             Кортеж fieldsets.
         """
-        if not obj:
-            return self.add_fieldsets
-        return self.fieldsets
+        if obj:
+            return self.fieldsets
+
+        # add-форма: выбираем набор полей по источнику
+        source = (request.POST.get("source") or request.GET.get("source") or "discogs").lower()
+        if source == "redeye":
+            return add_fieldsets_redeye
+        return add_fieldsets_discogs
 
     def get_inline_instances(self, request, obj=None):
         """Возвращает inline-формы.
@@ -232,9 +247,7 @@ class RecordAdmin(admin.ModelAdmin):
         # Сообщения об импорте для новых записей
         if not change:
             # добавлено: учитываем выбранный источник, чтобы сообщения были релевантны
-            source = getattr(form, "cleaned_data", {}).get("source") or request.POST.get(
-                "source"
-            )
+            source = getattr(form, "cleaned_data", {}).get("source") or request.POST.get("source")
 
             if obj.discogs_id:
                 # старое поведение оставляем — это для импорта из Discogs

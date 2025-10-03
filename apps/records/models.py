@@ -1,6 +1,6 @@
 import os
 from datetime import date
-
+from django.utils.deconstruct import deconstructible
 from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
@@ -18,50 +18,68 @@ from records.managers import (
 from sorl.thumbnail import ImageField
 
 
+
+# --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
+import os
+from django.utils.text import slugify
+
 def record_upload_to(instance, filename):
-    # Папка по названию пластинки (slug), файл — cover.<ext>
+    """
+    Back-compat для миграции 0007.
+    Старый путь: records/<slug(title)>/cover.<ext>
+    Новая схема использует PathByInstance, но миграция импортирует именно эту функцию.
+    """
     base, ext = os.path.splitext(filename or "")
-    slug = slugify(instance.title or "record")
+    slug = slugify(getattr(instance, "title", "") or "record")
     return f"records/{slug}/cover{ext or '.jpg'}"
+# --- end legacy ---
+
+
+@deconstructible
+class PathByInstance:
+    """Формирует путь вида:
+    <app>/<model>/<field>/<id>/<slugified_title>.<ext>
+    Если объект ещё не сохранён (id нет) — временно кладём в "_new".
+    """
+
+    def __init__(self, field_name: str):
+        self.field_name = field_name
+
+    def __call__(self, instance, filename):
+        app_label = instance._meta.app_label
+        model_name = instance._meta.model_name
+        obj_id = instance.pk or "_new"
+
+        # определяем расширение оригинального файла
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower() or ".jpg"
+
+        # формируем имя файла по названию пластинки
+        raw_title = getattr(instance, "title", "") or "untitled"
+        # slugify делает безопасное имя: заменяет пробелы, убирает спецсимволы
+        safe_title = slugify(raw_title)
+        if not safe_title:
+            safe_title = "untitled"
+
+        new_filename = f"{safe_title}{ext}"
+
+        return os.path.join(app_label, model_name, self.field_name, str(obj_id), new_filename)
+
 
 
 class GenreChoices(models.TextChoices):
-    NOT_SPECIFIED = "not specified", _("Not specified")
-    HOUSE = "House", _("House")
-    TECHNO = "Techno", _("Techno")
-    ELECTRO = "Electro", _("Electro")
-    BREAKS = "Breaks", _("Breaks")
-    DRUM_N_BASS = "Drum & Bass", _("Drum & Bass")
-    GARAGE = "Garage", _("Garage")
-    AMBIENT = "Ambient", _("Ambient")
-    EXPERIMENTAL = "Experimental", _("Experimental")
-    DISCO = "Disco", _("Disco")
-    HIPHOP = "Hip-Hop", _("Hip-Hop")
-    REGGAE = "Reggae", _("Reggae")
-    DUB = "Dub", _("Dub")
-    TRANCE = "Trance", _("Trance")
+    NOT_SPECIFIED = "Not specified", _("Not specified")
+    ELECTRO = "Electronic", _("Electronic")
 
 
 class StyleChoices(models.TextChoices):
-    NOT_SPECIFIED = "not specified", _("Not specified")
-    DEEP_HOUSE = "Deep House", _("Deep House")
-    MINIMAL = "Minimal", _("Minimal")
-    ACID = "Acid", _("Acid")
-    DETROIT = "Detroit", _("Detroit")
-    PROGRESSIVE = "Progressive", _("Progressive")
-    JUNGLE = "Jungle", _("Jungle")
-    BREAKBEAT = "Breakbeat", _("Breakbeat")
-    UK_GARAGE = "UK Garage", _("UK Garage")
-    IDM = "IDM", _("IDM")
-    DOWNTEMPO = "Downtempo", _("Downtempo")
-    LOFI = "Lo-Fi", _("Lo-Fi")
-    HARDCORE = "Hardcore", _("Hardcore")
-    ITALO = "Italo", _("Italo")
-    LEFTFIELD = "Leftfield", _("Leftfield")
+    NOT_SPECIFIED = "Not specified", _("Not specified")
+    DEEP_HOUSE = "Bass Music", _("Bass Music")
+    MINIMAL = "Drum n Bass", _("Drum n Bass")
 
 
 class FormatChoices(models.TextChoices):
-    NOT_SPECIFIED = "not specified", _("Not specified")
+    NOT_SPECIFIED = "Not specified", _("Not specified")
     INCH_7 = '7"', _('7"')
     INCH_10 = '10"', _('10"')
     INCH_12 = '12"', _('12"')
@@ -134,11 +152,9 @@ class Label(TimeStampedModel):
         verbose_name_plural = _("Labels")
         ordering = ("id",)
 
-
 class Genre(TimeStampedModel):
-    """Модель жанра."""
-
-    name = models.CharField(max_length=100, unique=True, choices=GenreChoices.choices, verbose_name=_("Name"))
+    """Модель жанра (справочник)."""
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = GenreManager()
 
@@ -152,9 +168,8 @@ class Genre(TimeStampedModel):
 
 
 class Style(TimeStampedModel):
-    """Модель стиля."""
-
-    name = models.CharField(max_length=100, unique=True, choices=StyleChoices.choices, verbose_name=_("Name"))
+    """Модель стиля (справочник)."""
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = StyleManager()
 
@@ -266,7 +281,7 @@ class Record(TimeStampedModel):
         unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
     )
     cover_image = ImageField(
-        upload_to=record_upload_to,
+        upload_to=PathByInstance("cover_image"),
         null=True,
         blank=True,
         verbose_name=_("Record image"),

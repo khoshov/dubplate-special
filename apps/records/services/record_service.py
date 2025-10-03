@@ -536,32 +536,34 @@ class RecordService:
 
     # добавлено: создание записи/связей из "вендорских" данных (Redeye)
     def _create_record_from_vendor(self, data: dict) -> Record:
-        """Создание записи из словаря, полученного от стороннего источника (Redeye).
+        """Создание записи из словаря, полученного от стороннего источника (Redeye/и др.).
 
-        Ожидаемые ключи:
+        Поддерживает ключи:
           title, artists[], label, catalog_number, barcode, country, notes,
-          formats[], tracks[],
-          image_url,
-          price_gbp, availability,
-          release_year, release_month, release_day  <-- парсится из "Expected ..."
+          formats[], tracks[], image_url, price_gbp, availability,
+          release_year, release_month, release_day.
+        Если запись с таким catalog_number уже существует — бросим ValueError
+        (RecordForm.save() конвертирует в ValidationError у поля).
         """
-        logger.info(
-            "Creating record from vendor data: "
-            f"catalog={data.get('catalog_number')}, title='{data.get('title')}'"
-        )
+        from records.models import Record, RecordConditions
 
-        # поддержим обратную совместимость: если пришёл "year", но нет release_year — подставим
+        catalog_number = (data.get("catalog_number") or "").strip() or None
+        if catalog_number:
+            dupe = Record.objects.filter(catalog_number=catalog_number).first()
+            if dupe:
+                raise ValueError(f'Запись с каталожным номером "{catalog_number}" уже существует (ID {dupe.pk}).')
+
         release_year = data.get("release_year", data.get("year"))
         release_month = data.get("release_month")
         release_day = data.get("release_day")
 
         record = Record.objects.create(
             title=data["title"],
-            discogs_id=None,  # у Redeye нет discogs_id
+            discogs_id=None,
             release_year=release_year,
             release_month=release_month,
             release_day=release_day,
-            catalog_number=data.get("catalog_number"),
+            catalog_number=catalog_number,
             barcode=data.get("barcode"),
             country=data.get("country"),
             notes=data.get("notes"),
@@ -569,72 +571,80 @@ class RecordService:
             stock=1,
         )
 
-        # связи
         self._create_vendor_relations(record, data)
-        # треки
         self._create_vendor_tracks(record, data)
-
         return record
 
-    def _create_vendor_relations(self, record: Record, data: dict) -> None:
-        """Создание связей (артисты/лейбл/жанры/стили/форматы) из словаря."""
-        # Артисты (по имени)
-        artist_objs: List[Artist] = []
-        for name in data.get("artists", []) or []:
+    def _create_vendor_relations(self, record, data: dict) -> None:
+        """
+        Создаёт и привязывает связанные объекты (artists, label, genres, styles, formats)
+        по данным вендора. Для жанров/стилей используется CI-поиск и нормализация
+        'not specified' -> 'Not specified', чтобы не нарушать CI-unique ограничение.
+        """
+        # локальные импорты, чтобы избежать циклов
+        from records.models import Artist, Label, Genre, Style
+        try:
+            from records.models import Format  # если модели форматов нет — просто пропустим
+        except Exception:
+            Format = None
+
+        def _canon_vocab(name: str) -> str:
+            if not name:
+                return ""
+            n = name.strip()
+            if n.lower() == "not specified":
+                return "Not specified"
+            return n
+
+        def _ci_get_or_create(model, name: str):
+            """Case-insensitive get_or_create по полю name + нормализация."""
+            canon = _canon_vocab(name)
+            if not canon:
+                return None
+            obj = model.objects.filter(name__iexact=canon).first()
+            if obj:
+                # выравниваем регистр до канонического
+                if obj.name != canon:
+                    model.objects.filter(pk=obj.pk).update(name=canon)
+                    obj.name = canon
+                return obj
+            return model.objects.create(name=canon)
+
+        # --- Artists ---
+        for a in (data.get("artists") or []):
+            name = (a or "").strip()
             if not name:
                 continue
-            artist = Artist.objects.find_by_name(name) or Artist.objects.create(
-                name=name
-            )
-            artist_objs.append(artist)
-        if artist_objs:
-            record.artists.set(artist_objs)
+            artist = Artist.objects.filter(name__iexact=name).first() or Artist.objects.create(name=name)
+            record.artists.add(artist)
 
-        # Лейбл (по имени)
-        label_name = data.get("label")
+        # --- Label ---
+        label_name = (data.get("label") or "").strip()
         if label_name:
-            label = Label.objects.find_by_name(label_name) or Label.objects.create(
-                name=label_name
-            )
+            label = Label.objects.filter(name__iexact=label_name).first() or Label.objects.create(name=label_name)
             record.label = label
-            record.save()
+            record.save(update_fields=["label"])
 
-        # Жанры
-        genres_objs: List[Genre] = []
-        for name in data.get("genres", []) or []:
-            if not name:
-                continue
-            genre = Genre.objects.find_by_name(name) or Genre.objects.create(name=name)
-            genres_objs.append(genre)
-        if genres_objs:
-            record.genres.set(genres_objs)
+        # --- Genres (CI + нормализация) ---
+        for g in (data.get("genres") or []):
+            obj = _ci_get_or_create(Genre, g)
+            if obj:
+                record.genres.add(obj)
 
-        # Стили
-        styles_objs: List[Style] = []
-        for name in data.get("styles", []) or []:
-            if not name:
-                continue
-            style = Style.objects.find_by_name(name) or Style.objects.create(name=name)
-            styles_objs.append(style)
-        if styles_objs:
-            record.styles.set(styles_objs)
+        # --- Styles (CI + нормализация) ---
+        for s in (data.get("styles") or []):
+            obj = _ci_get_or_create(Style, s)
+            if obj:
+                record.styles.add(obj)
 
-        # Форматы (строки, например '12"' или 'LP')
-        formats_objs: List[Format] = []
-        for name in data.get("formats", []) or []:
-            if not name:
-                continue
-            fmt = Format.objects.find_by_name(name) or Format.objects.create(name=name)
-            formats_objs.append(fmt)
-        if formats_objs:
-            record.formats.set(formats_objs)
-
-        if not record.genres.exists():
-            record.genres.set([_get_or_create_default(Genre)])
-        if not record.styles.exists():
-            record.styles.set([_get_or_create_default(Style)])
-        if not record.formats.exists():
-            record.formats.set([_get_or_create_default(Format)])
+        # --- Formats (если модель есть) ---
+        if Format:
+            for f in (data.get("formats") or []):
+                name = (f or "").strip()
+                if not name:
+                    continue
+                fmt = Format.objects.filter(name__iexact=name).first() or Format.objects.create(name=name)
+                record.formats.add(fmt)
 
     def _create_vendor_tracks(self, record: Record, data: dict) -> None:
         """Создание треков из словаря (позиция/название/длительность)."""
@@ -841,3 +851,44 @@ class RecordService:
 
         new_tracks_count = record.tracks.count()
         logger.info(f"Created {new_tracks_count} new tracks for record {record.id}")
+
+    def _canon_vocab(self, name: str) -> str:
+        """Приводим к каноническому виду.
+        Пока нормализуем только 'not specified' -> 'Not specified'.
+        Остальные значения возвращаем как есть (обрезаем пробелы).
+        """
+        if not name:
+            return ""
+        n = name.strip()
+        if n.lower() == "not specified":
+            return "Not specified"
+        return n
+
+    def _get_or_create_genre_ci(self, name: str):
+        """CI-lookup + нормализация имени для Genre."""
+        from records.models import Genre
+        canon = self._canon_vocab(name)
+        if not canon:
+            return None
+        obj = Genre.objects.filter(name__iexact=canon).first()
+        if obj:
+            # если хранили 'not specified' — обновим до канона
+            if obj.name != canon:
+                Genre.objects.filter(pk=obj.pk).update(name=canon)
+                obj.name = canon
+            return obj
+        return Genre.objects.create(name=canon)
+
+    def _get_or_create_style_ci(self, name: str):
+        """CI-lookup + нормализация имени для Style."""
+        from records.models import Style
+        canon = self._canon_vocab(name)
+        if not canon:
+            return None
+        obj = Style.objects.filter(name__iexact=canon).first()
+        if obj:
+            if obj.name != canon:
+                Style.objects.filter(pk=obj.pk).update(name=canon)
+                obj.name = canon
+            return obj
+        return Style.objects.create(name=canon)
