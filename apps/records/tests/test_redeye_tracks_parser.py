@@ -37,6 +37,14 @@ def test_parse_numeric_positions_and_alpha_punct():
         ("A2", "Epsilon"),
     ]
 
+def test_single_line_title_side_prefix_removed():
+    html = _wrap_tracks_html("A. Radio Editaa. Explicitb. Instrumentalbb. Accapella")
+    items = parse_redeye_tracks(html)
+    assert len(items) == 1
+    assert items[0]["position"] == ""
+    assert items[0]["title"].startswith("Radio Edit")
+
+
 def test_ignore_side_headers_and_deduplicate_prefers_with_duration():
     # Два одинаковых трека: второй с duration — он должен остаться
     html = _wrap_tracks_html("Side A<br>A1. Foo<br>A1 Foo 03:30")
