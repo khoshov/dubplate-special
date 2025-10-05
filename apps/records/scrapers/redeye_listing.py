@@ -5,6 +5,7 @@ import argparse
 import logging
 import re
 import time
+import random
 from textwrap import dedent
 from typing import Iterator, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -42,17 +43,31 @@ class RedeyeListingScraper:
             delay_sec: float = 0.6,
             timeout: float = 15.0,
             session: Optional[requests.Session] = None,
+            jitter_sec: float = 0.5,
+            max_retries: int = 4,
+            cooldown_sec: int = 90,
+            stop_on_block: bool = False,
     ) -> None:
         self.delay_sec = max(0.0, float(delay_sec))
+        self.jitter_sec = max(0.0, float(jitter_sec))
         self.timeout = float(timeout)
+        self.max_retries = int(max_retries)
+        self.cooldown_sec = int(cooldown_sec)
+        self.stop_on_block = bool(stop_on_block)
+
         self.session = session or requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": user_agent
-                              or "Mozilla/5.0 (X11; Linux x86_64) RedeyeCrawler/1.2 (+https://example.local)",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            }
-        )
+        self._user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        ]
+        self.session.headers.update({
+            "User-Agent": user_agent or random.choice(self._user_agents),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-GB,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Connection": "keep-alive",
+        })
 
     # ---------- публичный API ----------
     def iter_product_urls(self, category_url: str, limit: Optional[int] = None) -> Iterator[str]:
@@ -108,7 +123,7 @@ class RedeyeListingScraper:
                 # Идём строго по ссылке из #pageLinks
                 current_url = next_abs_from_pagelinks
                 current_page_num = (self._extract_page_number(current_url) or (current_page_num + 1))
-                time.sleep(self.delay_sec)
+                self._sleep_polite()
                 continue
 
             # 3) если #pageLinks нет — используем старые эвристики (rel='next'/guess)
@@ -128,7 +143,7 @@ class RedeyeListingScraper:
             if next_abs:
                 current_url = next_abs
                 current_page_num = (self._extract_page_number(current_url) or (current_page_num + 1))
-                time.sleep(self.delay_sec)
+                self._sleep_polite()
             else:
                 # Доп. предохранитель: если на текущей странице 0 товаров — тоже стоп
                 if page_count == 0:
@@ -138,20 +153,69 @@ class RedeyeListingScraper:
                 break
 
     # ---------- внутренние помощники ----------
-    def _fetch(self, url: str) -> Optional[str]:
-        try:
-            resp = self.session.get(url, timeout=self.timeout)
-            if resp.status_code != 200:
-                logger.warning("bad status %s for %s", resp.status_code, url)
+    def _fetch(self, url: str, *, referer: Optional[str] = None) -> Optional[str]:
+        """
+        Политный fetch с ретраями, бэкофом и охлаждением на 403/429.
+        Возвращает текст HTML или None.
+        """
+        last_exc = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                # умеренная ротация агента
+                self.session.headers["User-Agent"] = random.choice(self._user_agents)
+                if referer:
+                    self.session.headers["Referer"] = referer
+                resp = self.session.get(url, timeout=self.timeout)
+                status = resp.status_code
+
+                if status == 200:
+                    ctype = resp.headers.get("Content-Type", "")
+                    if "text/html" not in ctype:
+                        logger.warning("unexpected content-type %s for %s", ctype, url)
+                        return None
+                    return resp.text
+
+                # мягкие сбои (5xx) — пробуем с бэкофом
+                if 500 <= status < 600:
+                    backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+                    logger.warning("server %s for %s (attempt %s/%s), backoff=%.1fs",
+                                   status, url, attempt, self.max_retries, backoff)
+                    time.sleep(backoff)
+                    continue
+
+                # подозрение на блок
+                if status in (403, 429):
+                    logger.warning("possible block %s for %s (attempt %s/%s) → cooldown %ss",
+                                   status, url, attempt, self.max_retries, self.cooldown_sec)
+                    time.sleep(self.cooldown_sec)
+                    if attempt == self.max_retries:
+                        if self.stop_on_block:
+                            logger.error("stop_on_block=True → прекращаем работу на %s", url)
+                            return None
+                        else:
+                            logger.warning("skip blocked page: %s", url)
+                            return None
+                    # после охлаждения — ещё попытка (без лишнего сна)
+                    continue
+
+                # прочие статусы — без ретраев
+                logger.warning("bad status %s for %s", status, url)
                 return None
-            ctype = resp.headers.get("Content-Type", "")
-            if "text/html" not in ctype:
-                logger.warning("unexpected content-type %s for %s", ctype, url)
-                return None
-            return resp.text
-        except requests.RequestException as e:
-            logger.error("request error for %s: %s", url, e)
-            return None
+
+            except requests.RequestException as e:
+                last_exc = e
+                backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+                logger.warning("request error for %s: %s (attempt %s/%s), backoff=%.1fs",
+                               url, e, attempt, self.max_retries, backoff)
+                time.sleep(backoff)
+
+        logger.error("giving up on %s after %s attempts; last error: %s", url, self.max_retries, last_exc)
+        return None
+
+    def _sleep_polite(self):
+        # базовая задержка + джиттер
+        jitter = random.uniform(0.0, self.jitter_sec)
+        time.sleep(self.delay_sec + jitter)
 
     @staticmethod
     def _base_origin(url: str) -> str:
@@ -222,7 +286,7 @@ class RedeyeListingScraper:
         # первая страница без page-1
         if re.search(r"/pre-orders/?$", current_url):
             tail_slash = "" if current_url.endswith("/") else ""
-            return f"{current_url}{tail_slash}/page-2"
+            return f"{current_url.rstrip('/')}/page-2"
 
         return None
 
@@ -317,10 +381,10 @@ def _cli():
                 Примеры запуска:
 
                   1) Локально (из IDE/терминала) из директории файла:
-                     python -m records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/bass-music/pre-orders
+                     python  records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/bass-music/pre-orders
 
                      Через uv:
-                     uv run python -m records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/drum-and-bass/pre-orders --debug
+                     uv run records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/drum-and-bass/pre-orders --debug
 
                   2) Внутри Docker-контейнера (рекомендуется для проекта):
                      docker compose exec django uv run -m records.scrapers.redeye_listing --url "https://www.redeyerecords.co.uk/bass-music/pre-orders" --debug
@@ -354,19 +418,30 @@ def _cli():
         "--debug", action="store_true",
         help="Режим отладки (DEBUG): печатать каждую найденную ссылку",
     )
-
+    parser.add_argument("--jitter", type=float, default=0.5, help="Случайная прибавка к задержке (сек.)")
+    parser.add_argument("--max-retries", type=int, default=4, help="Число повторов при сетевых/серверных ошибках")
+    parser.add_argument("--cooldown", type=int, default=90, help="Охлаждение при 403/429 (сек.)")
+    parser.add_argument("--stop-on-block", action="store_true", help="Остановиться при повторном 403/429")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
 
-    scraper = RedeyeListingScraper(delay_sec=args.delay, timeout=args.timeout)
+    scraper = RedeyeListingScraper(
+        delay_sec=args.delay,
+        timeout=args.timeout,
+        jitter_sec=args.jitter,
+        max_retries=args.max_retries,
+        cooldown_sec=args.cooldown,
+        stop_on_block=args.stop_on_block,
+    )
     count = 0
     for u in scraper.iter_product_urls(args.url, limit=args.limit):
         print(u)
         count += 1
 
     logger.info("Готово. Всего ссылок: %s", count)
+
 
 if __name__ == "__main__":
     _cli()

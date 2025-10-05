@@ -94,11 +94,12 @@ class RedeyeService:
     # Кат.№ — короткий токен из букв/цифр/дефиса, 2..24 символа
     CAT_RE = re.compile(r"\b([A-Z0-9\-]{2,24})\b", re.I)
 
-    def __init__(self):
+    def __init__(self, *, delay_sec: float = 0.6, jitter_sec: float = 0.5,
+                 max_retries: int = 4, cooldown_sec: int = 90, stop_on_block: bool = False):
         self.session = requests.Session()
         self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
         ]
         self.base_headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -107,6 +108,9 @@ class RedeyeService:
             "Pragma": "no-cache",
             "Connection": "keep-alive",
         }
+        self.delay_sec = float(delay_sec); self.jitter_sec = float(jitter_sec)
+        self.max_retries = int(max_retries); self.cooldown_sec = int(cooldown_sec)
+        self.stop_on_block = bool(stop_on_block)
 
     # ---------------- PUBLIC ----------------
 
@@ -157,16 +161,57 @@ class RedeyeService:
 
     # ---------------- NETWORK ----------------
 
+    def _polite_sleep(self):
+        time.sleep(self.delay_sec + random.uniform(0.0, self.jitter_sec))
+
     def _get(self, url: str, *, referer: Optional[str] = None, slow: bool = False) -> str:
-        if slow:
-            time.sleep(0.6)
-        headers = dict(self.base_headers)
-        headers["User-Agent"] = random.choice(self.user_agents)
-        if referer:
-            headers["Referer"] = referer
-        resp = self.session.get(url, headers=headers, timeout=self.TIMEOUT)
-        resp.raise_for_status()
-        return html.unescape(resp.text)
+        last_exc = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                if slow:
+                    self._polite_sleep()
+                headers = dict(self.base_headers)
+                headers["User-Agent"] = random.choice(self.user_agents)
+                if referer:
+                    headers["Referer"] = referer
+
+                resp = self.session.get(url, headers=headers, timeout=self.TIMEOUT)
+                status = resp.status_code
+
+                if status == 200:
+                    return html.unescape(resp.text)
+
+                if 500 <= status < 600:
+                    backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+                    logger.warning("server %s for %s (attempt %s/%s) backoff=%.1fs",
+                                   status, url, attempt, self.max_retries, backoff)
+                    time.sleep(backoff);
+                    continue
+
+                if status in (403, 429):
+                    logger.warning("possible block %s for %s → cooldown %ss (attempt %s/%s)",
+                                   status, url, self.cooldown_sec, attempt, self.max_retries)
+                    time.sleep(self.cooldown_sec)
+                    if attempt == self.max_retries:
+                        if self.stop_on_block:
+                            raise requests.HTTPError(f"blocked: {status} {url}")
+                        else:
+                            logger.warning("skip blocked page: %s", url);
+                            break
+                    continue
+
+                resp.raise_for_status()
+
+            except requests.RequestException as e:
+                last_exc = e
+                backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+                logger.warning("request error for %s: %s (attempt %s/%s) backoff=%.1fs",
+                               url, e, attempt, self.max_retries, backoff)
+                _polite_sleep(backoff)
+
+        if last_exc:
+            raise last_exc
+        return ""  # мягкий skip при неустранимом блоке
 
     def _resolve_product_url_by_catno(self, cat: str) -> Optional[str]:
         search_url = f"{self.BASE}/search/?searchType=CAT&keywords={requests.utils.quote(cat)}"
@@ -180,26 +225,6 @@ class RedeyeService:
             if not href:
                 continue
             return href if href.startswith("http") else self.BASE + href
-        return None
-
-    def _parse_catalog_number(self, soup) -> str | None:
-        """
-        Извлекает кат. номер из блока вида:
-            <p>Catalogue No. <span>TEMPA124</span></p>
-        Возвращает строку без префиксов, например 'TEMPA124'.
-        """
-        for p in soup.find_all("p"):
-            txt = p.get_text(" ", strip=True)
-            # Ищем заголовок 'Catalogue No' / 'Catalogue No.' (регистронезависимо)
-            if re.search(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
-                # приоритет: содержимое вложенного <span>
-                span = p.find("span")
-                if span:
-                    val = span.get_text(strip=True)
-                    return val or None
-                # запасной путь: вырезать префикс и взять хвост после него
-                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
-                return tail or None
         return None
 
     # ---------------- PARSE PRODUCT ----------------
@@ -377,7 +402,6 @@ class RedeyeService:
 
         return price, availability
 
-    @staticmethod
     @staticmethod
     def _extract_image_url(soup: BeautifulSoup, base: str) -> Optional[str]:
         # сначала og:image

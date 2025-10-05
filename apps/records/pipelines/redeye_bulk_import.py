@@ -7,9 +7,9 @@ from typing import Iterable, Optional, Dict, Any
 
 from django.db import transaction
 
-from records.scrapers.redeye_listing import iterate_category_urls
-from records.services.redeye_service import RedeyeService
-from records.models import Record, Genre, Style, Label, Track
+from ..scrapers.redeye_listing import iterate_category_urls
+from ..services.redeye_service import RedeyeService
+from ..models import Record, Genre, Style, Label, Track, Artist
 
 import re
 import mimetypes
@@ -19,21 +19,6 @@ from django.core.files.base import ContentFile
 from django.utils.text import slugify
 
 logger = logging.getLogger(__name__)
-
-REDEYE_URLS = [
-    {
-        "url": "https://www.redeyerecords.co.uk/bass-music/pre-orders",
-        "style": "Bass Music",
-        "genre": "Electronic",
-        "code": "bass",
-    },
-    {
-        "url": "https://www.redeyerecords.co.uk/drum-and-bass/pre-orders",
-        "style": "Drum n Bass",
-        "genre": "Electronic",
-        "code": "dnb",
-    },
-]
 
 
 @dataclass
@@ -54,9 +39,16 @@ class RedeyeBulkImporter:
     Проходит по категории, собирает ссылки карточек, парсит и (опционально) сохраняет в БД.
     """
 
-    def __init__(self, *, delay_sec: float = 0.6) -> None:
+    def __init__(self, *, delay_sec: float = 0.6, jitter_sec: float = 0.5,
+                 max_retries: int = 4, cooldown_sec: int = 90, stop_on_block: bool = False) -> None:
         self.delay_sec = delay_sec
-        self.svc = RedeyeService()
+        self.svc = RedeyeService(
+            delay_sec=delay_sec,
+            jitter_sec=jitter_sec,
+            max_retries=max_retries,
+            cooldown_sec=cooldown_sec,
+            stop_on_block=stop_on_block,
+        )
 
     def crawl_category(
             self,
@@ -154,7 +146,7 @@ class RedeyeBulkImporter:
 
         # медиа и треки
         image_url = payload.get("image_url") or None
-        track_lines = payload.get("tracks") or []
+        # track_lines = payload.get("tracks") or []
 
         # m2m
         genres = [g for g in (payload.get("genres") or []) if g]
@@ -216,7 +208,6 @@ class RedeyeBulkImporter:
         # --- ARTISTS (M2M) ---
         artist_names = [a for a in (payload.get("artists") or []) if a]
         if artist_names:
-            from records.models import Artist  # локальный импорт во избежание циклов
             artist_objs = []
             for name in artist_names:
                 obj, _ = Artist.objects.get_or_create(name=name[:255])
@@ -230,8 +221,8 @@ class RedeyeBulkImporter:
             bulk = []
             for idx, item in enumerate(track_lines, start=1):
                 # Поддержка двух форматов: dict {"position","title"} ИЛИ просто строка
-                pos = None
-                title_t = None
+                # pos = None
+                # title_t = None
                 if isinstance(item, dict):
                     pos = (item.get("position") or "").strip()
                     title_t = (item.get("title") or "").strip()
