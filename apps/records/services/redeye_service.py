@@ -108,8 +108,10 @@ class RedeyeService:
             "Pragma": "no-cache",
             "Connection": "keep-alive",
         }
-        self.delay_sec = float(delay_sec); self.jitter_sec = float(jitter_sec)
-        self.max_retries = int(max_retries); self.cooldown_sec = int(cooldown_sec)
+        self.delay_sec = float(delay_sec)
+        self.jitter_sec = float(jitter_sec)
+        self.max_retries = int(max_retries)
+        self.cooldown_sec = int(cooldown_sec)
         self.stop_on_block = bool(stop_on_block)
 
     # ---------------- PUBLIC ----------------
@@ -185,7 +187,7 @@ class RedeyeService:
                     backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
                     logger.warning("server %s for %s (attempt %s/%s) backoff=%.1fs",
                                    status, url, attempt, self.max_retries, backoff)
-                    time.sleep(backoff);
+                    time.sleep(backoff)
                     continue
 
                 if status in (403, 429):
@@ -196,7 +198,7 @@ class RedeyeService:
                         if self.stop_on_block:
                             raise requests.HTTPError(f"blocked: {status} {url}")
                         else:
-                            logger.warning("skip blocked page: %s", url);
+                            logger.warning("skip blocked page: %s", url)
                             break
                     continue
 
@@ -207,7 +209,7 @@ class RedeyeService:
                 backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
                 logger.warning("request error for %s: %s (attempt %s/%s) backoff=%.1fs",
                                url, e, attempt, self.max_retries, backoff)
-                _polite_sleep(backoff)
+                time.sleep(backoff)
 
         if last_exc:
             raise last_exc
@@ -426,42 +428,91 @@ class RedeyeService:
         return None
 
     @staticmethod
-    @staticmethod
     def _extract_tracks_from_subtitle(soup: BeautifulSoup) -> List[Dict]:
         """
         Берём треклист из элемента с class="tracks".
-        Поддерживаем два формата:
+        Поддерживаем форматы:
           1) "A1 Flow Key 06:19<br>A2 Reso 02 05:58<br>..."
-          2) "Moon Cruise / Never Stop / ..."
+          2) "Moon Cruise / Never Stop / ..." (одна строка через "/")
+          3) "A1. Title" / "A1) Title" / "A1 - Title" / "1. Title" / "2) Title"
+        Возвращает список dict: {"position": str, "title": str, "duration": Optional[str], "position_index": int}
         """
         node = soup.find(attrs={"class": "tracks"})
         if not node:
             return []
 
-        # Берём сырой HTML, чтобы надёжно выловить <br>, <br />, <br/> и т.п.
+        # сырой html (чтобы поймать все <br>)
         html = node.decode_contents()
 
-        # 1) Если есть слеши и нет <br> — это формат "A / B / C"
+        # кейс: одна строка со слэшами
         if "<br" not in html and "/" in html:
             parts = [p.strip(" \t\r\n-–—") for p in html.split("/") if p.strip()]
-            return [{"position": "", "title": BeautifulSoup(p, "html.parser").get_text(" ", strip=True)} for p in parts]
+            items = [
+                {"position": "", "title": BeautifulSoup(p, "html.parser").get_text(" ", strip=True), "duration": None}
+                for p in parts
+            ]
+            # индексация 1..N
+            for i, t in enumerate(items, start=1):
+                t["position_index"] = i
+            return items
 
-        # 2) Иначе режем по <br>, <br/>, <br />
+        # нормализуем <br>
         for token in ("<br>", "<br/>", "<br />"):
             html = html.replace(token, "\n")
         text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
-
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        out: List[Dict] = []
-        rx_pos = re.compile(r"^\s*([A-D]\d)\s+(.*)$")
+
+        # регэкспы
+        rx_side = re.compile(r"^\s*(?:side\s+)?([A-D])\s*$", re.I)  # Side A / A / side B
+        rx_pos_alpha = re.compile(r"^\s*([A-D]\d{1,2})[.)\:\-]?\s+(.*)$", re.I)  # A1. Title / A1) Title / A1 - Title
+        rx_pos_num = re.compile(r"^\s*(\d{1,2})[.)]\s+(.*)$")  # 1. Title / 2) Title
+        rx_duration = re.compile(r"^(.*?)(?:\s+(\d{1,2}:\d{2}))?$")  # optional mm:ss at end
+
+        parsed: list[dict] = []
+
         for ln in lines:
-            m = rx_pos.match(ln)
+            # пропускаем заголовки сторон
+            if rx_side.match(ln):
+                continue
+
+            m = rx_pos_alpha.match(ln) or rx_pos_num.match(ln)
             if m:
-                # В title оставляем и тайминг, как просили
-                out.append({"position": m.group(1), "title": m.group(2).strip()})
+                pos = m.group(1).strip()
+                tail = m.group(2).strip()
             else:
-                out.append({"position": "", "title": ln})
-        return out
+                pos = ""
+                tail = ln
+
+            md = rx_duration.fullmatch(tail)
+            if md:
+                title = md.group(1).strip()
+                duration = (md.group(2) or "").strip() or None
+            else:
+                title = tail
+                duration = None
+
+            # на этом этапе у нас «кандидат»
+            parsed.append({"position": pos, "title": title, "duration": duration})
+
+        # --- дедуп по (position, title) с приоритетом строки, где есть duration ---
+        dedup: dict[tuple[str, str], dict] = {}
+        for t in parsed:
+            key = ((t.get("position") or "").lower(), (t.get("title") or "").lower())
+            if key not in dedup:
+                dedup[key] = t
+            else:
+                # если новая версия содержит duration, а старая — нет, заменим
+                if t.get("duration") and not dedup[key].get("duration"):
+                    dedup[key] = t
+
+        items = list(dedup.values())
+
+        # --- индексация 1..N ---
+        for i, t in enumerate(items, start=1):
+            t["position_index"] = i
+
+        return items
+
 
 
 

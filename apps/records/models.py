@@ -8,7 +8,7 @@ from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
-from records.managers import (
+from .managers import (
     ArtistManager,
     FormatManager,
     GenreManager,
@@ -17,7 +17,6 @@ from records.managers import (
     StyleManager,
 )
 from sorl.thumbnail import ImageField
-
 
 
 # --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
@@ -31,6 +30,8 @@ def record_upload_to(instance, filename):
     base, ext = os.path.splitext(filename or "")
     slug = slugify(getattr(instance, "title", "") or "record")
     return f"records/{slug}/cover{ext or '.jpg'}"
+
+
 # --- end legacy ---
 
 
@@ -63,7 +64,6 @@ class PathByInstance:
         new_filename = f"{safe_title}{ext}"
 
         return os.path.join(app_label, model_name, self.field_name, str(obj_id), new_filename)
-
 
 
 class GenreChoices(models.TextChoices):
@@ -150,6 +150,7 @@ class Label(TimeStampedModel):
         verbose_name = _("Label")
         verbose_name_plural = _("Labels")
         ordering = ("id",)
+
 
 class Genre(TimeStampedModel):
     """Модель жанра (справочник)."""
@@ -260,7 +261,6 @@ class Record(TimeStampedModel):
         super().save(*args, **kwargs)
 
     release_year = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Год релиза")
-
     release_month = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Месяц релиза")
     release_day = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="День релиза")
 
@@ -330,7 +330,21 @@ class Record(TimeStampedModel):
 
 
 class Track(TimeStampedModel):
-    """Модель трека."""
+    """
+    Трек издания.
+
+    ДВА уровня представления позиции:
+      1) position_index (int) — ГЛАВНАЯ сортировка и порядок треков в издании.
+         Это последовательный номер 1..N, независимо от сторон (A/B/C/D).
+         Им руководствуются админка, API и любая логика "след./пред. трек".
+      2) position (str) — человекочитаемая «позиция со стороны», если она есть на сайте/в источнике:
+         'A1', 'B2', '1', 'A', '' (пусто). Нужна для совместимости с Discogs и отображения.
+
+    Почему так:
+      - строки вроде '1', '10', '11' сортируются лексикографически и ломают порядок;
+      - Discogs возвращает поле position (например 'A1'), но "естественный" порядок удобнее хранить отдельно.
+      - при отсутствии буквенных сторон мы сохраняем пустой `position`, но `position_index` остаётся обязательным.
+    """
 
     record = models.ForeignKey(
         Record,
@@ -338,23 +352,67 @@ class Track(TimeStampedModel):
         related_name="tracks",
         verbose_name=_("Record"),
     )
-    position = models.CharField(max_length=10, blank=True, verbose_name=_("Position"))
-    title = models.CharField(max_length=255, verbose_name=_("Track title"))
-    duration = models.CharField(
-        max_length=10, null=True, blank=True, verbose_name=_("Duration")
+    # Человекочитаемая позиция со стороны (если есть у источника).
+    # Примеры: 'A1', 'B2', '1', 'A', ''.
+    position = models.CharField(
+        max_length=10,
+        blank=True,
+        verbose_name=_("Position"),
+        help_text=_("Original position from the source (e.g., 'A1', 'B2'); may be empty."),
     )
+
+    # Главный числовой порядок (1..N), независимый от сторон.
+    # Этот индекс выставляет импортёр (Redeye/Discogs) при создании треков.
+    # Всегда используем его для сортировок.
+    position_index = models.PositiveIntegerField(
+        default=0,
+        db_index=True,
+        verbose_name=_("Order"),
+        help_text=_("Sequential order across the release (1..N), independent of sides."),
+    )
+
+    title = models.CharField(max_length=255, verbose_name=_("Track title"))
+
+    # Длительность сохраняем как строку (например, '05:58'), так как у разных источников форматы разнятся.
+    duration = models.CharField(
+        max_length=10,
+        null=True,
+        blank=True,
+        verbose_name=_("Duration"),
+        help_text=_("Optional; e.g., '05:58'."),
+    )
+
+    # Ссылка на ролик/превью (если есть, обычно из Discogs/YouTube).
     youtube_url = models.URLField(
         max_length=512,
         null=True,
         blank=True,
         verbose_name=_("Track URL"),
-        help_text=_("URL to track (YouTube)"),
+        help_text=_("Optional preview/video URL (e.g., YouTube)."),
     )
 
-    def __str__(self):
-        return f"{self.position}. {self.title}"
+    # Локальный MP3-файл превью. Путь генерируется callable-классом PathByInstance,
+    # который уже используется проектом для обложек и формирует путь:
+    #   <app>/<model>/<field>/<id>/<slugified_title>.<ext>
+    # Пример: records/track/audio_preview/123/my-track.mp3
+    audio_preview = models.FileField(
+        upload_to=PathByInstance("audio_preview"),  # type: ignore[arg-type]
+        null=True,
+        blank=True,
+        verbose_name=_("Audio preview (MP3)"),
+        help_text=_("Local preview file stored in media (optional)."),
+    )
+
+    def __str__(self) -> str:
+        """
+        Удобный вид для админки/логов.
+        Показываем position, если она есть; главный порядок остаётся в position_index.
+        """
+        prefix = f"{self.position}. " if self.position else ""
+        return f"{prefix}{self.title}"
 
     class Meta:
         verbose_name = _("Track")
         verbose_name_plural = _("Tracks")
-        ordering = ("record", "position")
+        # сначала сортируем по порядковому номеру; при равенстве — по текстовой позиции.
+        ordering = ("record", "position_index", "position")

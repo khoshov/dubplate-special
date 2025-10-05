@@ -1,0 +1,49 @@
+/* 1) Убрать колонку "original" у табличного инлайна */
+.inline-group .tabular th.original,
+.inline-group .tabular td.original,
+.inline-group .tabular col.original {
+  display: none !important;
+  width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+/* 2) Избавиться от лишней «полосы» сверху строки, которую даёт has_original */
+.inline-group .tabular tr.has_original td {
+  border-top: 0 !important;
+  padding-top: 4px;  /* компактнее */
+}
+
+/* Компактные ширины (в "символах") для узких полей */
+.inline-group .tabular th.field-position_index,
+.inline-group .tabular td.field-position_index {
+  width: 4ch;        /* до 3 цифр + небольшой зазор */
+  text-align: right;
+  white-space: nowrap;
+}
+
+.inline-group .tabular th.field-position,
+.inline-group .tabular td.field-position {
+  width: 4ch;        /* 'A10' поместится; чаще 2-3 знака */
+  white-space: nowrap;
+}
+
+.inline-group .tabular th.field-duration,
+.inline-group .tabular td.field-duration {
+  width: 6ch;        /* '07:31' + запас */
+  white-space: nowrap;
+}
+
+.inline-group .tabular th.field-youtube_url,
+.inline-group .tabular td.field-youtube_url {
+  width: 12ch;       /* компактно, без «растягивания» строки */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Заголовок "TRACK TITLE" пусть занимает остаток */
+.inline-group .tabular th.field-title,
+.inline-group .tabular td.field-title {
+  width: auto;
+}

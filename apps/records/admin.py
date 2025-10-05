@@ -1,45 +1,59 @@
 # apps/records/admin.py
 import logging
+from typing import Optional
 
 from django.contrib import admin, messages
+from django.core.exceptions import SuspiciousFileOperation
+from django.http import HttpRequest
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.html import format_html
 
-from records.forms import RecordForm
-from records.models import Record, Track, Artist
-from records.services import DiscogsService, ImageService, RecordService
+from .forms import RecordForm
+from .models import Record, Track, Artist
+from .services import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
 
 
 class TrackInline(admin.TabularInline):
-    """Inline-администратор для треков.
+    """
+    Inline-администратор для треков.
 
     Отображает треки записи в табличном виде.
-    Треки доступны только для чтения и не могут быть
-    добавлены через админку.
+    Треки доступны только для чтения и не могут быть добавлены через админку.
     """
 
     model = Track
     extra = 0
-    readonly_fields = ("position", "title", "duration", "youtube_url")
     can_delete = False
-    show_change_link = True
+    show_change_link = False
 
-    def has_add_permission(self, request, obj=None):
-        """Запрещает добавление треков через админку.
+    # порядок и колонки
+    fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview_player")
+    readonly_fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview_player")
 
-        Треки импортируются только из Discogs.
+    class Media:
+        css = {"all": ("records/admin/track_inline.css",)}
 
-        Args:
-            request: HTTP запрос.
-            obj: Родительский объект (Record).
-
-        Returns:
-            False - добавление запрещено.
-        """
+    def has_add_permission(self, request: HttpRequest, obj: Optional[Record] = None) -> bool:
+        """Запрещает добавление треков через админку (импортируются из внешних источников)."""
         return False
+
+    @admin.display(description="Preview")
+    def audio_preview_player(self, obj: Track) -> str:
+        """
+        Встроенный аудио-плеер для локального MP3 превью (Track.audio_preview).
+        Если файла нет или база не отдаёт URL — показываем '-'.
+        """
+        f = getattr(obj, "audio_preview", None)
+        if not f:
+            return "-"
+        try:
+            url = f.url
+        except (ValueError, OSError, SuspiciousFileOperation):
+            return "-"
+        return format_html('<audio controls preload="none" src="{}"></audio>', url)
 
 
 # Поля для создания новой записи (ДВА варианта: Discogs/Redeye)
@@ -75,9 +89,6 @@ class RecordAdmin(admin.ModelAdmin):
     Интегрирован с Discogs для импорта и обновления данных.
     При создании новой записи автоматически импортирует данные
     из Discogs по штрих-коду или каталожному номеру.
-
-    Attributes:
-        record_service: Сервис для работы с записями.
     """
 
     form = RecordForm
@@ -147,29 +158,16 @@ class RecordAdmin(admin.ModelAdmin):
     actions = ["update_from_discogs"]
 
     def __init__(self, *args, **kwargs):
-        """Инициализация админки.
-
-        Args:
-            *args: Позиционные аргументы.
-            **kwargs: Именованные аргументы.
-        """
+        """Инициализация админки."""
         super().__init__(*args, **kwargs)
-        # Инициализируем сервис
         self.record_service = RecordService(
             discogs_service=DiscogsService(), image_service=ImageService()
         )
+        # объявляем атрибут перенаправления заранее (для анализатора типов)
+        self._redirect_to_existing: Optional[Record] = None
 
-    def get_artists_display(self, obj):
-        """Отображение артистов в списке.
-
-        Показывает первых трёх артистов, если больше - добавляет "...".
-
-        Args:
-            obj: Экземпляр Record.
-
-        Returns:
-            Строка с именами артистов.
-        """
+    def get_artists_display(self, obj: Record) -> str:
+        """Показывает первых трёх артистов, если больше — добавляет '...'."""
         artists = obj.artists.all()[:3]
         names = [a.name for a in artists]
         if obj.artists.count() > 3:
@@ -178,16 +176,8 @@ class RecordAdmin(admin.ModelAdmin):
 
     get_artists_display.short_description = "Артисты"
 
-    def get_fieldsets(self, request, obj=None):
-        """Возвращает fieldsets в зависимости от операции.
-
-        Args:
-            request: HTTP запрос.
-            obj: Экземпляр Record или None для новой записи.
-
-        Returns:
-            Кортеж fieldsets.
-        """
+    def get_fieldsets(self, request: HttpRequest, obj: Optional[Record] = None):
+        """Возвращает fieldsets в зависимости от операции (создание / редактирование)."""
         if obj:
             return self.fieldsets
 
@@ -197,38 +187,17 @@ class RecordAdmin(admin.ModelAdmin):
             return add_fieldsets_redeye
         return add_fieldsets_discogs
 
-    def get_inline_instances(self, request, obj=None):
-        """Возвращает inline-формы.
-
-        Треки показываются только для существующих записей.
-
-        Args:
-            request: HTTP запрос.
-            obj: Экземпляр Record или None.
-
-        Returns:
-            Список inline-форм.
-        """
+    def get_inline_instances(self, request: HttpRequest, obj: Optional[Record] = None):
+        """Показываем треки только для существующих записей."""
         if obj and obj.pk:
             return super().get_inline_instances(request, obj)
         return []
 
-    def save_model(self, request, obj, form, change):
-        """Сохранение модели с обработкой импорта из Discogs.
-
-        При создании новой записи проверяет наличие дубликатов
-        и выводит соответствующие сообщения.
-
-        Args:
-            request: HTTP запрос.
-            obj: Сохраняемый объект.
-            form: Форма с данными.
-            change: True если редактирование, False если создание.
-        """
-        # Проверяем дубликат при импорте
-        if hasattr(form, "duplicate_record"):
-            duplicate = form.duplicate_record
-
+    def save_model(self, request: HttpRequest, obj: Record, form: RecordForm, change: bool) -> None:
+        """Сохранение модели с обработкой импорта и дубликатов."""
+        # Дубликат при импорте
+        duplicate = getattr(form, "duplicate_record", None)
+        if duplicate is not None:
             messages.info(
                 request,
                 format_html(
@@ -237,8 +206,7 @@ class RecordAdmin(admin.ModelAdmin):
                     duplicate.discogs_id,
                 ),
             )
-
-            # Устанавливаем флаг для перенаправления
+            # настроим редирект в response_add
             self._redirect_to_existing = duplicate
             return
 
@@ -247,18 +215,13 @@ class RecordAdmin(admin.ModelAdmin):
 
         # Сообщения об импорте для новых записей
         if not change:
-            # добавлено: учитываем выбранный источник, чтобы сообщения были релевантны
             source = getattr(form, "cleaned_data", {}).get("source") or request.POST.get("source")
-
             if obj.discogs_id:
-                # старое поведение оставляем — это для импорта из Discogs
                 messages.success(
                     request,
                     f'Запись "{obj.title}" успешно импортирована из Discogs (ID: {obj.discogs_id})',
                 )
             else:
-                # добавлено: если выбрали Redeye — даём нейтральное инфо-сообщение,
-                # т.к. у записей с Redeye не будет discogs_id.
                 if source == "redeye":
                     messages.info(
                         request,
@@ -273,26 +236,12 @@ class RecordAdmin(admin.ModelAdmin):
                         "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
                     )
 
-    def response_add(self, request, obj, post_url_continue=None):
-        """Обработка ответа после создания записи.
-
-        Перенаправляет на существующую запись при обнаружении дубликата
-        или на страницу редактирования при успешном импорте.
-
-        Args:
-            request: HTTP запрос.
-            obj: Созданный объект.
-            post_url_continue: URL для продолжения.
-
-        Returns:
-            HTTP ответ.
-        """
-        # Проверяем флаг перенаправления на дубликат
-        if hasattr(self, "_redirect_to_existing"):
+    def response_add(self, request: HttpRequest, obj: Record, post_url_continue: Optional[str] = None):
+        """Перенаправляет на существующую запись при дубликате или на редактирование после импорта."""
+        # Перенаправление на уже существующую запись
+        if self._redirect_to_existing is not None:
             existing_obj = self._redirect_to_existing
-            delattr(self, "_redirect_to_existing")
-
-            # Перенаправляем на существующую запись
+            self._redirect_to_existing = None
             return redirect(
                 reverse(
                     f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
@@ -300,20 +249,16 @@ class RecordAdmin(admin.ModelAdmin):
                 )
             )
 
-        # Если импорт успешен, перенаправляем на редактирование
+        # Если импорт успешен, ведём на редактирование
         if obj.discogs_id:
-            messages.info(
-                request,
-                "Проверьте импортированные данные и при необходимости отредактируйте их.",
-            )
+            messages.info(request, "Проверьте импортированные данные и при необходимости отредактируйте их.")
             redirect_url = reverse(
                 f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
                 args=[obj.pk],
             )
             return redirect(redirect_url)
 
-        # добавлено: для Redeye discogs_id не заполняется; всё равно ведём на редактирование,
-        # чтобы пользователь увидел, что подтянулось, и мог сохранить/дополнить.
+        # Для Redeye discogs_id обычно нет — всё равно ведём на редактирование
         source = request.POST.get("source")
         if source == "redeye":
             redirect_url = reverse(
@@ -324,13 +269,8 @@ class RecordAdmin(admin.ModelAdmin):
 
         return super().response_add(request, obj, post_url_continue)
 
-    def update_from_discogs(self, request, queryset):
-        """Массовое обновление записей из Discogs.
-
-        Args:
-            request: HTTP запрос.
-            queryset: QuerySet выбранных записей.
-        """
+    def update_from_discogs(self, request: HttpRequest, queryset):
+        """Массовое обновление записей из Discogs."""
         updated = 0
         errors = 0
 
@@ -352,11 +292,11 @@ class RecordAdmin(admin.ModelAdmin):
                     f'Запись "{record}" успешно обновлена',
                     level=messages.SUCCESS,
                 )
-            except Exception as e:
-                logger.error(f"Failed to update record {record.pk}: {str(e)}")
+            except Exception as e:  # noqa: BLE001 — широкая ловля намеренна: внешний API/сеть/парсинг
+                logger.error("Failed to update record %s: %s", record.pk, e)
                 self.message_user(
                     request,
-                    f'Ошибка при обновлении записи "{record}": {str(e)}',
+                    f'Ошибка при обновлении записи "{record}": {e}',
                     level=messages.ERROR,
                 )
                 errors += 1
@@ -369,53 +309,34 @@ class RecordAdmin(admin.ModelAdmin):
 
     update_from_discogs.short_description = "Обновить из Discogs"
 
-    def get_readonly_fields(self, request, obj=None):
-        """Возвращает поля только для чтения.
-
-        Args:
-            request: HTTP запрос.
-            obj: Экземпляр Record или None.
-
-        Returns:
-            Кортеж полей только для чтения.
-        """
-        # is_expected вычисляется автоматически в save() -> делаем его read-only
+    def get_readonly_fields(self, request: HttpRequest, obj: Optional[Record] = None):
+        """Поле is_expected вычисляется в save() → делаем read-only."""
         base = ("is_expected",)
         if obj:
             return base + ("discogs_id", "created", "modified")
         return base
 
-    def has_delete_permission(self, request, obj=None):
-        """Проверка прав на удаление.
-
-        Запрещает удаление записей, которые есть в заказах.
-
-        Args:
-            request: HTTP запрос.
-            obj: Экземпляр Record или None.
-
-        Returns:
-            True если удаление разрешено.
-        """
+    def has_delete_permission(self, request: HttpRequest, obj: Optional[Record] = None) -> bool:
+        """Запрещает удаление записей, которые есть в заказах."""
         if obj and hasattr(obj, "order_items") and obj.order_items.exists():
             return False
         return super().has_delete_permission(request, obj)
 
-    # Добавлено: делаем M2M не обязательными на форме редактирования (без миграций)
+    # M2M опциональны (у Redeye иногда отсутствуют) — не требуем на форме
     def formfield_for_manytomany(self, db_field, request, **kwargs):
         field = super().formfield_for_manytomany(db_field, request, **kwargs)
-        # genres / styles / formats могут отсутствовать у Redeye
-        field.required = False  # <-- ключевая строка
+        field.required = False
         return field
+
 
 @admin.register(Artist)
 class ArtistAdmin(admin.ModelAdmin):
     search_fields = ("name",)
 
-    def get_model_perms(self, request):
+    def get_model_perms(self, request: HttpRequest):
         """
         Возвращаем пустые права — модель не отображается
-        в сайдбаре и индексе админки, но остаётся доступной
-        для эндпоинтов автокомплита.
+        в боковом меню и индексе админки, но остаётся доступной
+        для функции автозаполнения.
         """
         return {}

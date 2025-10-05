@@ -285,7 +285,6 @@ class RedeyeListingScraper:
 
         # первая страница без page-1
         if re.search(r"/pre-orders/?$", current_url):
-            tail_slash = "" if current_url.endswith("/") else ""
             return f"{current_url.rstrip('/')}/page-2"
 
         return None

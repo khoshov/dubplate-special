@@ -1,8 +1,9 @@
 import logging
 from typing import Optional, Tuple, List
-
+# from ..models import Record, RecordConditions
+# from ..models import Artist, Label, Genre, Style
 from django.db import transaction
-from records.models import (
+from ..models import (
     Artist,
     Format,
     Genre,
@@ -12,17 +13,14 @@ from records.models import (
     Style,
     Track,
 )
-from records.services.discogs_service import DiscogsService
-from records.services.image_service import ImageService
-from records.services.redeye_service import RedeyeService
+from ..services.discogs_service import DiscogsService
+from ..services.image_service import ImageService
+from ..services.redeye_service import RedeyeService
 
 # добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
 # Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.
 DEFAULT_NAME = "not specified"
-try:
-    from records.services.redeye_service import RedeyeService  # type: ignore
-except Exception:  # pragma: no cover  # на случай, если файл ещё не создан
-    RedeyeService = None  # подменим на None; метод import_from_redeye отработает с понятной ошибкой
+
 
 logger = logging.getLogger(__name__)
 
@@ -545,7 +543,6 @@ class RecordService:
         Если запись с таким catalog_number уже существует — бросим ValueError
         (RecordForm.save() конвертирует в ValidationError у поля).
         """
-        from records.models import Record, RecordConditions
 
         catalog_number = (data.get("catalog_number") or "").strip() or None
         if catalog_number:
@@ -581,12 +578,8 @@ class RecordService:
         по данным вендора. Для жанров/стилей используется CI-поиск и нормализация
         'not specified' -> 'Not specified', чтобы не нарушать CI-unique ограничение.
         """
+
         # локальные импорты, чтобы избежать циклов
-        from records.models import Artist, Label, Genre, Style
-        try:
-            from records.models import Format  # если модели форматов нет — просто пропустим
-        except Exception:
-            Format = None
 
         def _canon_vocab(name: str) -> str:
             if not name:
@@ -648,15 +641,17 @@ class RecordService:
 
     def _create_vendor_tracks(self, record: Record, data: dict) -> None:
         """Создание треков из словаря (позиция/название/длительность)."""
-        for t in data.get("tracks", []) or []:
+        tracks = (data.get("tracks") or [])
+        for i, t in enumerate(tracks, start=1):
             if not t or not t.get("title"):
                 continue
             Track.objects.create(
                 record=record,
                 position=t.get("position") or "",
-                title=t["title"],
-                duration=t.get("duration"),
-                youtube_url=t.get("youtube_url"),  # обычно у Redeye нет; оставим на будущее
+                position_index=int(t.get("position_index") or i),
+                title=t["title"].strip(),
+                duration=(t.get("duration") or None),
+                youtube_url=t.get("youtube_url"),
             )
 
     def _update_record_relations(self, record: Record, disccogs_release):
@@ -814,7 +809,7 @@ class RecordService:
         # Получаем видео если есть
         videos = self.discogs_service.get_release_videos(record.discogs_id) or []
 
-        for track in getattr(discogs_release, "tracklist", []):
+        for i, track in enumerate(getattr(discogs_release, "tracklist", []), start=1):
             # Ищем видео для трека
             track_url = None
             for video in videos:
@@ -824,7 +819,8 @@ class RecordService:
 
             Track.objects.create(
                 record=record,
-                position=track.position,
+                position=(track.position or ""),
+                position_index=i,
                 title=track.title,
                 duration=track.duration,
                 youtube_url=track_url,
@@ -866,7 +862,6 @@ class RecordService:
 
     def _get_or_create_genre_ci(self, name: str):
         """CI-lookup + нормализация имени для Genre."""
-        from records.models import Genre
         canon = self._canon_vocab(name)
         if not canon:
             return None
@@ -881,7 +876,6 @@ class RecordService:
 
     def _get_or_create_style_ci(self, name: str):
         """CI-lookup + нормализация имени для Style."""
-        from records.models import Style
         canon = self._canon_vocab(name)
         if not canon:
             return None
