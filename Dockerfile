@@ -6,7 +6,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Ensure Python output is sent straight to terminal without buffering
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/apps
 
 # ======================
 # SYSTEM DEPENDENCIES
