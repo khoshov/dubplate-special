@@ -5,6 +5,7 @@ import argparse
 import logging
 import re
 import time
+from textwrap import dedent
 from typing import Iterator, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -310,14 +311,50 @@ def iterate_category_urls(category_url: str, *, limit: Optional[int] = None, del
 
 # ---------- CLI для тестового запуска ----------
 def _cli():
-    parser = argparse.ArgumentParser(description="List Redeye product URLs from a category page (with pagination).")
-    parser.add_argument("--url", required=True,
-                        help="Category URL, e.g. https://www.redeyerecords.co.uk/bass-music/pre-orders")
-    parser.add_argument("--limit", type=int, default=None, help="Max number of product URLs to output")
-    parser.add_argument("--delay", type=float, default=0.6, help="Delay between listing pages (seconds)")
-    parser.add_argument("--timeout", type=float, default=15.0, help="HTTP timeout (seconds)")
-    parser.add_argument("--debug", action="store_true",
-                        help="Enable DEBUG logging (prints every product URL to stderr)")
+    parser = argparse.ArgumentParser(
+        description="Собрать ВСЕ ссылки карточек Redeye с указанной страницы категории (с пагинацией).",
+        epilog=dedent("""\
+                Примеры запуска:
+
+                  1) Локально (из IDE/терминала) из директории файла:
+                     python -m records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/bass-music/pre-orders
+
+                     Через uv:
+                     uv run python -m records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/drum-and-bass/pre-orders --debug
+
+                  2) Внутри Docker-контейнера (рекомендуется для проекта):
+                     docker compose exec django uv run -m records.scrapers.redeye_listing --url "https://www.redeyerecords.co.uk/bass-music/pre-orders" --debug
+
+                     Подсказки:
+                    - --limit N            : ограничить количество найденных ссылок (для быстрой проверки)
+                    - --delay 0.6          : задержка между страницами (секунды)
+                    - --timeout 15         : таймаут HTTP (секунды)
+                    - --debug              : подробные логи, печатаем каждую найденную ссылку
+            """),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "--url",
+        required=True,
+        help="URL страницы категории, например: https://www.redeyerecords.co.uk/bass-music/pre-orders",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="Максимум ссылок для вывода (по умолчанию — без ограничения)",
+    )
+    parser.add_argument(
+        "--delay", type=float, default=0.6,
+        help="Задержка между страницами (сек.)",
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=15.0,
+        help="HTTP таймаут (сек.)",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Режим отладки (DEBUG): печатать каждую найденную ссылку",
+    )
+
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO
@@ -328,8 +365,8 @@ def _cli():
     for u in scraper.iter_product_urls(args.url, limit=args.limit):
         print(u)
         count += 1
-    logger.info("done. total urls: %s", count)
 
+    logger.info("Готово. Всего ссылок: %s", count)
 
 if __name__ == "__main__":
     _cli()
