@@ -1,11 +1,16 @@
 # apps/records/services/redeye_service.py
 from __future__ import annotations
-import logging, random, re, time, html
+import logging
+import random
+import re
+import time
+import html
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, List, Dict, Tuple
 import requests
 from bs4 import BeautifulSoup, NavigableString
+from urllib.parse import urljoin
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -131,6 +136,25 @@ class RedeyeService:
 
         return RedeyeFetchResult(source_url=url, payload=payload)
 
+    def parse_product_by_url(self, url: str) -> RedeyeFetchResult:
+        """
+        Открывает страницу товара по переданному URL и возвращает распарсенные поля.
+        Возвращаем тот же тип, что и fetch_by_catalog_number: RedeyeFetchResult(source_url, payload).
+        """
+        if not url:
+            raise ValueError("Product URL is required")
+
+        # Нормализуем до абсолютного
+        abs_url = url if re.match(r"^https?://", url, re.I) else urljoin(self.BASE, url)
+
+        logger.info("[Redeye] opening product by URL: %s", abs_url)
+        html_text = self._get(abs_url)
+        payload = self._parse_product_page(abs_url, html_text)
+
+        # Подстраховка: если каталог.№ не извлёкся, не заполняем тут — пусть остаётся как распарсилось
+        return RedeyeFetchResult(source_url=abs_url, payload=payload)
+
+
     # ---------------- NETWORK ----------------
 
     def _get(self, url: str, *, referer: Optional[str] = None, slow: bool = False) -> str:
@@ -158,6 +182,26 @@ class RedeyeService:
             return href if href.startswith("http") else self.BASE + href
         return None
 
+    def _parse_catalog_number(self, soup) -> str | None:
+        """
+        Извлекает кат. номер из блока вида:
+            <p>Catalogue No. <span>TEMPA124</span></p>
+        Возвращает строку без префиксов, например 'TEMPA124'.
+        """
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            # Ищем заголовок 'Catalogue No' / 'Catalogue No.' (регистронезависимо)
+            if re.search(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
+                # приоритет: содержимое вложенного <span>
+                span = p.find("span")
+                if span:
+                    val = span.get_text(strip=True)
+                    return val or None
+                # запасной путь: вырезать префикс и взять хвост после него
+                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
+                return tail or None
+        return None
+
     # ---------------- PARSE PRODUCT ----------------
 
     def _parse_product_page(self, url: str, html_text: str) -> Dict:
@@ -167,35 +211,38 @@ class RedeyeService:
         title_text = self._extract_title(soup)
         artists, record_title = self._split_artist_title(title_text)
 
-        # 2) Правый блок: Label и Catalogue No. — вытаскиваем точечно
-        catno, label_name = self._extract_catalog_and_label(soup)
+        # 2) Label
+        label_name = self._extract_label(soup)
 
-        # 3) Цена/наличие
+        # 3) Catalogue No.
+        catno = self._extract_catalog_number(soup)
+
+        # 4) Цена/наличие
         price, availability = self._extract_price_and_availability(soup)
+
         # --- Expected date parts (если это предзаказ) ---
         y, m, d = _parse_expected_date_parts(soup.get_text(" ", strip=True))
         release_year = y or None
         release_month = m or None
         release_day = d or None
 
-        # 4) Картинка
+        # 5) Картинка
         image_url = self._extract_image_url(soup, base=url)
 
-        # 5) Простой треклист из субтайтла (если есть)
+        # 6) Простой треклист из субтайтла (если есть)
         tracks = self._extract_tracks_from_subtitle(soup)
 
-        # 6) Формат: на Redeye нет структурированных данных → не заполняем
+        # 7) Формат: на Redeye нет структурированных данных → не заполняем
         formats: List[str] = []
 
         # аккуратная длина label (у тебя CharField(255))
         if label_name:
             label_name = label_name[:255]
 
-        # 7) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
+        # 8) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
         notes = None
-        if price:
-            # форматируем 2 знака после запятой, точка как в исходнике
-            notes = (f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP")
+        if price is not None:
+            notes = f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP"
 
         logger.info(
             "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s avail=%s img=%s",
@@ -243,33 +290,64 @@ class RedeyeService:
             return artists, title_part.strip()
         return [], full
 
-    def _extract_catalog_and_label(self, soup: BeautifulSoup):
-        catno = None
-        label = None
-
-        # --- LABEL ---
-        # Ищем <p>Label <span><a href="...">Liquid Luve Discs</a></span></p>
+    def _extract_label(self, soup: BeautifulSoup) -> Optional[str]:
+        """
+        Ищет лейбл в блоке вида:
+            <p>Label <span><a href="...">Some Label</a></span></p>
+        Возвращает строку (<=255 символов) или None.
+        """
         for p in soup.find_all("p"):
-            # первый узел в <p> — текст "Label"
             if not p.contents:
                 continue
             first = p.contents[0]
             if isinstance(first, NavigableString) and first.strip().lower() == "label":
+                # приоритет: <a> внутри <span>
                 a = p.find("a")
                 if a and a.get_text(strip=True):
-                    label = a.get_text(strip=True)[:255]
-                    break
+                    return a.get_text(strip=True)[:255]
+                # запасной: текст в <span> или во всём <p> после слова "Label"
+                span = p.find("span")
+                if span and span.get_text(strip=True):
+                    return span.get_text(strip=True)[:255]
+                txt = p.get_text(" ", strip=True)
+                tail = re.sub(r"^label\s*", "", txt, flags=re.IGNORECASE).strip()
+                return tail[:255] if tail else None
+        return None
 
-        # --- CATALOG NO. ---
-        cat_node = soup.find(string=re.compile(r"Catalogue\s*No\.?", re.I))
-        if cat_node:
-            sib = cat_node.find_parent().find_next_sibling()
-            txt = (sib.get_text(" ", strip=True) if sib else cat_node.parent.get_text(" ", strip=True))
-            m = self.CAT_RE.search(txt)
-            if m:
-                catno = m.group(1).upper()
+    def _extract_catalog_number(self, soup: BeautifulSoup) -> Optional[str]:
+        """
+        Ищет каталожный номер в блоке вида:
+            <p>Catalogue No. <span>TEMPA124</span></p>
+        Возвращает строку без префиксов (например, 'TEMPA124') или None.
+        """
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if re.match(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
+                # приоритет: содержимое <span>
+                span = p.find("span")
+                if span:
+                    val = span.get_text(strip=True)
+                    return val or None
+                # запасной путь: вырезать префикс "Catalogue No."
+                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
+                return tail or None
+        return None
 
-        return catno, label
+    def _parse_catalog_number(self, soup: BeautifulSoup) -> Optional[str]:
+        """
+        Резервный способ: пройтись по <p> и найти вариант с 'Catalogue No.'.
+        Возвращает строку без префикса, например 'TEMPA124'.
+        """
+        for p in soup.find_all("p"):
+            txt = p.get_text(" ", strip=True)
+            if re.match(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
+                span = p.find("span")
+                if span:
+                    val = span.get_text(strip=True)
+                    return val or None
+                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
+                return tail or None
+        return None
 
     def _extract_price_and_availability(self, soup: BeautifulSoup) -> Tuple[Optional[Decimal], Optional[str]]:
         text = soup.get_text(" ", strip=True)
@@ -300,14 +378,18 @@ class RedeyeService:
         return price, availability
 
     @staticmethod
+    @staticmethod
     def _extract_image_url(soup: BeautifulSoup, base: str) -> Optional[str]:
         # сначала og:image
         og = soup.find("meta", attrs={"property": "og:image"})
 
         def _norm(u: str) -> str:
-            if u.startswith("http"): return u
-            if u.startswith("//"): return "https:" + u
-            if u.startswith("/"): return RedeyeService.BASE + u
+            if u.startswith("http"):
+                return u
+            if u.startswith("//"):
+                return "https:" + u
+            if u.startswith("/"):
+                return RedeyeService.BASE + u
             return u
 
         if og and og.get("content"):
@@ -319,6 +401,7 @@ class RedeyeService:
                 return _norm(src)
         return None
 
+    @staticmethod
     @staticmethod
     def _extract_tracks_from_subtitle(soup: BeautifulSoup) -> List[Dict]:
         """
@@ -355,6 +438,7 @@ class RedeyeService:
             else:
                 out.append({"position": "", "title": ln})
         return out
+
 
 
 

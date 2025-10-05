@@ -7,7 +7,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 
 from records.forms import RecordForm
-from records.models import Record, Track
+from records.models import Record, Track, Artist
 from records.services import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,7 @@ class RecordAdmin(admin.ModelAdmin):
     """
 
     form = RecordForm
+    autocomplete_fields = ("artists",)
     inlines = [TrackInline]
 
     # Поля для редактирования существующей записи
@@ -406,3 +407,15 @@ class RecordAdmin(admin.ModelAdmin):
         # genres / styles / formats могут отсутствовать у Redeye
         field.required = False  # <-- ключевая строка
         return field
+
+@admin.register(Artist)
+class ArtistAdmin(admin.ModelAdmin):
+    search_fields = ("name",)
+
+    def get_model_perms(self, request):
+        """
+        Возвращаем пустые права — модель не отображается
+        в сайдбаре и индексе админки, но остаётся доступной
+        для эндпоинтов автокомплита.
+        """
+        return {}

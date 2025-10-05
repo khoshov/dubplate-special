@@ -1,3 +1,4 @@
+import calendar
 import os
 from datetime import date
 from django.utils.deconstruct import deconstructible
@@ -20,8 +21,6 @@ from sorl.thumbnail import ImageField
 
 
 # --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
-import os
-from django.utils.text import slugify
 
 def record_upload_to(instance, filename):
     """

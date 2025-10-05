@@ -892,3 +892,6 @@ class RecordService:
                 obj.name = canon
             return obj
         return Style.objects.create(name=canon)
+
+    def parse_product_by_url(self, url: str) -> dict:
+        """скачивает HTML и возвращает dict полей так же, как это делает парсинг по каталожному номеру"""
