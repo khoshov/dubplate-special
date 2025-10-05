@@ -98,7 +98,7 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
     # регулярные выражения для основных случаев
     rx_side = re.compile(r"^\s*(?:side\s+)?([A-D])\s*$", re.I)  # Side A / A / side B
     # в [] дефис ставим в конец, ':' не экранируем
-    rx_pos_alpha = re.compile(r"^\s*([A-D]\d{1,2})[.) :-]?\s+(.*)$", re.I)  # A1. Title / A1) Title / A1 - Title
+    rx_pos_alpha = re.compile(r"^\s*([A-D]\d{1,2})\s*[.) :\-–—]?\s+(.*)$", re.I)  # A1. Title / A1) Title / A1 - Title
     rx_pos_num = re.compile(r"^\s*(\d{1,2})[.)]\s+(.*)$")  # 1. Title / 2) Title
     rx_duration = re.compile(r"^(.*?)(?:\s+(\d{1,2}:\d{2}))?$")  # optional mm:ss в конце
 
