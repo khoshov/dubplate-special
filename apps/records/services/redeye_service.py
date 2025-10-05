@@ -11,6 +11,7 @@ from typing import Optional, List, Dict, Tuple
 import requests
 from bs4 import BeautifulSoup, NavigableString
 from urllib.parse import urljoin
+from .tracks import parse_redeye_tracks
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -256,8 +257,8 @@ class RedeyeService:
         # 5) Картинка
         image_url = self._extract_image_url(soup, base=url)
 
-        # 6) Простой треклист из субтайтла (если есть)
-        tracks = self._extract_tracks_from_subtitle(soup)
+        # 6) Список треков (именно Tracks)
+        tracks: list[dict] = parse_redeye_tracks(soup)
 
         # 7) Формат: на Redeye нет структурированных данных → не заполняем
         formats: List[str] = []
@@ -427,91 +428,7 @@ class RedeyeService:
                 return _norm(src)
         return None
 
-    @staticmethod
-    def _extract_tracks_from_subtitle(soup: BeautifulSoup) -> List[Dict]:
-        """
-        Берём треклист из элемента с class="tracks".
-        Поддерживаем форматы:
-          1) "A1 Flow Key 06:19<br>A2 Reso 02 05:58<br>..."
-          2) "Moon Cruise / Never Stop / ..." (одна строка через "/")
-          3) "A1. Title" / "A1) Title" / "A1 - Title" / "1. Title" / "2) Title"
-        Возвращает список dict: {"position": str, "title": str, "duration": Optional[str], "position_index": int}
-        """
-        node = soup.find(attrs={"class": "tracks"})
-        if not node:
-            return []
 
-        # сырой html (чтобы поймать все <br>)
-        html = node.decode_contents()
-
-        # кейс: одна строка со слэшами
-        if "<br" not in html and "/" in html:
-            parts = [p.strip(" \t\r\n-–—") for p in html.split("/") if p.strip()]
-            items = [
-                {"position": "", "title": BeautifulSoup(p, "html.parser").get_text(" ", strip=True), "duration": None}
-                for p in parts
-            ]
-            # индексация 1..N
-            for i, t in enumerate(items, start=1):
-                t["position_index"] = i
-            return items
-
-        # нормализуем <br>
-        for token in ("<br>", "<br/>", "<br />"):
-            html = html.replace(token, "\n")
-        text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
-        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-        # регэкспы
-        rx_side = re.compile(r"^\s*(?:side\s+)?([A-D])\s*$", re.I)  # Side A / A / side B
-        rx_pos_alpha = re.compile(r"^\s*([A-D]\d{1,2})[.)\:\-]?\s+(.*)$", re.I)  # A1. Title / A1) Title / A1 - Title
-        rx_pos_num = re.compile(r"^\s*(\d{1,2})[.)]\s+(.*)$")  # 1. Title / 2) Title
-        rx_duration = re.compile(r"^(.*?)(?:\s+(\d{1,2}:\d{2}))?$")  # optional mm:ss at end
-
-        parsed: list[dict] = []
-
-        for ln in lines:
-            # пропускаем заголовки сторон
-            if rx_side.match(ln):
-                continue
-
-            m = rx_pos_alpha.match(ln) or rx_pos_num.match(ln)
-            if m:
-                pos = m.group(1).strip()
-                tail = m.group(2).strip()
-            else:
-                pos = ""
-                tail = ln
-
-            md = rx_duration.fullmatch(tail)
-            if md:
-                title = md.group(1).strip()
-                duration = (md.group(2) or "").strip() or None
-            else:
-                title = tail
-                duration = None
-
-            # на этом этапе у нас «кандидат»
-            parsed.append({"position": pos, "title": title, "duration": duration})
-
-        # --- дедуп по (position, title) с приоритетом строки, где есть duration ---
-        dedup: dict[tuple[str, str], dict] = {}
-        for t in parsed:
-            key = ((t.get("position") or "").lower(), (t.get("title") or "").lower())
-            if key not in dedup:
-                dedup[key] = t
-            else:
-                # если новая версия содержит duration, а старая — нет, заменим
-                if t.get("duration") and not dedup[key].get("duration"):
-                    dedup[key] = t
-
-        items = list(dedup.values())
-
-        # --- индексация 1..N ---
-        for i, t in enumerate(items, start=1):
-            t["position_index"] = i
-
-        return items
 
 
 

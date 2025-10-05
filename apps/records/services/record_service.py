@@ -1,7 +1,6 @@
 import logging
 from typing import Optional, Tuple, List
-# from ..models import Record, RecordConditions
-# from ..models import Artist, Label, Genre, Style
+from .tracks import create_tracks_for_record
 from django.db import transaction
 from ..models import (
     Artist,
@@ -20,7 +19,6 @@ from ..services.redeye_service import RedeyeService
 # добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
 # Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.
 DEFAULT_NAME = "not specified"
-
 
 logger = logging.getLogger(__name__)
 
@@ -641,18 +639,7 @@ class RecordService:
 
     def _create_vendor_tracks(self, record: Record, data: dict) -> None:
         """Создание треков из словаря (позиция/название/длительность)."""
-        tracks = (data.get("tracks") or [])
-        for i, t in enumerate(tracks, start=1):
-            if not t or not t.get("title"):
-                continue
-            Track.objects.create(
-                record=record,
-                position=t.get("position") or "",
-                position_index=int(t.get("position_index") or i),
-                title=t["title"].strip(),
-                duration=(t.get("duration") or None),
-                youtube_url=t.get("youtube_url"),
-            )
+        create_tracks_for_record(record, data.get("tracks") or [])
 
     def _update_record_relations(self, record: Record, disccogs_release):
         """Обновление связей записи.
