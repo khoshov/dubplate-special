@@ -2,7 +2,7 @@
 import os
 from django.db.models.signals import pre_save, post_save, post_delete
 from django.dispatch import receiver
-from records.models import Record
+from .models import Record
 
 
 # ------- helpers -------
