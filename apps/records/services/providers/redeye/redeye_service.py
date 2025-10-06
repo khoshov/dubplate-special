@@ -11,7 +11,7 @@ from typing import Optional, List, Dict, Tuple
 import requests
 from bs4 import BeautifulSoup, NavigableString
 from urllib.parse import urljoin
-from .tracks import parse_redeye_tracks
+from .parsers.redeye_tracks_parser import parse_redeye_tracks
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,

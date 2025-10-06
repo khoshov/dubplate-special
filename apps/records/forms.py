@@ -4,9 +4,10 @@ from typing import Optional
 
 from django import forms
 from django.core.exceptions import ValidationError
-from records.models import Record
-from records.services import DiscogsService, ImageService, RecordService
-from records.validators import RecordIdentifierValidator
+from .models import Record
+from .services.image_service import ImageService
+from .services.record_service import DiscogsService, RecordService
+from .validators import RecordIdentifierValidator
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,9 @@ class RecordForm(forms.ModelForm):
         if is_creating:
             # ---- Конфигурация формы СОЗДАНИЯ ----
             current_source = (
-                (self.data.get("source") if self.data else None)
-                or self.initial.get("source")
-                or self.SOURCE_DISCOGS
+                    (self.data.get("source") if self.data else None)
+                    or self.initial.get("source")
+                    or self.SOURCE_DISCOGS
             )
             self._setup_fields_for_new_record(current_source)
         else:
@@ -187,13 +188,13 @@ class RecordForm(forms.ModelForm):
 
             # Применим значения из формы (если они были заданы)
             for field in (
-                "title",
-                "release_year",
-                "label",
-                "country",
-                "notes",
-                "catalog_number",
-                "barcode",
+                    "title",
+                    "release_year",
+                    "label",
+                    "country",
+                    "notes",
+                    "catalog_number",
+                    "barcode",
             ):
                 if field in self.cleaned_data and self.cleaned_data[field] not in (None, ""):
                     setattr(record, field, self.cleaned_data[field])

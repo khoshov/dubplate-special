@@ -18,10 +18,10 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils.text import slugify
 
-from ..models import Record, Genre, Style, Label, Artist
-from ..scrapers.redeye_listing import iterate_category_urls
-from ..services.redeye_service import RedeyeService
-from ..services.tracks.ingest import create_tracks_for_record
+from ...models import Record, Genre, Style, Label, Artist
+from ...scrapers.redeye_listing import iterate_category_urls
+from ...services.providers.redeye.redeye_service import RedeyeService
+from ...services.tracks import create_tracks_for_record
 
 logger = logging.getLogger(__name__)
 

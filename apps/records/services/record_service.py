@@ -14,7 +14,7 @@ from ..models import (
 )
 from ..services.discogs_service import DiscogsService
 from ..services.image_service import ImageService
-from ..services.redeye_service import RedeyeService
+from ..services.providers.redeye.redeye_service import RedeyeService
 
 # добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
 # Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.

@@ -27,15 +27,15 @@ docker compose exec django uv run python manage.py parse_redeye `
 from __future__ import annotations
 
 import logging
-import re
 from typing import List
 
 from django.core.management.base import BaseCommand, CommandError
 
-from ...pipelines.redeye_bulk_import import RedeyeBulkImporter
+from ...pipelines.redeye.redeye_bulk_import import RedeyeBulkImporter
 from ...rec_config.redeye import REDEYE_URLS
 
 logger = logging.getLogger(__name__)
+
 
 
 def _derive_code(url: str | None, genre: str | None, style: str | None) -> str:

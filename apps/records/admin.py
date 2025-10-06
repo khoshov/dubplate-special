@@ -11,7 +11,7 @@ from django.utils.html import format_html
 
 from .forms import RecordForm
 from .models import Record, Track, Artist
-from .services import DiscogsService, ImageService, RecordService
+from .services.record_service import DiscogsService, ImageService, RecordService
 
 logger = logging.getLogger(__name__)
 
