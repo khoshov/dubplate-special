@@ -2,9 +2,10 @@
 Ингест треков в БД.
 
 Единая точка для записи Track из любых источников:
-- гарантирует натуральную нумерацию 1..N (position_index),
+- гарантирует натуральную нумерацию 1..N (position_index) без дырок,
 - создаёт записи атомарно (транзакция),
-- игнорирует пустые/битые элементы с внятным логом.
+- игнорирует пустые/битые элементы с внятным логом,
+- умеет заменять существующий треклист (replace=True).
 """
 
 from __future__ import annotations
@@ -22,9 +23,25 @@ logger = logging.getLogger(__name__)
 TrackLike = Mapping[str, Any]  # ожидаем "title"; опц. "position","duration","youtube_url","position_index"
 
 
-def create_tracks_for_record(record: Record, tracks: Iterable[TrackLike]) -> List[Track]:
+def _normalize_row(t: TrackLike) -> dict:
+    """Минимальная нормализация входного словаря трека (без индекса)."""
+    return {
+        "title": (t.get("title") or "").strip(),
+        "position": (t.get("position") or "").strip(),
+        "duration": (t.get("duration") or None) or None,
+        "youtube_url": (t.get("youtube_url") or "").strip() or None,
+    }
+
+
+@transaction.atomic
+def create_tracks_for_record(
+        record: Record,
+        tracks: Iterable[TrackLike],
+        *,
+        replace: bool = True,
+) -> List[Track]:
     """
-    Создаёт треки для указанной записи.
+    Создаёт треки для указанной записи, с новой плотной нумерацией 1..N.
 
     Args:
         record: объект Record, для которого пишем треки.
@@ -34,8 +51,9 @@ def create_tracks_for_record(record: Record, tracks: Iterable[TrackLike]) -> Lis
                     "position": str,              # опционально
                     "duration": str|None,         # опционально
                     "youtube_url": str|None,      # опционально
-                    "position_index": int|None,   # опционально (если нет — нумеруем 1..N)
+                    # входящий position_index игнорируется — индексация всегда 1..N
                 }
+        replace: если True — предварительно удаляет старые треки записи.
 
     Returns:
         Список созданных объектов Track (в порядке добавления).
@@ -43,29 +61,33 @@ def create_tracks_for_record(record: Record, tracks: Iterable[TrackLike]) -> Lis
     items: List[TrackLike] = list(tracks or [])
     if not items:
         logger.info("create_tracks_for_record(%s): empty input", record.pk)
+        if replace:
+            Track.objects.filter(record=record).delete()
         return []
 
+    rows = [_normalize_row(t) for t in items if (t and (t.get("title") or "").strip())]
+
+    if replace:
+        Track.objects.filter(record=record).delete()
+
     objs: List[Track] = []
-    with transaction.atomic():
-        for i, t in enumerate(items, start=1):
-            title = (t.get("title") or "").strip()
-            if not title:
-                logger.warning("skip track without title for record=%s: %r", record.pk, t)
-                continue
-
-            objs.append(
-                Track(
-                    record=record,
-                    position=(t.get("position") or ""),
-                    position_index=int(t.get("position_index") or i),
-                    title=title,
-                    duration=(t.get("duration") or None),
-                    youtube_url=t.get("youtube_url"),
-                )
+    for i, r in enumerate(rows, start=1):
+        objs.append(
+            Track(
+                record=record,
+                position=r["position"],
+                position_index=i,
+                title=r["title"],
+                duration=r["duration"],
+                youtube_url=r["youtube_url"],
             )
+        )
 
-        Track.objects.bulk_create(objs)
+    if not objs:
+        logger.info("create_tracks_for_record(%s): nothing to create after normalization", record.pk)
+        return []
 
+    Track.objects.bulk_create(objs)
     logger.debug("create_tracks_for_record(%s): created %d tracks", record.pk, len(objs))
     return objs
 

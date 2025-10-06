@@ -1,12 +1,39 @@
 # apps/records/management/commands/parse_redeye.py
+"""
+Management-команда: парсинг разделов Redeye и (опционально) сохранение в БД.
+
+Поток данных:
+  CLI → RedeyeBulkImporter.crawl_category(...) → RedeyeService.parse_product_by_url(...)
+     → payload  → _upsert_record_from_payload(save=True)
+     → create_tracks_for_record(...) 
+"""
 from __future__ import annotations
 
 import logging
+import re
+from typing import List
+
 from django.core.management.base import BaseCommand, CommandError
+
 from ...pipelines.redeye_bulk_import import RedeyeBulkImporter
 from ...rec_config.redeye import REDEYE_URLS
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_code(url: str | None, genre: str | None, style: str | None) -> str:
+    """
+    Производный «короткий код» категории для CLI, если в конфиге нет поля 'code'.
+    Берём часть пути URL после домена и заменяем разделители на '-'.
+    Фолбэк — склейка genre/style.
+    """
+    if url:
+        # выцепим "drum-and-bass/pre-orders" → "drum-and-bass-pre-orders"
+        m = re.search(r"redeyerecords\.co\.uk/(.+)$", url)
+        if m:
+            return re.sub(r"[^a-z0-9]+", "-", m.group(1).lower()).strip("-")
+    parts = [p for p in [genre, style] if p]
+    return re.sub(r"[^a-z0-9]+", "-", "-".join(parts).lower()).strip("-") or "category"
 
 
 class Command(BaseCommand):
@@ -16,57 +43,33 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
+        # Сформируем список доступных кодов (поддерживаем и явный 'code', и авто-derivation)
+        codes: List[str] = []
+        for c in REDEYE_URLS:
+            code = c.get("code") or _derive_code(c.get("url"), c.get("genre"), c.get("style"))
+            codes.append(code)
+
         parser.add_argument(
             "--category",
-            choices=[c["code"] for c in REDEYE_URLS] + ["all"],
+            choices=sorted(set(codes + ["all"])),
             default="all",
             help="Какую категорию парсить (по умолчанию: all).",
         )
-        parser.add_argument(
-            "--limit",
-            type=int,
-            default=None,
-            help="Максимальное число карточек на категорию (0 = без ограничения).",
-        )
-        parser.add_argument(
-            "--delay",
-            type=float,
-            default=0.8,
-            help="Базовая задержка между запросами (сек.).",
-        )
-        parser.add_argument(
-            "--jitter",
-            type=float,
-            default=0.5,
-            help="Случайная прибавка к задержке (сек.).",
-        )
-        parser.add_argument(
-            "--max-retries",
-            type=int,
-            default=5,
-            help="Максимум повторов при сетевых ошибках.",
-        )
-        parser.add_argument(
-            "--cooldown",
-            type=int,
-            default=120,
-            help="Охлаждение (сек.) при блокировке (403/429).",
-        )
-        parser.add_argument(
-            "--stop-on-block",
-            action="store_true",
-            help="Останавливать парсинг при повторной блокировке.",
-        )
-        parser.add_argument(
-            "--save",
-            action="store_true",
-            help="Сохранять результаты в базу данных (иначе просто печать).",
-        )
-        parser.add_argument(
-            "--debug",
-            action="store_true",
-            help="Включить DEBUG-логирование (подробный вывод).",
-        )
+        parser.add_argument("--limit", type=int, default=None,
+                            help="Максимум карточек на категорию (0/None = без ограничения).")
+        parser.add_argument("--delay", type=float, default=0.8,
+                            help="Базовая задержка между запросами (сек.).")
+        parser.add_argument("--jitter", type=float, default=0.5,
+                            help="Случайная прибавка к задержке (сек.).")
+        parser.add_argument("--max-retries", type=int, default=5,
+                            help="Максимум повторов при сетевых ошибках.")
+        parser.add_argument("--cooldown", type=int, default=120,
+                            help="Охлаждение (сек.) при блокировке (403/429).")
+        parser.add_argument("--stop-on-block", action="store_true",
+                            help="Останавливать парсинг при повторной блокировке.")
+        parser.add_argument("--save", action="store_true",
+                            help="Сохранять результаты в базу данных (иначе печать payload summary).")
+        parser.add_argument("--debug", action="store_true", help="Включить DEBUG-логирование.")
 
     def handle(self, *args, **options):
         if options["debug"]:
@@ -80,30 +83,33 @@ class Command(BaseCommand):
             stop_on_block=options["stop_on_block"],
         )
 
-        cats = REDEYE_URLS
-        if options["category"] != "all":
-            code = options["category"]
-            cats = [c for c in REDEYE_URLS if c["code"] == code]
-            if not cats:
-                raise CommandError(f"Неизвестный код категории: {code}")
+        # Подберём нужные категории под переданный код
+        category_code = options["category"]
+        selected = []
+        for cfg in REDEYE_URLS:
+            code = cfg.get("code") or _derive_code(cfg.get("url"), cfg.get("genre"), cfg.get("style"))
+            if category_code == "all" or code == category_code:
+                selected.append(cfg)
+
+        if not selected:
+            raise CommandError(f"Не найдена категория: {category_code}")
 
         total_ok = total_err = total_created = total_updated = 0
 
-        for cfg in cats:
+        for cfg in selected:
             url = cfg["url"]
             genre = cfg.get("genre")
             style = cfg.get("style")
+            code = cfg.get("code") or _derive_code(url, genre, style)
 
-            self.stdout.write(
-                self.style.MIGRATE_HEADING(f"Категория: {url} [{genre} / {style}]")
-            )
+            self.stdout.write(self.style.MIGRATE_HEADING(f"[{code}] {url} [{genre or '-'} / {style or '-'}]"))
 
             for res in importer.crawl_category(
-                    url,
-                    attach_genre=genre,
-                    attach_style=style,
-                    limit=options["limit"],
-                    save=options["save"],
+                url,
+                attach_genre=genre,
+                attach_style=style,
+                limit=options["limit"],
+                save=options["save"],
             ):
                 if res.ok:
                     total_ok += 1
@@ -126,9 +132,7 @@ class Command(BaseCommand):
                     )
                 else:
                     total_err += 1
-                    self.stdout.write(
-                        self.style.WARNING(f"[ERROR] {res.url} :: {res.error}")
-                    )
+                    self.stdout.write(self.style.WARNING(f"[ERROR] {res.url} :: {res.error}"))
 
         self.stdout.write(
             self.style.SUCCESS(

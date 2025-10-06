@@ -1,13 +1,17 @@
+# apps/records/managers.py
+"""
+Кастомные QuerySet/Manager для моделей записей.
+Здесь же централизуем, что треки всегда подгружаются в порядке числового индекса.
+"""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from core.managers import BaseManager, BaseQuerySet
-
+from apps.core.managers import BaseManager, BaseQuerySet
 from django.db.models import Count, F, Prefetch, Q
 
 if TYPE_CHECKING:
-    from records.models import Artist, Format, Genre, Label, Record, Style
+    from .models import Artist, Format, Genre, Label, Record, Style
 
 
 class RecordQuerySet(BaseQuerySet):
@@ -56,28 +60,31 @@ class RecordQuerySet(BaseQuerySet):
 
     # === Оптимизация запросов ===
     def with_related(self):
-        """Загрузка всех связанных объектов."""
-        # Импортируем здесь, чтобы избежать циклического импорта
-        from records.models import Track
+        """
+        Загрузка связанных объектов + треки в корректном порядке:
+        сначала по числовому индексу (position_index), затем по текстовой позиции (для стабильности),
+        затем по id на случай одинаковых значений.
+        """
+        from .models import Track  # локальный импорт, чтобы избежать циклов
 
+        tracks_qs = Track.objects.order_by("position_index", "position", "id")
         return self.select_related("label").prefetch_related(
             "artists",
             "genres",
             "styles",
             "formats",
-            Prefetch("tracks", queryset=Track.objects.order_by("position")),
+            Prefetch("tracks", queryset=tracks_qs),
         )
 
     def with_tracks(self):
-        """Загрузка с треками."""
-        from records.models import Track
+        """Только треки в правильном порядке (см. выше)."""
+        from .models import Track
 
-        return self.prefetch_related(
-            Prefetch("tracks", queryset=Track.objects.order_by("position"))
-        )
+        tracks_qs = Track.objects.order_by("position_index", "position", "id")
+        return self.prefetch_related(Prefetch("tracks", queryset=tracks_qs))
 
     def with_stats(self):
-        """С подсчётом статистики."""
+        """С подсчётом статистики по связанным таблицам."""
         return self.annotate(
             tracks_count=Count("tracks"),
             artists_count=Count("artists", distinct=True),
@@ -86,22 +93,19 @@ class RecordQuerySet(BaseQuerySet):
 
 
 class RecordManager(BaseManager):
-    """Manager для Record - только работа с данными."""
+    """Manager для Record."""
 
     def get_queryset(self):
         return RecordQuerySet(self.model, using=self._db)
 
     # === Простые методы поиска ===
-    def find_by_barcode(self, barcode: str) -> Optional[Record]:
-        """Поиск по штрих-коду."""
+    def find_by_barcode(self, barcode: str) -> Optional["Record"]:
         return self.filter(barcode=barcode).first()
 
-    def find_by_catalog_number(self, catalog_number: str) -> Optional[Record]:
-        """Поиск по каталожному номеру."""
+    def find_by_catalog_number(self, catalog_number: str) -> Optional["Record"]:
         return self.filter(catalog_number=catalog_number).first()
 
-    def find_by_discogs_id(self, discogs_id: int) -> Optional[Record]:
-        """Поиск по Discogs ID."""
+    def find_by_discogs_id(self, discogs_id: int) -> Optional["Record"]:
         return self.filter(discogs_id=discogs_id).first()
 
     # === Chainable методы ===
@@ -113,12 +117,12 @@ class RecordManager(BaseManager):
 
 
 class ArtistManager(BaseManager):
-    """Manager для Artist - только данные."""
+    """Manager для Artist."""
 
-    def find_by_discogs_id(self, discogs_id: int) -> Optional[Artist]:
+    def find_by_discogs_id(self, discogs_id: int) -> Optional["Artist"]:
         return self.filter(discogs_id=discogs_id).first()
 
-    def find_by_name(self, name: str) -> Optional[Artist]:
+    def find_by_name(self, name: str) -> Optional["Artist"]:
         return self.filter(name=name).first()
 
     def with_records_count(self):
@@ -126,31 +130,31 @@ class ArtistManager(BaseManager):
 
 
 class LabelManager(BaseManager):
-    """Manager для Label - только данные."""
+    """Manager для Label."""
 
-    def find_by_discogs_id(self, discogs_id: int) -> Optional[Label]:
+    def find_by_discogs_id(self, discogs_id: int) -> Optional["Label"]:
         return self.filter(discogs_id=discogs_id).first()
 
-    def find_by_name(self, name: str) -> Optional[Label]:
+    def find_by_name(self, name: str) -> Optional["Label"]:
         return self.filter(name=name).first()
 
 
 class GenreManager(BaseManager):
-    """Manager для Genre - только данные."""
+    """Manager для Genre."""
 
-    def find_by_name(self, name: str) -> Optional[Genre]:
+    def find_by_name(self, name: str) -> Optional["Genre"]:
         return self.filter(name=name).first()
 
 
 class StyleManager(BaseManager):
-    """Manager для Style - только данные."""
+    """Manager для Style."""
 
-    def find_by_name(self, name: str) -> Optional[Style]:
+    def find_by_name(self, name: str) -> Optional["Style"]:
         return self.filter(name=name).first()
 
 
 class FormatManager(BaseManager):
-    """Manager для Format - только данные."""
+    """Manager для Format."""
 
-    def find_by_name(self, name: str) -> Optional[Format]:
+    def find_by_name(self, name: str) -> Optional["Format"]:
         return self.filter(name=name).first()

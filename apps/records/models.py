@@ -18,7 +18,6 @@ from .managers import (
 )
 from sorl.thumbnail import ImageField
 
-
 # --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
 
 def record_upload_to(instance, filename):

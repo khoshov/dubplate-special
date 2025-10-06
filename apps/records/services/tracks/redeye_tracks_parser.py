@@ -41,11 +41,15 @@ logger = logging.getLogger(__name__)
 
 # ──────────────────────────────── Регулярные выражения (на уровне модуля) ────────────────────────────────
 
-# Заголовки сторон: "Side A", "A", "side B"
-RX_SIDE = re.compile(r"^\s*(?:side\s+)?([A-D])\s*$", re.I)
+# Заголовки сторон: "Side A", "A", "Disc 1", "CD 2"
+# RX_SIDE = re.compile(r"^\s*(?:side\s+)?([A-D])\s*$", re.I)
+RX_SIDE = re.compile(r"^\s*(?:side\s+[A-D]|[A-D]|disc\s+\d+|cd\s*\d+)\s*$", re.I)
 
 # Удаление префикса стороны в title, если трек один и позиция не распознана.
-RX_SIDE_PREFIX_IN_TITLE = re.compile(r"^\s*(?:side\s+)?([A-D])\s*[.) :\-–—]\s*", re.I)
+# RX_SIDE_PREFIX_IN_TITLE = re.compile(r"^\s*(?:side\s+)?([A-D])\s*[.) :\-–—]\s*", re.I)
+RX_SIDE_PREFIX_IN_TITLE = re.compile(
+    r"^\s*(?:side\s+[A-D]|[A-D]|disc\s+\d+|cd\s*\d+)\s*[.) :\-–—]+\s*", re.I
+)
 
 # Позиция с буквой и номером, с опциональной пунктуацией: "A1. Title" / "A1) Title" / "A1 - Title"
 RX_POS_ALPHA = re.compile(r"^\s*([A-D]\d{1,2})\s*[.) :\-–—]?\s+(.*)$", re.I)

@@ -1,22 +1,27 @@
 # apps/records/pipelines/redeye_bulk_import.py
+"""
+Пакетный импорт карточек Redeye:
+  - обходит списки urls пластинок (iterate_category_urls);
+  - парсит карточки RedeyeService.parse_product_by_url(...);
+  - по данным карточки пластинки (payload) делает upsert Record 
+  (create or update в БД) + m2m + cover + ТРЕКИ.
+"""
 from __future__ import annotations
 
 import logging
+import mimetypes
 from dataclasses import dataclass
-from typing import Iterable, Optional, Dict, Any
+from typing import Iterable, Optional, Dict, Any, List
 
+import requests
+from django.core.files.base import ContentFile
 from django.db import transaction
+from django.utils.text import slugify
 
+from ..models import Record, Genre, Style, Label, Artist
 from ..scrapers.redeye_listing import iterate_category_urls
 from ..services.redeye_service import RedeyeService
-from ..models import Record, Genre, Style, Label, Track, Artist
-
-import re
-import mimetypes
-import requests
-
-from django.core.files.base import ContentFile
-from django.utils.text import slugify
+from ..services.tracks.ingest import create_tracks_for_record
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +36,23 @@ class ImportResult:
     record_id: Optional[str] = None
     catalog_number: Optional[str] = None
     title: Optional[str] = None
-    summary: Optional[Dict[str, Any]] = None  # <- добавили: готовые поля для печати
+    summary: Optional[Dict[str, Any]] = None
 
 
 class RedeyeBulkImporter:
     """
-    Проходит по категории, собирает ссылки карточек, парсит и (опционально) сохраняет в БД.
+    Обход категорий и массовый импорт карточек Redeye.
     """
 
-    def __init__(self, *, delay_sec: float = 0.6, jitter_sec: float = 0.5,
-                 max_retries: int = 4, cooldown_sec: int = 90, stop_on_block: bool = False) -> None:
+    def __init__(
+            self,
+            *,
+            delay_sec: float = 0.6,
+            jitter_sec: float = 0.5,
+            max_retries: int = 4,
+            cooldown_sec: int = 90,
+            stop_on_block: bool = False,
+    ) -> None:
         self.delay_sec = delay_sec
         self.svc = RedeyeService(
             delay_sec=delay_sec,
@@ -60,8 +72,17 @@ class RedeyeBulkImporter:
             save: bool = False,
     ) -> Iterable[ImportResult]:
         """
-        Обходит категорию и возвращает итератор результатов.
-        Если save=True — пробует создать/обновить записи в БД.
+        Итератор по карточкам в категории: парсит payload и (опц.) сохраняет.
+
+        Args:
+            category_url: URL листинга Redeye.
+            attach_genre: если раздел известен, доклеиваем жанр в payload.
+            attach_style: аналогично — стиль раздела.
+            limit: ограничение на число карточек из листинга.
+            save: если True — делаем upsert в БД (Record + связанные сущности).
+
+        Yields:
+            ImportResult для каждой карточки (ok/error + краткая сводка).
         """
         for product_url in iterate_category_urls(category_url, delay_sec=self.delay_sec, limit=limit):
             try:
@@ -69,11 +90,15 @@ class RedeyeBulkImporter:
                 payload = parsed.payload or {}
                 payload.setdefault("source", "redeye")
 
-                # аккуратно домерджим жанр/стиль от категории (если их нет в payload)
+                # Приклеим жанр/стиль от раздела, если их нет в самой карточке
                 if attach_genre:
-                    payload.setdefault("genres", []).append(attach_genre)
+                    payload.setdefault("genres", [])
+                    if attach_genre not in payload["genres"]:
+                        payload["genres"].append(attach_genre)
                 if attach_style:
-                    payload.setdefault("styles", []).append(attach_style)
+                    payload.setdefault("styles", [])
+                    if attach_style not in payload["styles"]:
+                        payload["styles"].append(attach_style)
 
                 created = updated = False
                 rec_id = None
@@ -87,7 +112,7 @@ class RedeyeBulkImporter:
                         created = getattr(rec, "_import_created", False)
                         updated = getattr(rec, "_import_updated", False)
 
-                # Сводка для команды (чтобы НЕ парсить второй раз)
+                # Сводка для CLI
                 y, m, d = payload.get("release_year"), payload.get("release_month"), payload.get("release_day")
                 if y and m and d:
                     rel = f"{y:04d}-{m:02d}-{d:02d}"
@@ -125,10 +150,13 @@ class RedeyeBulkImporter:
     # -------- внутреннее сохранение --------
     def _upsert_record_from_payload(self, payload: dict) -> Record:
         """
-        Upsert записи по catalog_number (fallback: title+label).
-        Заполняем базовые поля, дату релиза, цену, картинку, треклист, m2m (жанры/стили).
+        Upsert Record по catalog_number (fallback: title+label) + привязки.
+
+        Здесь же:
+          - genres/styles/artists (m2m) создаются/привязываются;
+          - cover_image скачивается и прикрепляется;
+          - ТРЕКИ ПЕРЕЗАПИСЫВАЮТСЯ через create_tracks_for_record(...).
         """
-        # базовые поля
         title = (payload.get("title") or "").strip()
         label_name = (payload.get("label") or "").strip()
         catalog_number = (payload.get("catalog_number") or "").strip()
@@ -141,18 +169,14 @@ class RedeyeBulkImporter:
         rm = payload.get("release_month")
         rd = payload.get("release_day")
 
-        # цена
-        # price_gbp = payload.get("price_gbp")
-
         # медиа и треки
-        image_url = payload.get("image_url") or None
-        # track_lines = payload.get("tracks") or []
+        image_url: str | None = payload.get("image_url") or None
+        tracks: List[dict] = payload.get("tracks") or []
 
         # m2m
         genres = [g for g in (payload.get("genres") or []) if g]
         styles = [s for s in (payload.get("styles") or []) if s]
-        # formats = [f for f in (payload.get("formats") or []) if f]
-        # artists — опускаем, т.к. у нас отдельная модель (если есть) и логика маппинга может отличаться
+        artist_names = [a for a in (payload.get("artists") or []) if a]
 
         # поиск существующей записи
         rec = None
@@ -169,7 +193,7 @@ class RedeyeBulkImporter:
             rec = Record(title=title)
             created = True
 
-        # заполняем основные поля
+        # базовые поля
         if label_name:
             label_obj, _ = Label.objects.get_or_create(name=label_name)
             rec.label = label_obj
@@ -189,13 +213,6 @@ class RedeyeBulkImporter:
         if rd is not None:
             rec.release_day = rd
 
-        # if price_gbp is not None:
-        #     # payload может отдавать строку — конвертируем осторожно
-        #     try:
-        #         rec.price = float(price_gbp)
-        #     except Exception:
-        #         pass
-
         rec.save()
 
         # M2M
@@ -203,10 +220,7 @@ class RedeyeBulkImporter:
             self._apply_vocab(rec, Genre, "genres", genres)
         if styles:
             self._apply_vocab(rec, Style, "styles", styles)
-        # formats: пропускаем, если нет отдельной модели
 
-        # --- ARTISTS (M2M) ---
-        artist_names = [a for a in (payload.get("artists") or []) if a]
         if artist_names:
             artist_objs = []
             for name in artist_names:
@@ -214,83 +228,47 @@ class RedeyeBulkImporter:
                 artist_objs.append(obj)
             rec.artists.set(artist_objs)
 
-        # Треки: перезаписываем, если пришли
-        track_lines = payload.get("tracks") or []
-        if track_lines:
-            Track.objects.filter(record=rec).delete()
-            bulk = []
-            for idx, item in enumerate(track_lines, start=1):
-                # Поддержка двух форматов: dict {"position","title"} ИЛИ просто строка
-                # pos = None
-                # title_t = None
-                if isinstance(item, dict):
-                    pos = (item.get("position") or "").strip()
-                    title_t = (item.get("title") or "").strip()
-                else:
-                    raw = (str(item) or "").strip()
-                    if not raw:
-                        continue
-                    # Выделяем позицию (A1/B2/1/2) и заголовок из строки
-                    m = re.match(r"^([A-D]\d{1,2}|[0-9]{1,2}\.?)[\s\-–—]+(.+)$", raw, flags=re.I)
-                    if m:
-                        pos = m.group(1).rstrip(".").upper()
-                        title_t = m.group(2).strip()
-                    else:
-                        pos = ""
-                        title_t = raw
-                if not title_t:
-                    continue
-                # Fallback позиция, если пустая
-                if not pos:
-                    pos = f"{idx}"
-                bulk.append(Track(record=rec, position=pos, title=title_t))
-            if bulk:
-                Track.objects.bulk_create(bulk, ignore_conflicts=True)
+        # --- ТРЕКИ: единая точка записи — create_tracks_for_record ---
+        if tracks:
+            create_tracks_for_record(rec, tracks, replace=True)
 
-        # Обложка: качаем и сохраняем, если у записи нет cover_image или хотим обновить
+        # Обложка (не валим транзакцию при ошибке)
         if image_url:
             try:
                 self._download_and_attach_cover(rec, image_url)
             except Exception:
-                # не валим транзакцию из-за картинки
                 logger.warning("Failed to fetch cover image: %s", image_url, exc_info=True)
 
-        # флаги для отчёта
         setattr(rec, "_import_created", created)
         setattr(rec, "_import_updated", not created)
-
         return rec
 
     def _download_and_attach_cover(self, rec: Record, image_url: str) -> None:
         """
         Качает картинку и сохраняет в cover_image с человекочитаемым именем.
-        Пути upload_to уже настроены в проекте, просто сохраняем файл.
+        Пути upload_to уже настроены в модели (storage конфиг проекта).
         """
         if not image_url:
             return
 
-        # тянем контент
         resp = requests.get(image_url, timeout=20)
         resp.raise_for_status()
         content = resp.content
 
-        # определяем имя файла (title.slug + расширение по mime)
         mime = resp.headers.get("Content-Type", "")
         ext = mimetypes.guess_extension(mime) or ".jpg"
         base = slugify(rec.title or rec.catalog_number or "cover") or "cover"
         filename = f"{base}{ext}"
 
-        # сохраняем
         rec.cover_image.save(filename, ContentFile(content), save=True)
 
     @staticmethod
     def _apply_vocab(rec: Record, model_cls, field_name: str, values: list[str]) -> None:
         """
-        Привязка m2m по списку строк с auto-create недостающих значений.
+        Привязка m2m по списку строк (create-or-get) с дедупом и сохранением порядка.
         """
-        # нормализуем: без дублей, с сохранением порядка появления
         seen = set()
-        normalized = []
+        normalized: list[str] = []
         for v in values:
             key = v.strip()
             if not key:
