@@ -1,4 +1,5 @@
 # apps/records/management/commands/parse_redeye.py
+
 """
 Management-команда: парсинг разделов Redeye и (опционально) сохранение в БД.
 
@@ -6,6 +7,22 @@ Management-команда: парсинг разделов Redeye и (опцио
   CLI → RedeyeBulkImporter.crawl_category(...) → RedeyeService.parse_product_by_url(...)
      → payload  → _upsert_record_from_payload(save=True)
      → create_tracks_for_record(...) 
+
+ БЫСТРЫЙ КОД ЗАПУСКА
+
+docker compose exec django uv run python manage.py parse_redeye `
+  --category all `
+  --limit 2 `
+  --delay 0.8 `
+  --jitter 0.3 `
+  --max-retries 3 `
+  --cooldown 60 `
+  --stop-on-block `
+  --save `
+  --debug
+
+
+
 """
 from __future__ import annotations
 
