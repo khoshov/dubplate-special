@@ -26,6 +26,7 @@ docker compose exec django uv run python manage.py parse_redeye `
 """
 from __future__ import annotations
 
+import re
 import logging
 from typing import List
 
