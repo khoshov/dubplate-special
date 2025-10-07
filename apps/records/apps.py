@@ -9,7 +9,7 @@ def _bootstrap_vocab(sender, **kwargs):
     - нормализуем регистр 'Not specified' (склеиваем case-insensitive дубликаты),
     - удаляем только лишние дубликаты 'Not specified' (остальные значения не трогаем).
     """
-    from records.models import Genre, Style, GenreChoices, StyleChoices, Record
+    from .models import Genre, Style, GenreChoices, StyleChoices, Record
 
     CANON = "Not specified"
 

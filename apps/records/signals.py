@@ -2,7 +2,7 @@
 import os
 from django.db.models.signals import pre_save, post_save, post_delete
 from django.dispatch import receiver
-from .models import Record
+from .models import Record, Track
 
 
 # ------- helpers -------
@@ -133,4 +133,31 @@ def cleanup_cover_on_delete(sender, instance: Record, **kwargs):
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)
 
+    _safe_rmdir(storage, stop_at)
+
+
+# --- добавлено: очистка mp3 при удалении треков ---
+
+
+@receiver(post_delete, sender=Track)
+def cleanup_audio_on_delete(sender, instance: Track, **kwargs):
+    """
+    При удалении трека удаляем файл превью (audio_preview)
+    и чистим пустые директории, если используется FileSystemStorage.
+    """
+    f = getattr(instance, "audio_preview", None)
+    if not f or not getattr(f, "name", ""):
+        return
+
+    storage = f.storage
+    rel_path = f.name.replace("\\", "/")  # например: "records/track/audio_preview/123/clip.mp3"
+
+    # удалить сам mp3
+    _safe_storage_delete(storage, rel_path)
+
+    # удалить пустые директории вверх до уровня поля audio_preview
+    rel_dir = os.path.dirname(rel_path)
+    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "audio_preview"])
+    if rel_dir and rel_dir != stop_at:
+        _safe_rmdir(storage, rel_dir)
     _safe_rmdir(storage, stop_at)

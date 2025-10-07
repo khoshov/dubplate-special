@@ -18,6 +18,7 @@ from .managers import (
 )
 from sorl.thumbnail import ImageField
 
+
 # --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
 
 def record_upload_to(instance, filename):
@@ -328,6 +329,100 @@ class Record(TimeStampedModel):
         ordering = ("title",)
 
 
+# --- добавлено: вспомогательная модель ссылок на внешние источники записи ---
+class RecordSource(models.Model):
+    """
+    Нормализованные ссылки на внешние источники конкретной записи (Record).
+
+    Зачем:
+      - у одной записи может быть несколько источников (Redeye / Discogs );
+      - храним тип ссылки (product_page / api / listing);
+      - помечаем, можно ли с этой страницы забирать аудио-превью (can_fetch_audio);
+      - фиксируем результат последней попытки сбора превью (audio_urls_count, last_audio_scrape_at).
+
+    Примеры:
+      RecordSource(record=R, provider='redeye', role='product_page', url='https://…', can_fetch_audio=True)
+      RecordSource(record=R, provider='discogs', role='api', url='https://api.discogs.com/releases/…', can_fetch_audio=False)
+    """
+
+    class Provider(models.TextChoices):
+        REDEYE = "redeye", "Redeye"
+        DISCOGS = "discogs", "Discogs"
+        JUNO = "juno", "Juno"
+        # при необходимости добавим другие провайдеры
+
+    class Role(models.TextChoices):
+        PRODUCT_PAGE = "product_page", "Product page"  # страница карточки товара (UI)
+        API = "api", "API"  # программный ресурс (например, Discogs API)
+        LISTING = "listing", "Listing"  # страница списка/категории (обычно не нужна для mp3)
+
+    record = models.ForeignKey(
+        "Record",
+        on_delete=models.CASCADE,
+        related_name="sources",
+        verbose_name=_("Record"),
+    )
+    provider = models.CharField(
+        max_length=24,
+        choices=Provider.choices,
+        verbose_name=_("Provider"),
+        help_text=_("Провайдер данных: redeye / discogs / juno и т.д."),
+    )
+    role = models.CharField(
+        max_length=24,
+        choices=Role.choices,
+        default=Role.PRODUCT_PAGE,
+        verbose_name=_("Role"),
+        help_text=_("Роль ссылки: product_page / api / listing."),
+    )
+    url = models.URLField(
+        verbose_name=_("Source URL"),
+        help_text=_("Ссылка на внешний источник для этой записи."),
+    )
+
+    # Под mp3-задачу
+    can_fetch_audio = models.BooleanField(
+        default=False,
+        verbose_name=_("Can fetch audio previews"),
+        help_text=_("Можно ли пытаться собирать mp3-превью с этой страницы."),
+    )
+    last_audio_scrape_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Last audio scrape at"),
+        help_text=_("Когда последний раз пытались собрать mp3-ссылки с этой страницы."),
+    )
+    audio_urls_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Audio URLs found (last scrape)"),
+        help_text=_("Сколько mp3-ссылок нашли в прошлую попытку."),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Created at"))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Updated at"))
+
+    class Meta:
+        verbose_name = _("Record source")
+        verbose_name_plural = _("Record sources")
+        # На одну запись по провайдеру и роли — одна «главная» ссылка
+        constraints = [
+            models.UniqueConstraint(
+                fields=["record", "provider", "role"],
+                name="uq_recordsource_record_provider_role",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["provider", "role"], name="idx_source_provider_role"),
+            models.Index(fields=["can_fetch_audio"], name="idx_source_can_fetch_audio"),
+        ]
+
+    def __str__(self) -> str:  # type: ignore[override]
+        return f"{self.get_provider_display()}:{self.get_role_display()} → {self.url}"
+
+
+# --- конец добавления ---
+
+
 class Track(TimeStampedModel):
     """
     Трек издания.
@@ -336,7 +431,7 @@ class Track(TimeStampedModel):
       1) position_index (int) — ГЛАВНАЯ сортировка и порядок треков в издании.
          Это последовательный номер 1..N, независимо от сторон (A/B/C/D).
          Им руководствуются админка, API и любая логика "след./пред. трек".
-      2) position (str) — человекочитаемая «позиция со стороны», если она есть на сайте/в источнике:
+      2) position (str) — «позиция со стороны», если она есть на сайте/в источнике:
          'A1', 'B2', '1', 'A', '' (пусто). Нужна для совместимости с Discogs и отображения.
 
     Почему так:
@@ -386,7 +481,7 @@ class Track(TimeStampedModel):
         max_length=512,
         null=True,
         blank=True,
-        verbose_name=_("Track URL"),
+        verbose_name=_("Track video URL"),
         help_text=_("Optional preview/video URL (e.g., YouTube)."),
     )
 
@@ -398,7 +493,7 @@ class Track(TimeStampedModel):
         upload_to=PathByInstance("audio_preview"),  # type: ignore[arg-type]
         null=True,
         blank=True,
-        verbose_name=_("Audio preview (MP3)"),
+        verbose_name=_("mp3"),
         help_text=_("Local preview file stored in media (optional)."),
     )
 

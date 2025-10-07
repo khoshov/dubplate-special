@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/apps
 
+
 # ======================
 # SYSTEM DEPENDENCIES
 # ======================
@@ -33,6 +34,12 @@ COPY pyproject.toml uv.lock ./
 # Install Python dependencies using UV:
 # --locked: ensures exact versions from lockfile are used
 RUN uv sync --dev --locked
+
+# ВАЖНО: добавляем виртуальное окружение uv в PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# установить headless Chromium после установки пакета playwright ---
+RUN python -m playwright install chromium --with-deps
 
 # ======================
 # APPLICATION CODE

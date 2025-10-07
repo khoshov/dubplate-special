@@ -22,6 +22,10 @@ from ...models import Record, Genre, Style, Label, Artist
 from ...scrapers.redeye_listing import iterate_category_urls
 from ...services.providers.redeye.redeye_service import RedeyeService
 from ...services.tracks import create_tracks_for_record
+from ...models import RecordSource
+from ...services.record_service import RecordService
+from ...services.discogs_service import DiscogsService
+from ...services.image_service import ImageService
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,9 @@ class RedeyeBulkImporter:
                 parsed = self.svc.parse_product_by_url(product_url)
                 payload = parsed.payload or {}
                 payload.setdefault("source", "redeye")
+                payload.setdefault("source_url", getattr(parsed, "source_url", None) or parsed.source_url)
+                if "has_audio_previews" not in payload:
+                    payload["has_audio_previews"] = bool((parsed.payload or {}).get("has_audio_previews"))
 
                 # Приклеим жанр/стиль от раздела, если их нет в самой карточке
                 if attach_genre:
@@ -111,6 +118,8 @@ class RedeyeBulkImporter:
                         rec_id = str(rec.pk)
                         created = getattr(rec, "_import_created", False)
                         updated = getattr(rec, "_import_updated", False)
+
+                    self._ensure_redeye_record_source(rec, payload)
 
                 # Сводка для CLI
                 y, m, d = payload.get("release_year"), payload.get("release_month"), payload.get("release_day")
@@ -261,6 +270,33 @@ class RedeyeBulkImporter:
         filename = f"{base}{ext}"
 
         rec.cover_image.save(filename, ContentFile(content), save=True)
+
+    # ДОБАВЬ в класс RedeyeBulkImporter (ниже методов класса)
+    def _ensure_redeye_record_source(self, rec: Record, payload: dict) -> None:
+        """
+        Создать/обновить RecordSource для Redeye product_page.
+        Idempotent: если источник уже есть — только обновит поля.
+        """
+        url = (payload.get("source_url") or "").strip()
+        if not url:
+            logger.warning("No source_url in payload for rec id=%s (catalog=%s) — skip RecordSource upsert",
+                           rec.id, rec.catalog_number)
+            return
+
+        can_fetch = bool(payload.get("has_audio_previews"))
+        try:
+            service = RecordService(discogs_service=DiscogsService(), image_service=ImageService())
+            service._upsert_record_source(  # noqa: SLF001 (используем твой существующий helper)
+                record=rec,
+                provider=RecordSource.Provider.REDEYE,
+                role=RecordSource.Role.PRODUCT_PAGE,
+                url=url,
+                can_fetch_audio=can_fetch,
+            )
+            logger.debug("RecordSource upserted: record=%s provider=redeye role=product_page can_fetch_audio=%s",
+                         rec.id, can_fetch)
+        except Exception:
+            logger.warning("Failed to upsert RecordSource for rec id=%s url=%s", rec.id, url, exc_info=True)
 
     @staticmethod
     def _apply_vocab(rec: Record, model_cls, field_name: str, values: list[str]) -> None:

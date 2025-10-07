@@ -1,13 +1,13 @@
 # apps/records/admin.py
 import logging
 from typing import Optional
-
+from django.urls import path
 from django.contrib import admin, messages
-from django.core.exceptions import SuspiciousFileOperation
-from django.http import HttpRequest
-from django.shortcuts import redirect
+from django.shortcuts import get_object_or_404, redirect
+
+from django.db import transaction
+from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed
 from django.urls import reverse
-from django.utils.html import format_html
 
 from .forms import RecordForm
 from .models import Record, Track, Artist
@@ -30,8 +30,8 @@ class TrackInline(admin.TabularInline):
     show_change_link = False
 
     # порядок и колонки
-    fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview_player")
-    readonly_fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview_player")
+    fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview")
+    readonly_fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview")
 
     class Media:
         css = {"all": ("records/admin/track_inline.css",)}
@@ -39,47 +39,6 @@ class TrackInline(admin.TabularInline):
     def has_add_permission(self, request: HttpRequest, obj: Optional[Record] = None) -> bool:
         """Запрещает добавление треков через админку (импортируются из внешних источников)."""
         return False
-
-    @admin.display(description="Preview")
-    def audio_preview_player(self, obj: Track) -> str:
-        """
-        Встроенный аудио-плеер для локального MP3 превью (Track.audio_preview).
-        Если файла нет или база не отдаёт URL — показываем '-'.
-        """
-        f = getattr(obj, "audio_preview", None)
-        if not f:
-            return "-"
-        try:
-            url = f.url
-        except (ValueError, OSError, SuspiciousFileOperation):
-            return "-"
-        return format_html('<audio controls preload="none" src="{}"></audio>', url)
-
-
-# Поля для создания новой записи (ДВА варианта: Discogs/Redeye)
-add_fieldsets_discogs = (
-    (
-        None,
-        {
-            # добавлено: поле source для выбора источника (Discogs | Redeye)
-            "fields": ("source", "barcode", "catalog_number"),
-            # добавлено: уточнили описание, что теперь доступен Redeye
-            "description": (
-                "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
-                "Для Redeye используется только каталожный номер."
-            ),
-        },
-    ),
-)
-add_fieldsets_redeye = (
-    (
-        None,
-        {
-            "fields": ("source", "catalog_number"),
-            "description": "Импорт из Redeye использует только каталожный номер.",
-        },
-    ),
-)
 
 
 @admin.register(Record)
@@ -182,10 +141,91 @@ class RecordAdmin(admin.ModelAdmin):
             return self.fieldsets
 
         # add-форма: выбираем набор полей по источнику
+        # Поля для создания новой записи (ДВА варианта: Discogs/Redeye)
         source = (request.POST.get("source") or request.GET.get("source") or "discogs").lower()
         if source == "redeye":
+            add_fieldsets_redeye = (
+                (
+                    None,
+                    {
+                        "fields": ("source", "catalog_number"),
+                        "description": "Импорт из Redeye использует только каталожный номер.",
+                    },
+                ),
+            )
+
             return add_fieldsets_redeye
+        add_fieldsets_discogs = (
+            (
+                None,
+                {
+                    # добавлено: поле source для выбора источника (Discogs | Redeye)
+                    "fields": ("source", "barcode", "catalog_number"),
+                    # добавлено: уточнили описание, что теперь доступен Redeye
+                    "description": (
+                        "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
+                        "Для Redeye используется только каталожный номер."
+                    ),
+                },
+            ),
+        )
         return add_fieldsets_discogs
+
+    # добавляем URL для кнопки "Обновить"
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                "<path:object_id>/refresh/",
+                self.admin_site.admin_view(self.process_refresh),
+                name="records_record_refresh",
+            ),
+        ]
+        return custom + urls
+
+    @transaction.atomic
+    def process_refresh(self, request: HttpRequest, object_id: str) -> HttpResponse:
+        # Разрешаем только POST с формы submit_row
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+
+        obj = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, obj):
+            messages.error(request, "Недостаточно прав для обновления этой записи.")
+            return redirect("admin:records_record_change", object_id=obj.pk)
+
+        if not obj.catalog_number:
+            messages.error(request, "Невозможно обновить: у записи не указан каталожный номер.")
+            return redirect("admin:records_record_change", object_id=obj.pk)
+
+        # Читаем чекбокс «Перекачать аудио» из submit_row
+        force = str(request.POST.get("_refresh_force", "0")).strip().lower() in {"1", "true", "on", "yes"}
+
+        try:
+            # 1) обновляем данные релиза (обложку подтянет сам импорт)
+            record, imported = self.record_service.import_from_redeye(  # type: ignore[attr-defined]
+                catalog_number=obj.catalog_number,
+                download_audio=False,
+            )
+            # 2) докачиваем/перекачиваем превью
+            updated_audio = self.record_service._maybe_attach_redeye_previews(  # type: ignore[attr-defined]
+                record,
+                force=force,
+            )
+
+            parts = []
+            parts.append("данные по релизу обновлены" if imported else "данные по релизу проверены (актуальны)")
+            parts.append(
+                f"mp3-превью {'перекачано' if force else 'добавлено'}: {updated_audio}"
+                if updated_audio
+                else ("перекачка не потребовалась" if force else "новых mp3-превью не найдено")
+            )
+            messages.success(request, ", ".join(parts) + ".")
+        except Exception as e:
+            messages.error(request, f"Не удалось выполнить обновление: {e}")
+
+        # Остаёмся на карточке записи
+        return redirect("admin:records_record_change", object_id=obj.pk)
 
     def get_inline_instances(self, request: HttpRequest, obj: Optional[Record] = None):
         """Показываем треки только для существующих записей."""
@@ -193,52 +233,62 @@ class RecordAdmin(admin.ModelAdmin):
             return super().get_inline_instances(request, obj)
         return []
 
+    # --- ИЗМЕНЕНО: поведение при дубликате каталожного номера ---
+    # внутри class RecordAdmin(admin.ModelAdmin):
+
     def save_model(self, request: HttpRequest, obj: Record, form: RecordForm, change: bool) -> None:
-        """Сохранение модели с обработкой импорта и дубликатов."""
-        # Дубликат при импорте
+        """
+        Сохранение модели с обработкой:
+        - дубликата (обновляем существующую запись и подтягиваем превью),
+        - докачки превью при создании/редактировании.
+        """
+        # --- кейс дубликата при создании ---
         duplicate = getattr(form, "duplicate_record", None)
         if duplicate is not None:
-            messages.info(
-                request,
-                format_html(
-                    'Запись "{}" (Discogs ID: {}) уже существует в базе данных.',
-                    duplicate.title,
-                    duplicate.discogs_id,
-                ),
-            )
+            try:
+                # попытка докачать превью для уже существующей записи
+                updated = self.record_service._maybe_attach_redeye_previews(duplicate,
+                                                                            force=False)  # type: ignore[attr-defined]
+                if updated:
+                    messages.success(request, f"Для существующей записи «{duplicate}» добавлены превью: {updated}.")
+                else:
+                    messages.info(request, f"Для существующей записи «{duplicate}» новые превью не найдены.")
+            except Exception as e:
+                logger.exception("Auto audio-fetch on duplicate failed for %s", duplicate.pk)
+                messages.error(request, f"Не удалось подтянуть превью для «{duplicate}»: {e}")
+
             # настроим редирект в response_add
             self._redirect_to_existing = duplicate
             return
 
-        # Стандартное сохранение
+        # --- обычное сохранение ---
         super().save_model(request, obj, form, change)
 
-        # Сообщения об импорте для новых записей
-        if not change:
-            source = getattr(form, "cleaned_data", {}).get("source") or request.POST.get("source")
-            if obj.discogs_id:
-                messages.success(
-                    request,
-                    f'Запись "{obj.title}" успешно импортирована из Discogs (ID: {obj.discogs_id})',
-                )
-            else:
-                if source == "redeye":
-                    messages.info(
-                        request,
-                        "Попытка импорта из Redeye завершена. "
-                        "Если данные не подтянулись автоматически, заполните карточку вручную "
-                        "или повторите импорт позже.",
-                    )
-                else:
-                    messages.warning(
-                        request,
-                        "Запись создана, но данные из Discogs не найдены. "
-                        "Заполните информацию вручную или попробуйте обновить из Discogs позже.",
-                    )
+        # --- докачка превью после сохранения ---
+        try:
+            # условие: есть треки без превью — имеет смысл пытаться
+            need_audio = obj.tracks.filter(audio_preview__isnull=True).exists()
+        except Exception:
+            need_audio = False
 
+        if need_audio:
+            try:
+                updated = self.record_service._maybe_attach_redeye_previews(obj,
+                                                                            force=False)  # type: ignore[attr-defined]
+                if updated:
+                    messages.success(request, f"Добавлены mp3-превью треков: {updated}.")
+            except Exception as e:
+                logger.exception("Post-save audio-fetch failed for %s", obj.pk)
+                messages.warning(request, f"Не удалось подтянуть mp3-превью: {e}")
+
+    # --- ИЗМЕНЕНО: поддержка редиректа на существующую запись после авто-обновления ---
     def response_add(self, request: HttpRequest, obj: Record, post_url_continue: Optional[str] = None):
-        """Перенаправляет на существующую запись при дубликате или на редактирование после импорта."""
-        # Перенаправление на уже существующую запись
+        """
+        После нажатия «Save» в add-форме:
+        - если обнаружен дубликат, уходим на страницу существующей записи (после авто-обновления);
+        - иначе — прежнее поведение: на форму редактирования только что созданной записи.
+        """
+        # Перенаправление на уже существующую запись (кейс дубликата)
         if self._redirect_to_existing is not None:
             existing_obj = self._redirect_to_existing
             self._redirect_to_existing = None
@@ -249,7 +299,7 @@ class RecordAdmin(admin.ModelAdmin):
                 )
             )
 
-        # Если импорт успешен, ведём на редактирование
+        # Если импорт успешен — ведём на редактирование (как раньше)
         if obj.discogs_id:
             messages.info(request, "Проверьте импортированные данные и при необходимости отредактируйте их.")
             redirect_url = reverse(
@@ -259,7 +309,7 @@ class RecordAdmin(admin.ModelAdmin):
             return redirect(redirect_url)
 
         # Для Redeye discogs_id обычно нет — всё равно ведём на редактирование
-        source = request.POST.get("source")
+        source = (request.POST.get("source") or "").lower()
         if source == "redeye":
             redirect_url = reverse(
                 f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
@@ -327,6 +377,11 @@ class RecordAdmin(admin.ModelAdmin):
         field = super().formfield_for_manytomany(db_field, request, **kwargs)
         field.required = False
         return field
+
+    class Media:
+        css = {
+            "all": ("records/admin/record_submit_row.css",)
+        }
 
 
 @admin.register(Artist)

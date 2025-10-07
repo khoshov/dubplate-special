@@ -33,7 +33,8 @@ from typing import List
 from django.core.management.base import BaseCommand, CommandError
 
 from ...pipelines.redeye.redeye_bulk_import import RedeyeBulkImporter
-from ...rec_config.redeye import REDEYE_URLS
+from ...constants.redeye import REDEYE_URLS
+
 
 logger = logging.getLogger(__name__)
 

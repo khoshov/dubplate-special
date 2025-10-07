@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup, NavigableString
 from urllib.parse import urljoin
 from .parsers.redeye_tracks_parser import parse_redeye_tracks
+from .utils import normalize_redeye_url
 
 _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -118,6 +119,21 @@ class RedeyeService:
     # ---------------- PUBLIC ----------------
 
     def fetch_by_catalog_number(self, catalog_number: str) -> RedeyeFetchResult:
+        """
+        Получить карточку Redeye по каталожному номеру.
+
+        Шаги:
+          1) Резолвим URL карточки по CAT.
+          2) Нормализуем URL (фиксим кейс с продублированным доменом и лишними слэшами).
+          3) Скачиваем HTML и парсим страницу.
+          4) Возвращаем RedeyeFetchResult(source_url, payload).
+
+        В payload уже будет:
+          - "tracks": list[dict]
+          - "has_audio_previews": bool
+          - "catalog_number": str (если не удалось извлечь — подставим запрошенный CAT)
+          - другие распарсенные поля
+        """
         cat = (catalog_number or "").strip()
         if not cat:
             raise ValueError("Catalogue number is required")
@@ -127,21 +143,28 @@ class RedeyeService:
         if not url:
             raise ValueError(f"Redeye: release not found by Catalogue No. '{cat}'")
 
-        logger.info("[Redeye] opening product: %s", url)
-        html_text = self._get(url)
-        payload = self._parse_product_page(url, html_text)
+        # --- нормализация URL (чинит '.../www.redeyerecords.co.uk/...', сжимает // и т.п.) ---
+        norm_url = normalize_redeye_url(url)
+        if norm_url != url:
+            logger.debug("[Redeye] normalize_redeye_url: %s -> %s", url, norm_url)
+        else:
+            logger.debug("[Redeye] product URL is already normalized: %s", norm_url)
 
+        logger.info("[Redeye] opening product: %s", norm_url)
+        html_text = self._get(norm_url)
+
+        payload = self._parse_product_page(norm_url, html_text)
+
+        # Страховка по catalog_number: если не распарсился — сохраняем запрошенный CAT
         found_cat = (payload.get("catalog_number") or "").strip().upper()
+        req_cat = cat.upper()
         if not found_cat:
-            # страховка: если вдруг не смогли вытащить — запишем то, что искали
-            payload["catalog_number"] = cat.upper()
-        elif found_cat != cat.upper():
-            logger.warning(
-                "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
-                cat, found_cat, url
-            )
+            payload["catalog_number"] = req_cat
+        elif found_cat != req_cat:
+            logger.warning("[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
+                           req_cat, found_cat, norm_url)
 
-        return RedeyeFetchResult(source_url=url, payload=payload)
+        return RedeyeFetchResult(source_url=norm_url, payload=payload)
 
     def parse_product_by_url(self, url: str) -> RedeyeFetchResult:
         """
@@ -233,6 +256,29 @@ class RedeyeService:
     # ---------------- PARSE PRODUCT ----------------
 
     def _parse_product_page(self, url: str, html_text: str) -> Dict:
+        """
+        Разбирает HTML карточки товара Redeye и возвращает словарь с данными релиза.
+
+        Возвращает ключи (основные):
+          - title: str
+          - artists: list[str]
+          - label: Optional[str]
+          - catalog_number: Optional[str]
+          - price_gbp: Optional[str]  # Decimal → str
+          - availability: Optional[str]  # 'preorder'|'in_stock'|'out_of_stock'|None
+          - image_url: Optional[str]
+          - tracks: list[dict]  # {'position','title','duration','position_index'}
+          - release_year/release_month/release_day: Optional[int]
+          - source: {'name': 'redeye', 'url': url}
+          - has_audio_previews: bool  # --- добавлено: признак наличия плеера превью на странице ---
+
+        Примечание:
+          Флаг `has_audio_previews` ставится, если на странице присутствуют кнопки
+          плеера превью, определяемые селектором `.play a.btn-play[data-sample]`.
+          Это синхронизировано с селектором из capture.py. Мы не ходим в сеть и не
+          инициируем проигрывание — просто проверяем DOM. Это дешёвая эвристика,
+          достаточная для решения задачи “есть смысл пробовать докачку mp3 или нет”.
+        """
         soup = BeautifulSoup(html_text, "html.parser")
 
         # 1) Заголовок «Artist - Title»
@@ -248,33 +294,40 @@ class RedeyeService:
         # 4) Цена/наличие
         price, availability = self._extract_price_and_availability(soup)
 
-        # --- Expected date parts (если это предзаказ) ---
+        # 5) Expected date parts (если это предзаказ)
         y, m, d = _parse_expected_date_parts(soup.get_text(" ", strip=True))
         release_year = y or None
         release_month = m or None
         release_day = d or None
 
-        # 5) Картинка
+        # 6) Картинка
         image_url = self._extract_image_url(soup, base=url)
 
-        # 6) Список треков (именно Tracks)
+        # 7) Список треков
         tracks: list[dict] = parse_redeye_tracks(soup)
 
-        # 7) Формат: на Redeye нет структурированных данных → не заполняем
+        # 8) Признак наличия превью-плеера (добавлено)
+        #    Селектор согласован с capture.py: BTN_QUERY = ".play a.btn-play[data-sample]"
+        #    Если на странице есть такие кнопки — вероятнее всего, можно собирать mp3-превью.
+        has_audio_previews: bool = bool(soup.select_one(".play a.btn-play[data-sample]"))
+
+        # 9) Форматы: на Redeye нет структурированных данных → не заполняем
         formats: List[str] = []
 
         # аккуратная длина label (у тебя CharField(255))
         if label_name:
             label_name = label_name[:255]
 
-        # 8) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
+        # 10) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
         notes = None
         if price is not None:
             notes = f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP"
 
         logger.info(
-            "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s avail=%s img=%s",
-            record_title or title_text, artists, label_name, catno, price, availability, bool(image_url),
+            "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s "
+            "avail=%s img=%s has_audio_previews=%s",
+            record_title or title_text, artists, label_name, catno, price,
+            availability, bool(image_url), has_audio_previews,
         )
 
         return {
@@ -297,6 +350,8 @@ class RedeyeService:
             "release_month": release_month,
             "release_day": release_day,
             "source": {"name": "redeye", "url": url},
+            # --- добавлено: признак наличия плеера превью ---
+            "has_audio_previews": has_audio_previews,
         }
 
     # ---------------- HELPERS ----------------

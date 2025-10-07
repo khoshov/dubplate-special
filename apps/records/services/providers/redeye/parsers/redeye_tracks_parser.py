@@ -68,6 +68,25 @@ class TrackPayload(TypedDict):
     position_index: int
 
 
+# --- добавлено: генерация плейсхолдеров, если треклист отсутствует, но плеер есть ---
+def _synthesize_from_player(sample_btns: list[object]) -> list[TrackPayload]:
+    """
+    Создаёт N плейсхолдеров-треков по числу найденных кнопок плеера.
+    Позиции оставляем пустыми (""), индексы — 1..N, чтобы сопоставление по index было стабильным.
+    """
+    items: list[TrackPayload] = []
+    for i, _ in enumerate(sample_btns, start=1):
+        items.append(
+            TrackPayload(
+                position="",
+                title=f"Untitled {i}",
+                duration=None,
+                position_index=i,
+            )
+        )
+    return items
+
+
 def _text_with_sep(soup_or_tag: object, sep: str) -> str:
     """
     Собирает текст из узлов BeautifulSoup, соединяя элементы заданным разделителем.
@@ -88,9 +107,19 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         Список словарей TrackPayload. Всегда с проставленными индексами 1..N.
     """
     soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
+
+    # ищем кнопки плеера (бывают и без блока .tracks)
+    sample_btns = list(soup.select(".play a.btn-play[data-sample], .btn-play[data-sample]"))
+    has_audio_previews = bool(sample_btns)
+
     node = soup.find(attrs={"class": "tracks"})
     if not node:
         logger.debug("parse_redeye_tracks: .tracks not found")
+        # Fallback — синтезируем треки по кнопкам плеера
+        if has_audio_previews:
+            synthesized = _synthesize_from_player(sample_btns)
+            logger.debug("parse_redeye_tracks: synthesized %d tracks from player (no .tracks)", len(synthesized))
+            return synthesized
         return []
 
     # Берём сырой HTML, чтобы корректно обработать все варианты <br>, <br/>, <br />
@@ -122,6 +151,11 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines:
         logger.debug("parse_redeye_tracks: empty lines after normalization")
+        # Fallback — синтез по плееру, даже если .tracks есть, но пуст
+        if has_audio_previews:
+            synthesized = _synthesize_from_player(sample_btns)
+            logger.debug("parse_redeye_tracks: synthesized %d tracks from player (empty .tracks)", len(synthesized))
+            return synthesized
         return []
 
     parsed: List[Dict[str, Optional[str]]] = []
@@ -173,8 +207,24 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         cleaned = re.sub(r"\s{2,}", " ", cleaned)  # прибираем двойные пробелы
         items[0]["title"] = cleaned
 
+    # --- новое: если у всех треков пустые/служебные названия, но есть плеер — синтезируем по кнопкам ---
+    def _is_empty_title(t: str) -> bool:
+        t = (t or "").strip().lower()
+        return t in ("", "-", "—", "n/a", "untitled", "unknown")
+
+    if has_audio_previews:
+        titles = [(t.get("title") or "") for t in items]
+        if titles and all(_is_empty_title(x) for x in titles):
+            synthesized = _synthesize_from_player(sample_btns)
+            logger.debug(
+                "parse_redeye_tracks: all titles empty — synthesized %d tracks from player", len(synthesized)
+            )
+            return synthesized
+    # ----------------------------------------------------------------------------------------------------
+
     logger.debug("parse_redeye_tracks: parsed %d tracks", len(items))
     return items
+
 
 
 __all__ = ["TrackPayload", "parse_redeye_tracks"]

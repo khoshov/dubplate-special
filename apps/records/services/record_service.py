@@ -2,6 +2,7 @@ import logging
 from typing import Optional, Tuple, List
 from .tracks import create_tracks_for_record
 from django.db import transaction
+from django.utils import timezone
 from ..models import (
     Artist,
     Format,
@@ -11,10 +12,13 @@ from ..models import (
     RecordConditions,
     Style,
     Track,
+    RecordSource,
 )
+
 from ..services.discogs_service import DiscogsService
 from ..services.image_service import ImageService
 from ..services.providers.redeye.redeye_service import RedeyeService
+from .providers.redeye.utils import normalize_redeye_url
 
 # добавлено: импорт каркаса сервиса Redeye (реализуем отдельно)
 # Важно: мы НЕ добавляем его в __init__, чтобы не ломать существующие вызовы RecordService.
@@ -115,43 +119,94 @@ class RecordService:
         return record, True
 
     # добавлен: импорт из Redeye — ключевой метод для новой функциональности
+    # --- изменено: добавлен параметр download_audio и сохранение vendor_source_url ---
+    # --- изменено: после создания записи и треков опционально качаем mp3 через аудио-сервис ---
+    # --- изменено: работаем через RecordSource вместо vendor_*; русский текст ошибок/логов; download_audio управляет докачкой ---
     def import_from_redeye(
             self,
             catalog_number: Optional[str] = None,
             save_image: bool = True,
+            *,
+            download_audio: bool = True,  # админка: True; массовые парсинги: False
     ) -> Tuple[Record, bool]:
-        if not catalog_number:
-            raise ValueError("catalog_number is required for Redeye import")
+        """
+        Импорт записи по каталожному номеру с сайта Redeye.
 
-        # 1) локальный дубликат
+        Поток:
+          1) Ищем карточку на Redeye → парсим payload.
+          2) Создаём Record + связи + треки.
+          3) Сохраняем обложку (если есть).
+          4) Создаём/обновляем RecordSource (redeye/product_page).
+          5) (опционально) Докачиваем mp3-превью по порядку треков.
+
+        Args:
+            catalog_number: Каталожный номер для поиска на Redeye.
+            save_image: Скачивать ли обложку.
+            download_audio: Качать ли mp3-превью сразу после импорта (админка: True; массовые пайплайны: False).
+
+        Returns:
+            (record, created)
+
+        Raises:
+            ValueError: если не указан catalog_number.
+        """
+        if not catalog_number:
+            raise ValueError("Не указан каталожный номер (catalog_number) для импорта из Redeye.")
+
+        # 1) Локальный дубликат
         existing = Record.objects.find_by_catalog_number(catalog_number)
         if existing:
-            logger.info(f"Found existing record by catalog_number (Redeye): {existing.id}")
+            logger.info("Найдена существующая запись по каталожному номеру (Redeye): %s", existing.id)
+            if download_audio:
+                try:
+                    # попытка докачать превью через RecordSource (redeye/product_page)
+                    self._maybe_attach_redeye_previews(existing, force=False)
+                except Exception as e:
+                    logger.warning("Докачка mp3 для существующей записи завершилась с ошибкой: %s", e)
             return existing, False
 
-        # 2) тянем с сайта
+        # 2) Парсим карточку Redeye
         redeye = RedeyeService()
-        res = redeye.fetch_by_catalog_number(catalog_number)
-        data = res.payload  # RedeyeFetchResult → берём дикт
+        res = redeye.fetch_by_catalog_number(catalog_number)  # RedeyeFetchResult
+        data = res.payload  # dict: title, artists, label, catalog_number, tracks, image_url, release_*, source.url, ...
+        # (структура формируется в redeye_service._parse_product_page)
 
-        # подстрахуем кат.№ (то, что искали — то и записываем)
-        wanted = catalog_number.strip().upper()
+        # подстрахуем CAT (то, что искали — то и запишем)
+        wanted = (catalog_number or "").strip().upper()
         parsed = (data.get("catalog_number") or "").strip().upper()
         if parsed != wanted:
-            logger.info("Override catalog_number: parsed='%s' → '%s'", parsed, wanted)
+            logger.info("Каталожный номер в payload отличается: '%s' → перезаписываем на '%s'", parsed, wanted)
             data["catalog_number"] = wanted
 
-        # 3) создаём запись + связи + треки
+        # 3) Создаём запись + связи + треки
         with transaction.atomic():
-            record = self._create_record_from_vendor(data)
+            record = self._create_record_from_vendor(data)  # создаёт Record и треки через ingest
 
-            # 4) обложка
+            # 4) Обложка (если есть)
             cover_url = data.get("image_url")
             if save_image and cover_url:
                 if self.image_service.download_cover(record, cover_url):
-                    logger.info(f"Cover downloaded for record {record.id} (Redeye)")
+                    logger.info("Обложка скачана для записи %s (Redeye)", record.id)
 
-        logger.info(f"Record imported successfully from Redeye: {record.id}")
+            # 5) RecordSource (redeye/product_page)
+            source_url = (data.get("source") or {}).get("url") or res.source_url
+            if source_url:
+                self._upsert_record_source(
+                    record=record,
+                    provider=RecordSource.Provider.REDEYE,
+                    role=RecordSource.Role.PRODUCT_PAGE,
+                    url=source_url,
+                    can_fetch_audio=True,
+                )
+
+        # 6) (опционально) докачиваем mp3-превью — по порядку треков (1..N)
+        if download_audio:
+            try:
+                self._maybe_attach_redeye_previews(record, force=False)
+            except Exception as e:
+                logger.warning("Докачка mp3 завершилась с ошибкой для записи %s: %s", record.pk, e)
+
+        logger.info("Импорт из Redeye завершён успешно: %s", record.id)
         return record, True
 
     def update_from_discogs(self, record: Record, update_image: bool = True) -> Record:
@@ -531,17 +586,18 @@ class RecordService:
         record.formats.set(formats)
 
     # добавлено: создание записи/связей из "вендорских" данных (Redeye)
+    # --- изменено: после создания записи сохраняем vendor_source_url, если поле существует ---
+    # --- изменено: убран устаревший записывающий код vendor_*; остальное без изменений ---
     def _create_record_from_vendor(self, data: dict) -> Record:
-        """Создание записи из словаря, полученного от стороннего источника (Redeye/и др.).
+        """Создание записи из словаря, полученного от внешнего провайдера (Redeye/и др.).
 
         Поддерживает ключи:
           title, artists[], label, catalog_number, barcode, country, notes,
           formats[], tracks[], image_url, price_gbp, availability,
-          release_year, release_month, release_day.
-        Если запись с таким catalog_number уже существует — бросим ValueError
-        (RecordForm.save() конвертирует в ValidationError у поля).
-        """
+          release_year, release_month, release_day, source={name,url}.
 
+        Если запись с таким catalog_number уже существует — бросим ValueError.
+        """
         catalog_number = (data.get("catalog_number") or "").strip() or None
         if catalog_number:
             dupe = Record.objects.filter(catalog_number=catalog_number).first()
@@ -552,6 +608,7 @@ class RecordService:
         release_month = data.get("release_month")
         release_day = data.get("release_day")
 
+        # 1) Создаём сам объект Record
         record = Record.objects.create(
             title=data["title"],
             discogs_id=None,
@@ -566,9 +623,143 @@ class RecordService:
             stock=1,
         )
 
+        # 2) Связи (artists/label/genres/styles/formats)
         self._create_vendor_relations(record, data)
+
+        # 3) Треки — через единый ingest (индексация 1..N).
         self._create_vendor_tracks(record, data)
+
         return record
+
+    # --- добавлено: единая точка создания/обновления RecordSource ---
+    def _upsert_record_source(
+            self,
+            *,
+            record: Record,
+            provider: RecordSource.Provider,
+            role: RecordSource.Role,
+            url: str,
+            can_fetch_audio: bool,
+    ) -> RecordSource:
+        """
+        Создаёт или обновляет RecordSource для заданной записи/провайдера/роли.
+
+        Идемпотентно: при повторном вызове обновит url/can_fetch_audio, не создавая дубликаты.
+        """
+        url = normalize_redeye_url(url)  # --- добавлено ---
+        obj, created = RecordSource.objects.get_or_create(
+            record=record,
+            provider=provider,
+            role=role,
+            defaults={"url": url, "can_fetch_audio": can_fetch_audio},
+        )
+        if not created:
+            updated = False
+            if obj.url != url:
+                obj.url = url
+                updated = True
+            if obj.can_fetch_audio != can_fetch_audio:
+                obj.can_fetch_audio = can_fetch_audio
+                updated = True
+            if updated:
+                obj.save(update_fields=["url", "can_fetch_audio", "updated_at"])
+        return obj
+
+    # --- добавлено: обёртка для аудио-превью (аналог download_cover), без прямых зависимостей снаружи ---
+    # --- изменено: новое имя и логика через RecordSource; русские сообщения ---
+    def _maybe_attach_redeye_previews(self, record, *, force: bool = False) -> int:
+        """
+        Докачка/перекачка mp3-превью с Redeye для заданной записи.
+
+        Алгоритм:
+          1) Ищем RecordSource(provider=REDEYE, role=PRODUCT_PAGE, can_fetch_audio=True).
+          2) Нормализуем URL карточки (фикс дублированного домена, лишние слэши).
+          3) Если у записи нет треков, но на странице есть плеер — создаём плейсхолдеры (Untitled 1..N).
+          4) Привязываем превью через плеерный модуль (сопоставление по position_index).
+          5) Обновляем телеметрию RecordSource.
+        """
+        import logging
+
+        # относительные импорты (важно: одна точка, не две!)
+        from ..models import RecordSource, Track  # up: records
+        from .providers.redeye.utils import normalize_redeye_url  # внутри services
+        from .tracks.audio.redeye_player import ensure_previews_from_redeye_player  # внутри services.tracks
+        from .tracks.audio.capture import collect_redeye_media_urls  # внутри services.tracks
+
+        logger = getattr(self, "logger", logging.getLogger(__name__))
+        logger.info("[DEBUG] _maybe_attach_redeye_previews(): record=%s force=%s", getattr(record, "pk", record), force)
+
+        # 1) источник Redeye product_page
+        source = (
+            record.sources
+            .filter(
+                provider=RecordSource.Provider.REDEYE,
+                role=RecordSource.Role.PRODUCT_PAGE,
+                can_fetch_audio=True,
+            )
+            .first()
+        )
+        if not source:
+            logger.info("У записи id=%s нет подходящего источника Redeye (product_page / can_fetch_audio=True).",
+                        record.id)
+            return 0
+
+        # 2) нормализуем URL
+        page_url = normalize_redeye_url(source.url or getattr(record, "source_url", "") or "")
+        if not page_url:
+            logger.info("У записи id=%s отсутствует URL карточки Redeye — пропуск докачки.", record.id)
+            return 0
+
+        logger.info("[audio] Redeye page URL (normalized): %s", page_url)
+        try:
+            src_dump = list(record.sources.values_list("role", "url"))
+            logger.info("[DEBUG] record.sources(filter=REDEYE): %s", src_dump)
+        except Exception:
+            pass
+
+        updated_count = 0
+
+        try:
+            # 3) Подстраховка: если нет треков — попробуем создать плейсхолдеры из плеера
+            if not record.tracks.exists():
+                media_urls = []
+                try:
+                    media_urls = list(collect_redeye_media_urls(page_url, per_click_timeout_sec=20))
+                except Exception as e:
+                    logger.warning("[audio] ошибка при сборе аудио-ссылок (record=%s): %s", record.id, e)
+
+                if media_urls:
+                    created_ids = []
+                    for i in range(1, len(media_urls) + 1):
+                        t = Track.objects.create(
+                            record=record,
+                            title=f"Untitled {i}",
+                            position="",
+                            position_index=i,
+                        )
+                        created_ids.append(t.id)
+                    logger.info("[audio] создано плейсхолдеров треков: %s (всего %s)", created_ids, len(created_ids))
+                else:
+                    logger.info("[audio] на странице не обнаружены аудио-кнопки — плейсхолдеры не созданы.")
+
+            # 4) Привязка превью через модуль плеера
+            updated_count = ensure_previews_from_redeye_player(
+                record=record,
+                page_url=page_url,
+                force=force,
+                per_click_timeout_sec=20,
+            )
+
+        finally:
+            # 5) Телеметрия
+            try:
+                source.last_audio_scrape_at = timezone.now()
+                source.audio_urls_count = int(updated_count)
+                source.save(update_fields=["last_audio_scrape_at", "audio_urls_count", "updated_at"])
+            except Exception as e:
+                logger.debug("Не удалось обновить телеметрию RecordSource(id=%s): %s", getattr(source, "id", None), e)
+
+        return updated_count
 
     def _create_vendor_relations(self, record, data: dict) -> None:
         """
@@ -576,8 +767,6 @@ class RecordService:
         по данным вендора. Для жанров/стилей используется CI-поиск и нормализация
         'not specified' -> 'Not specified', чтобы не нарушать CI-unique ограничение.
         """
-
-        # локальные импорты, чтобы избежать циклов
 
         def _canon_vocab(name: str) -> str:
             if not name:
