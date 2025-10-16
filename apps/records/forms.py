@@ -86,9 +86,9 @@ class RecordForm(forms.ModelForm):
         if is_creating:
             # --- конфигурация полей для create-формы ---
             current_source = (
-                (self.data.get("source") if self.data else None)
-                or self.initial.get("source")
-                or self.SOURCE_DISCOGS
+                    (self.data.get("source") if self.data else None)
+                    or self.initial.get("source")
+                    or self.SOURCE_DISCOGS
             )
             self._setup_fields_for_new_record(current_source)
         else:
@@ -225,7 +225,9 @@ class RecordForm(forms.ModelForm):
             — применение значений формы (если заданы),
             — установка duplicate_record, если импорт обнаружил существующую запись.
         """
-        is_creating = not (self.instance and self.instance.pk)
+        # Определим, создаём ли новый объект (pk ещё нет)
+        is_creating = not getattr(self.instance, "pk", None)
+
         if not is_creating:
             return super().save(commit=commit)
 
@@ -263,7 +265,7 @@ class RecordForm(forms.ModelForm):
         return self.record_service.import_from_redeye(catalog_number=catalog_number)
 
     def _import_from_discogs(
-        self, barcode: Optional[str], catalog_number: Optional[str]
+            self, barcode: Optional[str], catalog_number: Optional[str]
     ) -> Tuple[Record, bool]:
         return self.record_service.import_from_discogs(
             barcode=barcode, catalog_number=catalog_number
@@ -272,13 +274,13 @@ class RecordForm(forms.ModelForm):
     def _apply_scalar_fields(self, record: Record) -> None:
         """Переносит скалярные поля из формы в запись (только непустые)."""
         for field in (
-            "title",
-            "release_year",
-            "label",
-            "country",
-            "notes",
-            "catalog_number",
-            "barcode",
+                "title",
+                "release_year",
+                "label",
+                "country",
+                "notes",
+                "catalog_number",
+                "barcode",
         ):
             if field in self.cleaned_data and self.cleaned_data[field] not in (None, ""):
                 setattr(record, field, self.cleaned_data[field])
