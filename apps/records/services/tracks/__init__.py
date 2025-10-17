@@ -4,7 +4,10 @@
 - единая точка записи треков в БД.
 """
 
-from apps.records.services.providers.redeye.parsers.redeye_tracks_parser import TrackPayload, parse_redeye_tracks
+from apps.records.services.providers.redeye.parsers.redeye_tracks_parser import (
+    TrackPayload,
+    parse_redeye_tracks,
+)
 from .ingest import TrackLike, create_tracks_for_record
 
 __all__ = [

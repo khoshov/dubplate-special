@@ -3,8 +3,8 @@
     const source = document.querySelector('select[name="source"]');
     if (!source) return;
 
-    const barcodeRow = document.querySelector('.form-row.field-barcode, .field-barcode');
-    const catalogRow = document.querySelector('.form-row.field-catalog_number, .field-catalog_number');
+    const barcodeRow = document.querySelector('.forms-row.field-barcode, .field-barcode');
+    const catalogRow = document.querySelector('.forms-row.field-catalog_number, .field-catalog_number');
 
     if (!barcodeRow || !catalogRow) return;
 

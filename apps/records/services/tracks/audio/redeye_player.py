@@ -3,6 +3,7 @@
 
 1-й url → 1-й трек (position_index=1), 2-й → 2-й и т.д.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,9 @@ from .capture import collect_redeye_media_urls
 logger = logging.getLogger(__name__)
 
 
-def _resolve_product_page_url(record: Record, explicit_url: Optional[str] = None) -> Optional[str]:
+def _resolve_product_page_url(
+    record: Record, explicit_url: Optional[str] = None
+) -> Optional[str]:
     """
     Возвращает URL карточки товара Redeye для записи.
 
@@ -32,8 +35,7 @@ def _resolve_product_page_url(record: Record, explicit_url: Optional[str] = None
 
     try:
         src = (
-            record.sources
-            .filter(
+            record.sources.filter(
                 provider=RecordSource.Provider.REDEYE,
                 role=RecordSource.Role.PRODUCT_PAGE,
                 can_fetch_audio=True,
@@ -55,11 +57,11 @@ def _resolve_product_page_url(record: Record, explicit_url: Optional[str] = None
 
 
 def ensure_previews_from_redeye_player(
-        record: Record,
-        *,
-        page_url: Optional[str] = None,
-        force: bool = False,
-        per_click_timeout_sec: int = 20,
+    record: Record,
+    *,
+    page_url: Optional[str] = None,
+    force: bool = False,
+    per_click_timeout_sec: int = 20,
 ) -> int:
     """
     Ставит mp3-превью в Track.audio_preview.
@@ -80,16 +82,22 @@ def ensure_previews_from_redeye_player(
     # --- PRUNE: если это полностью синтезированные "Untitled"-треки и часть осталась без превью — удалим пустые ---
     qs = record.tracks.order_by("position_index", "id")
     titles = list(qs.values_list("title", flat=True))
-    all_untitled = titles and all((t or "").lower().startswith("untitled") for t in titles)
+    all_untitled = titles and all(
+        (t or "").lower().startswith("untitled") for t in titles
+    )
 
     if all_untitled:
-        pruned = qs.filter(Q(audio_preview__isnull=True) | Q(audio_preview__exact="")).delete()
+        pruned = qs.filter(
+            Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
+        ).delete()
         logger.info("[audio] prune: удалено плейсхолдеров без превью: %s", pruned[0])
 
     # нормализуем адрес карточки товара
     page_url = _resolve_product_page_url(record, page_url)
     if not page_url:
-        logger.info("[redeye_player] record %s has no product_page URL — пропуск", record.pk)
+        logger.info(
+            "[redeye_player] record %s has no product_page URL — пропуск", record.pk
+        )
         return 0
 
     # 1) берём треки и УПОРЯДОЧИВАЕМ ТОЛЬКО ПО position_index
@@ -107,7 +115,8 @@ def ensure_previews_from_redeye_player(
     if tracks_without_idx:
         logger.warning(
             "[redeye_player] у %d трек(ов) записи %s нет position_index — они будут привязаны в конце по порядку.",
-            len(tracks_without_idx), record.pk
+            len(tracks_without_idx),
+            record.pk,
         )
 
     tracks_with_idx.sort(key=lambda it: (it[0], it[1].id))  # по индексу затем по id
@@ -119,7 +128,9 @@ def ensure_previews_from_redeye_player(
         return 0
 
     # 2) получаем УЖЕ ОТСОРТИРОВАННЫЕ по кнопкам (a,b,c,...) URL'ы
-    urls = collect_redeye_media_urls(page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False)
+    urls = collect_redeye_media_urls(
+        page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False
+    )
     if not urls:
         logger.info("[redeye_player] no media urls captured for %s", page_url)
         return 0
@@ -136,6 +147,9 @@ def ensure_previews_from_redeye_player(
 
     logger.info(
         "[redeye_player] record=%s previews updated: %d (urls=%d, tracks=%d)",
-        record.pk, updated, len(urls), len(tracks)
+        record.pk,
+        updated,
+        len(urls),
+        len(tracks),
     )
     return updated

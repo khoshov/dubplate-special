@@ -7,6 +7,7 @@ from .models import Record, Track
 
 # ------- helpers -------
 
+
 def _safe_storage_delete(storage, rel_path: str) -> None:
     """Безопасно удаляет файл из storage по относительному пути."""
     if not rel_path:
@@ -75,6 +76,7 @@ def _move_file_to_id_folder(instance: Record, field_name: str) -> None:
 
 # ------- signals -------
 
+
 @receiver(pre_save, sender=Record)
 def cleanup_old_cover_on_change(sender, instance: Record, **kwargs):
     """
@@ -119,7 +121,9 @@ def cleanup_cover_on_delete(sender, instance: Record, **kwargs):
         return
 
     storage = f.storage
-    rel_path = f.name.replace("\\", "/")  # e.g. "records/record/cover_image/42/title.jpg"
+    rel_path = f.name.replace(
+        "\\", "/"
+    )  # e.g. "records/record/cover_image/42/title.jpg"
 
     # 1) удалить сам файл
     _safe_storage_delete(storage, rel_path)
@@ -127,7 +131,9 @@ def cleanup_cover_on_delete(sender, instance: Record, **kwargs):
     # 2) подниматься вверх и удалять пустые каталоги до уровня <app>/<model>/<field>
     #    (не поднимаемся выше директории поля)
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "cover_image"])
+    stop_at = "/".join(
+        [instance._meta.app_label, instance._meta.model_name, "cover_image"]
+    )
 
     # сначала удалим папку с id, затем — при необходимости — сам каталог поля
     if rel_dir and rel_dir != stop_at:
@@ -150,14 +156,18 @@ def cleanup_audio_on_delete(sender, instance: Track, **kwargs):
         return
 
     storage = f.storage
-    rel_path = f.name.replace("\\", "/")  # например: "records/track/audio_preview/123/clip.mp3"
+    rel_path = f.name.replace(
+        "\\", "/"
+    )  # например: "records/track/audio_preview/123/clip.mp3"
 
     # удалить сам mp3
     _safe_storage_delete(storage, rel_path)
 
     # удалить пустые директории вверх до уровня поля audio_preview
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "audio_preview"])
+    stop_at = "/".join(
+        [instance._meta.app_label, instance._meta.model_name, "audio_preview"]
+    )
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)
     _safe_rmdir(storage, stop_at)

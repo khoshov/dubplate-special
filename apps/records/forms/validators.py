@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 from django.core.exceptions import ValidationError
 
-from .models import Record
+from ..models import Record
 
 
 class RecordIdentifierValidator:

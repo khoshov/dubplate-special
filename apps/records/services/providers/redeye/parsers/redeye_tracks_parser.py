@@ -106,10 +106,16 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
     Returns:
         Список словарей TrackPayload. Всегда с проставленными индексами 1..N.
     """
-    soup = BeautifulSoup(soup_or_html, "html.parser") if isinstance(soup_or_html, str) else soup_or_html
+    soup = (
+        BeautifulSoup(soup_or_html, "html.parser")
+        if isinstance(soup_or_html, str)
+        else soup_or_html
+    )
 
     # ищем кнопки плеера (бывают и без блока .tracks)
-    sample_btns = list(soup.select(".play a.btn-play[data-sample], .btn-play[data-sample]"))
+    sample_btns = list(
+        soup.select(".play a.btn-play[data-sample], .btn-play[data-sample]")
+    )
     has_audio_previews = bool(sample_btns)
 
     node = soup.find(attrs={"class": "tracks"})
@@ -118,7 +124,10 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         # Fallback — синтезируем треки по кнопкам плеера
         if has_audio_previews:
             synthesized = _synthesize_from_player(sample_btns)
-            logger.debug("parse_redeye_tracks: synthesized %d tracks from player (no .tracks)", len(synthesized))
+            logger.debug(
+                "parse_redeye_tracks: synthesized %d tracks from player (no .tracks)",
+                len(synthesized),
+            )
             return synthesized
         return []
 
@@ -154,7 +163,10 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         # Fallback — синтез по плееру, даже если .tracks есть, но пуст
         if has_audio_previews:
             synthesized = _synthesize_from_player(sample_btns)
-            logger.debug("parse_redeye_tracks: synthesized %d tracks from player (empty .tracks)", len(synthesized))
+            logger.debug(
+                "parse_redeye_tracks: synthesized %d tracks from player (empty .tracks)",
+                len(synthesized),
+            )
             return synthesized
         return []
 
@@ -217,14 +229,14 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         if titles and all(_is_empty_title(x) for x in titles):
             synthesized = _synthesize_from_player(sample_btns)
             logger.debug(
-                "parse_redeye_tracks: all titles empty — synthesized %d tracks from player", len(synthesized)
+                "parse_redeye_tracks: all titles empty — synthesized %d tracks from player",
+                len(synthesized),
             )
             return synthesized
     # ----------------------------------------------------------------------------------------------------
 
     logger.debug("parse_redeye_tracks: parsed %d tracks", len(items))
     return items
-
 
 
 __all__ = ["TrackPayload", "parse_redeye_tracks"]

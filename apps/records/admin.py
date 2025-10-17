@@ -1,4 +1,3 @@
-# apps/records/admin.py
 import logging
 from typing import Optional
 from django.urls import path
@@ -11,7 +10,10 @@ from django.urls import reverse
 
 from .forms import RecordForm
 from .models import Record, Track, Artist
-from .services.record_service import DiscogsService, ImageService, RecordService
+from .services.discogs_service import DiscogsService
+from .services.image_service import ImageService
+from .services.providers.redeye.redeye_service import RedeyeService
+from .services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +32,29 @@ class TrackInline(admin.TabularInline):
     show_change_link = False
 
     # порядок и колонки
-    fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview")
-    readonly_fields = ("position_index", "position", "title", "duration", "youtube_url", "audio_preview")
+    fields = (
+        "position_index",
+        "position",
+        "title",
+        "duration",
+        "youtube_url",
+        "audio_preview",
+    )
+    readonly_fields = (
+        "position_index",
+        "position",
+        "title",
+        "duration",
+        "youtube_url",
+        "audio_preview",
+    )
 
     class Media:
         css = {"all": ("records/admin/track_inline.css",)}
 
-    def has_add_permission(self, request: HttpRequest, obj: Optional[Record] = None) -> bool:
+    def has_add_permission(
+        self, request: HttpRequest, obj: Optional[Record] = None
+    ) -> bool:
         """Запрещает добавление треков через админку (импортируются из внешних источников)."""
         return False
 
@@ -98,7 +116,14 @@ class RecordAdmin(admin.ModelAdmin):
         "release_day",
         "is_expected",
     )
-    list_filter = ("condition", "genres", "styles", "created", "modified", "is_expected")
+    list_filter = (
+        "condition",
+        "genres",
+        "styles",
+        "created",
+        "modified",
+        "is_expected",
+    )
     search_fields = (
         "title",
         "barcode",
@@ -107,7 +132,13 @@ class RecordAdmin(admin.ModelAdmin):
         "artists__name",
         "label__name",
     )
-    ordering = ("is_expected", "release_year", "release_month", "release_day", "-created")
+    ordering = (
+        "is_expected",
+        "release_year",
+        "release_month",
+        "release_day",
+        "-created",
+    )
     date_hierarchy = "created"
 
     # Оптимизация запросов
@@ -120,7 +151,9 @@ class RecordAdmin(admin.ModelAdmin):
         """Инициализация админки."""
         super().__init__(*args, **kwargs)
         self.record_service = RecordService(
-            discogs_service=DiscogsService(), image_service=ImageService()
+            discogs_service=DiscogsService(),
+            redeye_service=RedeyeService(),
+            image_service=ImageService(),
         )
         # объявляем атрибут перенаправления заранее (для анализатора типов)
         self._redirect_to_existing: Optional[Record] = None
@@ -142,7 +175,9 @@ class RecordAdmin(admin.ModelAdmin):
 
         # add-форма: выбираем набор полей по источнику
         # Поля для создания новой записи (ДВА варианта: Discogs/Redeye)
-        source = (request.POST.get("source") or request.GET.get("source") or "discogs").lower()
+        source = (
+            request.POST.get("source") or request.GET.get("source") or "discogs"
+        ).lower()
         if source == "redeye":
             add_fieldsets_redeye = (
                 (
@@ -195,11 +230,18 @@ class RecordAdmin(admin.ModelAdmin):
             return redirect("admin:records_record_change", object_id=obj.pk)
 
         if not obj.catalog_number:
-            messages.error(request, "Невозможно обновить: у записи не указан каталожный номер.")
+            messages.error(
+                request, "Невозможно обновить: у записи не указан каталожный номер."
+            )
             return redirect("admin:records_record_change", object_id=obj.pk)
 
         # Читаем чекбокс «Перекачать аудио» из submit_row
-        force = str(request.POST.get("_refresh_force", "0")).strip().lower() in {"1", "true", "on", "yes"}
+        force = str(request.POST.get("_refresh_force", "0")).strip().lower() in {
+            "1",
+            "true",
+            "on",
+            "yes",
+        }
 
         try:
             # 1) обновляем данные релиза (обложку подтянет сам импорт)
@@ -214,11 +256,19 @@ class RecordAdmin(admin.ModelAdmin):
             )
 
             parts = []
-            parts.append("данные по релизу обновлены" if imported else "данные по релизу проверены (актуальны)")
+            parts.append(
+                "данные по релизу обновлены"
+                if imported
+                else "данные по релизу проверены (актуальны)"
+            )
             parts.append(
                 f"mp3-превью {'перекачано' if force else 'добавлено'}: {updated_audio}"
                 if updated_audio
-                else ("перекачка не потребовалась" if force else "новых mp3-превью не найдено")
+                else (
+                    "перекачка не потребовалась"
+                    if force
+                    else "новых mp3-превью не найдено"
+                )
             )
             messages.success(request, ", ".join(parts) + ".")
         except Exception as e:
@@ -236,7 +286,9 @@ class RecordAdmin(admin.ModelAdmin):
     # --- ИЗМЕНЕНО: поведение при дубликате каталожного номера ---
     # внутри class RecordAdmin(admin.ModelAdmin):
 
-    def save_model(self, request: HttpRequest, obj: Record, form: RecordForm, change: bool) -> None:
+    def save_model(
+        self, request: HttpRequest, obj: Record, form: RecordForm, change: bool
+    ) -> None:
         """
         Сохранение модели с обработкой:
         - дубликата (обновляем существующую запись и подтягиваем превью),
@@ -247,15 +299,26 @@ class RecordAdmin(admin.ModelAdmin):
         if duplicate is not None:
             try:
                 # попытка докачать превью для уже существующей записи
-                updated = self.record_service._maybe_attach_redeye_previews(duplicate,
-                                                                            force=False)  # type: ignore[attr-defined]
+                updated = self.record_service._maybe_attach_redeye_previews(
+                    duplicate, force=False
+                )  # type: ignore[attr-defined]
                 if updated:
-                    messages.success(request, f"Для существующей записи «{duplicate}» добавлены превью: {updated}.")
+                    messages.success(
+                        request,
+                        f"Для существующей записи «{duplicate}» добавлены превью: {updated}.",
+                    )
                 else:
-                    messages.info(request, f"Для существующей записи «{duplicate}» новые превью не найдены.")
+                    messages.info(
+                        request,
+                        f"Для существующей записи «{duplicate}» новые превью не найдены.",
+                    )
             except Exception as e:
-                logger.exception("Auto audio-fetch on duplicate failed for %s", duplicate.pk)
-                messages.error(request, f"Не удалось подтянуть превью для «{duplicate}»: {e}")
+                logger.exception(
+                    "Auto audio-fetch on duplicate failed for %s", duplicate.pk
+                )
+                messages.error(
+                    request, f"Не удалось подтянуть превью для «{duplicate}»: {e}"
+                )
 
             # настроим редирект в response_add
             self._redirect_to_existing = duplicate
@@ -273,16 +336,21 @@ class RecordAdmin(admin.ModelAdmin):
 
         if need_audio:
             try:
-                updated = self.record_service._maybe_attach_redeye_previews(obj,
-                                                                            force=False)  # type: ignore[attr-defined]
+                updated = self.record_service._maybe_attach_redeye_previews(
+                    obj, force=False
+                )  # type: ignore[attr-defined]
                 if updated:
-                    messages.success(request, f"Добавлены mp3-превью треков: {updated}.")
+                    messages.success(
+                        request, f"Добавлены mp3-превью треков: {updated}."
+                    )
             except Exception as e:
                 logger.exception("Post-save audio-fetch failed for %s", obj.pk)
                 messages.warning(request, f"Не удалось подтянуть mp3-превью: {e}")
 
     # --- ИЗМЕНЕНО: поддержка редиректа на существующую запись после авто-обновления ---
-    def response_add(self, request: HttpRequest, obj: Record, post_url_continue: Optional[str] = None):
+    def response_add(
+        self, request: HttpRequest, obj: Record, post_url_continue: Optional[str] = None
+    ):
         """
         После нажатия «Save» в add-форме:
         - если обнаружен дубликат, уходим на страницу существующей записи (после авто-обновления);
@@ -301,7 +369,10 @@ class RecordAdmin(admin.ModelAdmin):
 
         # Если импорт успешен — ведём на редактирование (как раньше)
         if obj.discogs_id:
-            messages.info(request, "Проверьте импортированные данные и при необходимости отредактируйте их.")
+            messages.info(
+                request,
+                "Проверьте импортированные данные и при необходимости отредактируйте их.",
+            )
             redirect_url = reverse(
                 f"admin:{obj._meta.app_label}_{obj._meta.model_name}_change",
                 args=[obj.pk],
@@ -366,7 +437,9 @@ class RecordAdmin(admin.ModelAdmin):
             return base + ("discogs_id", "created", "modified")
         return base
 
-    def has_delete_permission(self, request: HttpRequest, obj: Optional[Record] = None) -> bool:
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[Record] = None
+    ) -> bool:
         """Запрещает удаление записей, которые есть в заказах."""
         if obj and hasattr(obj, "order_items") and obj.order_items.exists():
             return False
@@ -379,9 +452,7 @@ class RecordAdmin(admin.ModelAdmin):
         return field
 
     class Media:
-        css = {
-            "all": ("records/admin/record_submit_row.css",)
-        }
+        css = {"all": ("records/admin/record_submit_row.css",)}
 
 
 @admin.register(Artist)

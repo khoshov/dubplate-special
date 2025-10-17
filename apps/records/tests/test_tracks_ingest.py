@@ -13,7 +13,7 @@ def test_create_tracks_assigns_indices_when_missing():
 
     payload = [
         {"position": "A1", "title": "Alpha", "duration": "03:00"},
-        {"position": "A2", "title": "Beta",  "duration": None},
+        {"position": "A2", "title": "Beta", "duration": None},
         {"position": "B1", "title": "Gamma"},
     ]
     objs = create_tracks_for_record(rec, payload)
@@ -22,9 +22,10 @@ def test_create_tracks_assigns_indices_when_missing():
     rows = list(Track.objects.filter(record=rec).order_by("position_index"))
     assert [(t.position_index, t.position, t.title, t.duration) for t in rows] == [
         (1, "A1", "Alpha", "03:00"),
-        (2, "A2", "Beta",  None),
+        (2, "A2", "Beta", None),
         (3, "B1", "Gamma", None),
     ]
+
 
 def test_respects_explicit_position_index_and_does_not_renumber():
     rec = Record.objects.create(title="Indexed", catalog_number="TEST002")

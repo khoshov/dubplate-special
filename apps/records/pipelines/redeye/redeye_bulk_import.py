@@ -3,9 +3,10 @@
 Пакетный импорт карточек Redeye:
   - обходит списки urls пластинок (iterate_category_urls);
   - парсит карточки RedeyeService.parse_product_by_url(...);
-  - по данным карточки пластинки (payload) делает upsert Record 
+  - по данным карточки пластинки (payload) делает upsert Record
   (create or update в БД) + m2m + cover + ТРЕКИ.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,13 +50,13 @@ class RedeyeBulkImporter:
     """
 
     def __init__(
-            self,
-            *,
-            delay_sec: float = 0.6,
-            jitter_sec: float = 0.5,
-            max_retries: int = 4,
-            cooldown_sec: int = 90,
-            stop_on_block: bool = False,
+        self,
+        *,
+        delay_sec: float = 0.6,
+        jitter_sec: float = 0.5,
+        max_retries: int = 4,
+        cooldown_sec: int = 90,
+        stop_on_block: bool = False,
     ) -> None:
         self.delay_sec = delay_sec
         self.svc = RedeyeService(
@@ -67,13 +68,13 @@ class RedeyeBulkImporter:
         )
 
     def crawl_category(
-            self,
-            category_url: str,
-            *,
-            attach_genre: Optional[str] = None,
-            attach_style: Optional[str] = None,
-            limit: Optional[int] = None,
-            save: bool = False,
+        self,
+        category_url: str,
+        *,
+        attach_genre: Optional[str] = None,
+        attach_style: Optional[str] = None,
+        limit: Optional[int] = None,
+        save: bool = False,
     ) -> Iterable[ImportResult]:
         """
         Итератор по карточкам в категории: парсит payload и (опц.) сохраняет.
@@ -88,14 +89,21 @@ class RedeyeBulkImporter:
         Yields:
             ImportResult для каждой карточки (ok/error + краткая сводка).
         """
-        for product_url in iterate_category_urls(category_url, delay_sec=self.delay_sec, limit=limit):
+        for product_url in iterate_category_urls(
+            category_url, delay_sec=self.delay_sec, limit=limit
+        ):
             try:
                 parsed = self.svc.parse_product_by_url(product_url)
                 payload = parsed.payload or {}
                 payload.setdefault("source", "redeye")
-                payload.setdefault("source_url", getattr(parsed, "source_url", None) or parsed.source_url)
+                payload.setdefault(
+                    "source_url",
+                    getattr(parsed, "source_url", None) or parsed.source_url,
+                )
                 if "has_audio_previews" not in payload:
-                    payload["has_audio_previews"] = bool((parsed.payload or {}).get("has_audio_previews"))
+                    payload["has_audio_previews"] = bool(
+                        (parsed.payload or {}).get("has_audio_previews")
+                    )
 
                 # Приклеим жанр/стиль от раздела, если их нет в самой карточке
                 if attach_genre:
@@ -122,7 +130,11 @@ class RedeyeBulkImporter:
                     self._ensure_redeye_record_source(rec, payload)
 
                 # Сводка для CLI
-                y, m, d = payload.get("release_year"), payload.get("release_month"), payload.get("release_day")
+                y, m, d = (
+                    payload.get("release_year"),
+                    payload.get("release_month"),
+                    payload.get("release_day"),
+                )
                 if y and m and d:
                     rel = f"{y:04d}-{m:02d}-{d:02d}"
                 elif y and m:
@@ -139,7 +151,9 @@ class RedeyeBulkImporter:
                     "catalog_number": catno or "-",
                     "release": rel,
                     "availability": payload.get("availability") or "-",
-                    "price": f"£{payload.get('price_gbp')}" if payload.get("price_gbp") is not None else "-",
+                    "price": f"£{payload.get('price_gbp')}"
+                    if payload.get("price_gbp") is not None
+                    else "-",
                 }
 
                 yield ImportResult(
@@ -154,7 +168,13 @@ class RedeyeBulkImporter:
                 )
             except Exception as e:
                 logger.exception("Failed to import %s", product_url)
-                yield ImportResult(url=product_url, ok=False, created=False, updated=False, error=str(e))
+                yield ImportResult(
+                    url=product_url,
+                    ok=False,
+                    created=False,
+                    updated=False,
+                    error=str(e),
+                )
 
     # -------- внутреннее сохранение --------
     def _upsert_record_from_payload(self, payload: dict) -> Record:
@@ -246,7 +266,9 @@ class RedeyeBulkImporter:
             try:
                 self._download_and_attach_cover(rec, image_url)
             except Exception:
-                logger.warning("Failed to fetch cover image: %s", image_url, exc_info=True)
+                logger.warning(
+                    "Failed to fetch cover image: %s", image_url, exc_info=True
+                )
 
         setattr(rec, "_import_created", created)
         setattr(rec, "_import_updated", not created)
@@ -279,13 +301,18 @@ class RedeyeBulkImporter:
         """
         url = (payload.get("source_url") or "").strip()
         if not url:
-            logger.warning("No source_url in payload for rec id=%s (catalog=%s) — skip RecordSource upsert",
-                           rec.id, rec.catalog_number)
+            logger.warning(
+                "No source_url in payload for rec id=%s (catalog=%s) — skip RecordSource upsert",
+                rec.id,
+                rec.catalog_number,
+            )
             return
 
         can_fetch = bool(payload.get("has_audio_previews"))
         try:
-            service = RecordService(discogs_service=DiscogsService(), image_service=ImageService())
+            service = RecordService(
+                discogs_service=DiscogsService(), image_service=ImageService()
+            )
             service._upsert_record_source(  # noqa: SLF001 (используем твой существующий helper)
                 record=rec,
                 provider=RecordSource.Provider.REDEYE,
@@ -293,13 +320,23 @@ class RedeyeBulkImporter:
                 url=url,
                 can_fetch_audio=can_fetch,
             )
-            logger.debug("RecordSource upserted: record=%s provider=redeye role=product_page can_fetch_audio=%s",
-                         rec.id, can_fetch)
+            logger.debug(
+                "RecordSource upserted: record=%s provider=redeye role=product_page can_fetch_audio=%s",
+                rec.id,
+                can_fetch,
+            )
         except Exception:
-            logger.warning("Failed to upsert RecordSource for rec id=%s url=%s", rec.id, url, exc_info=True)
+            logger.warning(
+                "Failed to upsert RecordSource for rec id=%s url=%s",
+                rec.id,
+                url,
+                exc_info=True,
+            )
 
     @staticmethod
-    def _apply_vocab(rec: Record, model_cls, field_name: str, values: list[str]) -> None:
+    def _apply_vocab(
+        rec: Record, model_cls, field_name: str, values: list[str]
+    ) -> None:
         """
         Привязка m2m по списку строк (create-or-get) с дедупом и сохранением порядка.
         """

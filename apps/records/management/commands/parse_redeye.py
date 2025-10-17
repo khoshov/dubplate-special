@@ -6,7 +6,7 @@ Management-команда: парсинг разделов Redeye и (опцио
 Поток данных:
   CLI → RedeyeBulkImporter.crawl_category(...) → RedeyeService.parse_product_by_url(...)
      → payload  → _upsert_record_from_payload(save=True)
-     → create_tracks_for_record(...) 
+     → create_tracks_for_record(...)
 
  БЫСТРЫЙ КОД ЗАПУСКА
 
@@ -24,6 +24,7 @@ docker compose exec django uv run python manage.py parse_redeye `
 
 
 """
+
 from __future__ import annotations
 
 import re
@@ -37,7 +38,6 @@ from ...constants.redeye import REDEYE_URLS
 
 
 logger = logging.getLogger(__name__)
-
 
 
 def _derive_code(url: str | None, genre: str | None, style: str | None) -> str:
@@ -65,7 +65,9 @@ class Command(BaseCommand):
         # Сформируем список доступных кодов (поддерживаем и явный 'code', и авто-derivation)
         codes: List[str] = []
         for c in REDEYE_URLS:
-            code = c.get("code") or _derive_code(c.get("url"), c.get("genre"), c.get("style"))
+            code = c.get("code") or _derive_code(
+                c.get("url"), c.get("genre"), c.get("style")
+            )
             codes.append(code)
 
         parser.add_argument(
@@ -74,21 +76,49 @@ class Command(BaseCommand):
             default="all",
             help="Какую категорию парсить (по умолчанию: all).",
         )
-        parser.add_argument("--limit", type=int, default=None,
-                            help="Максимум карточек на категорию (0/None = без ограничения).")
-        parser.add_argument("--delay", type=float, default=0.8,
-                            help="Базовая задержка между запросами (сек.).")
-        parser.add_argument("--jitter", type=float, default=0.5,
-                            help="Случайная прибавка к задержке (сек.).")
-        parser.add_argument("--max-retries", type=int, default=5,
-                            help="Максимум повторов при сетевых ошибках.")
-        parser.add_argument("--cooldown", type=int, default=120,
-                            help="Охлаждение (сек.) при блокировке (403/429).")
-        parser.add_argument("--stop-on-block", action="store_true",
-                            help="Останавливать парсинг при повторной блокировке.")
-        parser.add_argument("--save", action="store_true",
-                            help="Сохранять результаты в базу данных (иначе печать payload summary).")
-        parser.add_argument("--debug", action="store_true", help="Включить DEBUG-логирование.")
+        parser.add_argument(
+            "--limit",
+            type=int,
+            default=None,
+            help="Максимум карточек на категорию (0/None = без ограничения).",
+        )
+        parser.add_argument(
+            "--delay",
+            type=float,
+            default=0.8,
+            help="Базовая задержка между запросами (сек.).",
+        )
+        parser.add_argument(
+            "--jitter",
+            type=float,
+            default=0.5,
+            help="Случайная прибавка к задержке (сек.).",
+        )
+        parser.add_argument(
+            "--max-retries",
+            type=int,
+            default=5,
+            help="Максимум повторов при сетевых ошибках.",
+        )
+        parser.add_argument(
+            "--cooldown",
+            type=int,
+            default=120,
+            help="Охлаждение (сек.) при блокировке (403/429).",
+        )
+        parser.add_argument(
+            "--stop-on-block",
+            action="store_true",
+            help="Останавливать парсинг при повторной блокировке.",
+        )
+        parser.add_argument(
+            "--save",
+            action="store_true",
+            help="Сохранять результаты в базу данных (иначе печать payload summary).",
+        )
+        parser.add_argument(
+            "--debug", action="store_true", help="Включить DEBUG-логирование."
+        )
 
     def handle(self, *args, **options):
         if options["debug"]:
@@ -106,7 +136,9 @@ class Command(BaseCommand):
         category_code = options["category"]
         selected = []
         for cfg in REDEYE_URLS:
-            code = cfg.get("code") or _derive_code(cfg.get("url"), cfg.get("genre"), cfg.get("style"))
+            code = cfg.get("code") or _derive_code(
+                cfg.get("url"), cfg.get("genre"), cfg.get("style")
+            )
             if category_code == "all" or code == category_code:
                 selected.append(cfg)
 
@@ -121,7 +153,11 @@ class Command(BaseCommand):
             style = cfg.get("style")
             code = cfg.get("code") or _derive_code(url, genre, style)
 
-            self.stdout.write(self.style.MIGRATE_HEADING(f"[{code}] {url} [{genre or '-'} / {style or '-'}]"))
+            self.stdout.write(
+                self.style.MIGRATE_HEADING(
+                    f"[{code}] {url} [{genre or '-'} / {style or '-'}]"
+                )
+            )
 
             for res in importer.crawl_category(
                 url,
@@ -137,7 +173,11 @@ class Command(BaseCommand):
                     elif res.updated:
                         total_updated += 1
 
-                    marker = "CREATED" if res.created else ("UPDATED" if res.updated else "OK")
+                    marker = (
+                        "CREATED"
+                        if res.created
+                        else ("UPDATED" if res.updated else "OK")
+                    )
                     s = res.summary or {}
                     self.stdout.write(
                         f"[{marker}] {res.url}\n"
@@ -151,7 +191,9 @@ class Command(BaseCommand):
                     )
                 else:
                     total_err += 1
-                    self.stdout.write(self.style.WARNING(f"[ERROR] {res.url} :: {res.error}"))
+                    self.stdout.write(
+                        self.style.WARNING(f"[ERROR] {res.url} :: {res.error}")
+                    )
 
         self.stdout.write(
             self.style.SUCCESS(

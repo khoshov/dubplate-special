@@ -21,6 +21,7 @@ from sorl.thumbnail import ImageField
 
 # --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
 
+
 def record_upload_to(instance, filename):
     """
     Back-compat для миграции 0007.
@@ -63,7 +64,9 @@ class PathByInstance:
 
         new_filename = f"{safe_title}{ext}"
 
-        return os.path.join(app_label, model_name, self.field_name, str(obj_id), new_filename)
+        return os.path.join(
+            app_label, model_name, self.field_name, str(obj_id), new_filename
+        )
 
 
 class GenreChoices(models.TextChoices):
@@ -154,6 +157,7 @@ class Label(TimeStampedModel):
 
 class Genre(TimeStampedModel):
     """Модель жанра (справочник)."""
+
     name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = GenreManager()
@@ -169,6 +173,7 @@ class Genre(TimeStampedModel):
 
 class Style(TimeStampedModel):
     """Модель стиля (справочник)."""
+
     name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = StyleManager()
@@ -185,7 +190,12 @@ class Style(TimeStampedModel):
 class Format(TimeStampedModel):
     """Модель формата."""
 
-    name = models.CharField(max_length=100, unique=True, choices=FormatChoices.choices, verbose_name=_("Name"))
+    name = models.CharField(
+        max_length=100,
+        unique=True,
+        choices=FormatChoices.choices,
+        verbose_name=_("Name"),
+    )
 
     objects = FormatManager()
 
@@ -260,12 +270,20 @@ class Record(TimeStampedModel):
         self.refresh_expected_flag()
         super().save(*args, **kwargs)
 
-    release_year = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Год релиза")
-    release_month = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="Месяц релиза")
-    release_day = models.PositiveSmallIntegerField(null=True, blank=True, verbose_name="День релиза")
+    release_year = models.PositiveSmallIntegerField(
+        null=True, blank=True, verbose_name="Год релиза"
+    )
+    release_month = models.PositiveSmallIntegerField(
+        null=True, blank=True, verbose_name="Месяц релиза"
+    )
+    release_day = models.PositiveSmallIntegerField(
+        null=True, blank=True, verbose_name="День релиза"
+    )
 
     # ФЛАГ для быстрого фильтра и сортировок
-    is_expected = models.BooleanField(default=False, db_index=True, verbose_name="Предзаказ (ожидается)")
+    is_expected = models.BooleanField(
+        default=False, db_index=True, verbose_name="Предзаказ (ожидается)"
+    )
 
     genres = models.ManyToManyField(
         Genre, related_name="records", verbose_name=_("Genres")
@@ -354,7 +372,10 @@ class RecordSource(models.Model):
     class Role(models.TextChoices):
         PRODUCT_PAGE = "product_page", "Product page"  # страница карточки товара (UI)
         API = "api", "API"  # программный ресурс (например, Discogs API)
-        LISTING = "listing", "Listing"  # страница списка/категории (обычно не нужна для mp3)
+        LISTING = (
+            "listing",
+            "Listing",
+        )  # страница списка/категории (обычно не нужна для mp3)
 
     record = models.ForeignKey(
         "Record",
@@ -452,7 +473,9 @@ class Track(TimeStampedModel):
         max_length=10,
         blank=True,
         verbose_name=_("Position"),
-        help_text=_("Original position from the source (e.g., 'A1', 'B2'); may be empty."),
+        help_text=_(
+            "Original position from the source (e.g., 'A1', 'B2'); may be empty."
+        ),
     )
 
     # Главный числовой порядок (1..N), независимый от сторон.
@@ -462,7 +485,9 @@ class Track(TimeStampedModel):
         default=0,
         db_index=True,
         verbose_name=_("Order"),
-        help_text=_("Sequential order across the release (1..N), independent of sides."),
+        help_text=_(
+            "Sequential order across the release (1..N), independent of sides."
+        ),
     )
 
     title = models.CharField(max_length=255, verbose_name=_("Track title"))

@@ -377,14 +377,11 @@ CORS_ALLOW_HEADERS = [
 ]
 
 
-
-
 DJANGO_LOG_LEVEL = os.getenv("DJANGO_LOG_LEVEL", "INFO")  # можно переключать через env
 
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-
     "formatters": {
         "simple": {
             "format": "[{levelname}] {asctime} {name}: {message}",
@@ -392,7 +389,6 @@ LOGGING = {
             "datefmt": "%H:%M:%S",
         },
     },
-
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
@@ -400,7 +396,6 @@ LOGGING = {
             "formatter": "simple",
         },
     },
-
     "loggers": {
         # Базовые django-логи (минимум INFO, чтоб не захламлять DEBUG'ом из ORM)
         "django": {
@@ -423,7 +418,7 @@ LOGGING = {
         # Точка, где мы логируем парсер
         "records.services.redeye": {
             "handlers": ["console"],
-            "level": "DEBUG",          # можно поднять до DEBUG на время
+            "level": "DEBUG",  # можно поднять до DEBUG на время
             "propagate": False,
         },
     },

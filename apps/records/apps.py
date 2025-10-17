@@ -9,6 +9,7 @@ def _bootstrap_vocab(sender, **kwargs):
     - нормализуем регистр 'Not specified' (склеиваем case-insensitive дубликаты),
     - удаляем только лишние дубликаты 'Not specified' (остальные значения не трогаем).
     """
+
     from .models import Genre, Style, GenreChoices, StyleChoices, Record
 
     CANON = "Not specified"
@@ -25,7 +26,9 @@ def _bootstrap_vocab(sender, **kwargs):
 
     # --- нормализация/склейка только для 'Not specified' ---
     def merge_not_specified(Model, through, fk_name):
-        candidates = list(Model.objects.filter(name__iexact="not specified").order_by("id"))
+        candidates = list(
+            Model.objects.filter(name__iexact="not specified").order_by("id")
+        )
         if len(candidates) <= 1:
             # если один и он не канонический — переименуем
             if candidates and candidates[0].name != CANON:
@@ -37,11 +40,19 @@ def _bootstrap_vocab(sender, **kwargs):
         victims = [x for x in candidates if x.id != keeper.id]
 
         # удалить дублирующие связи и переназначить остальные на keeper
-        keeper_rec_ids = set(through.objects.filter(**{fk_name: keeper}).values_list("record_id", flat=True))
+        keeper_rec_ids = set(
+            through.objects.filter(**{fk_name: keeper}).values_list(
+                "record_id", flat=True
+            )
+        )
         for v in victims:
             if keeper_rec_ids:
-                through.objects.filter(**{fk_name + "_id": v.id, "record_id__in": keeper_rec_ids}).delete()
-            through.objects.filter(**{fk_name + "_id": v.id}).update(**{fk_name + "_id": keeper.id})
+                through.objects.filter(
+                    **{fk_name + "_id": v.id, "record_id__in": keeper_rec_ids}
+                ).delete()
+            through.objects.filter(**{fk_name + "_id": v.id}).update(
+                **{fk_name + "_id": keeper.id}
+            )
 
         # удалить жертвы
         Model.objects.filter(id__in=[v.id for v in victims]).delete()

@@ -37,16 +37,16 @@ class RedeyeListingScraper:
     )
 
     def __init__(
-            self,
-            *,
-            user_agent: Optional[str] = None,
-            delay_sec: float = 0.6,
-            timeout: float = 15.0,
-            session: Optional[requests.Session] = None,
-            jitter_sec: float = 0.5,
-            max_retries: int = 4,
-            cooldown_sec: int = 90,
-            stop_on_block: bool = False,
+        self,
+        *,
+        user_agent: Optional[str] = None,
+        delay_sec: float = 0.6,
+        timeout: float = 15.0,
+        session: Optional[requests.Session] = None,
+        jitter_sec: float = 0.5,
+        max_retries: int = 4,
+        cooldown_sec: int = 90,
+        stop_on_block: bool = False,
     ) -> None:
         self.delay_sec = max(0.0, float(delay_sec))
         self.jitter_sec = max(0.0, float(jitter_sec))
@@ -60,17 +60,21 @@ class RedeyeListingScraper:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
         ]
-        self.session.headers.update({
-            "User-Agent": user_agent or random.choice(self._user_agents),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-GB,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Connection": "keep-alive",
-        })
+        self.session.headers.update(
+            {
+                "User-Agent": user_agent or random.choice(self._user_agents),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-GB,en;q=0.9",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
 
     # ---------- публичный API ----------
-    def iter_product_urls(self, category_url: str, limit: Optional[int] = None) -> Iterator[str]:
+    def iter_product_urls(
+        self, category_url: str, limit: Optional[int] = None
+    ) -> Iterator[str]:
         """
         Обходит ВСЕ страницы категории и yield'ит абсолютные URL карточек товаров.
         :param category_url: абсолютный URL страницы категории
@@ -87,7 +91,9 @@ class RedeyeListingScraper:
             logger.info("fetch listing page %s: %s", current_page_num, current_url)
             html = self._fetch(current_url)
             if not html:
-                logger.warning("skip page %s (no HTML / bad response)", current_page_num)
+                logger.warning(
+                    "skip page %s (no HTML / bad response)", current_page_num
+                )
                 break
 
             soup = BeautifulSoup(html, "html.parser")
@@ -95,7 +101,6 @@ class RedeyeListingScraper:
             # 1) собрать ссылки карточек на текущей странице
             page_count = 0
             for href in self._extract_product_hrefs(soup):
-
                 abs_url = urljoin(base, href)
                 key = self._canon_product_key(abs_url)
                 if key in seen:
@@ -110,10 +115,17 @@ class RedeyeListingScraper:
                     logger.info("limit reached: %s items", collected)
                     return
 
-            logger.info("page %s: collected %s items (total %s)", current_page_num, page_count, collected)
+            logger.info(
+                "page %s: collected %s items (total %s)",
+                current_page_num,
+                page_count,
+                collected,
+            )
 
             # 2) сначала — строгая логика #pageLinks
-            has_pagelinks, next_abs_from_pagelinks = self._next_via_pagelinks(soup, current_url, base)
+            has_pagelinks, next_abs_from_pagelinks = self._next_via_pagelinks(
+                soup, current_url, base
+            )
 
             if has_pagelinks:
                 # Если есть #pageLinks и в нём НЕТ следующей страницы — стоп
@@ -122,7 +134,9 @@ class RedeyeListingScraper:
                     break
                 # Идём строго по ссылке из #pageLinks
                 current_url = next_abs_from_pagelinks
-                current_page_num = (self._extract_page_number(current_url) or (current_page_num + 1))
+                current_page_num = self._extract_page_number(current_url) or (
+                    current_page_num + 1
+                )
                 self._sleep_polite()
                 continue
 
@@ -132,22 +146,36 @@ class RedeyeListingScraper:
             if not next_rel:
                 guessed = self._guess_next_page_path(current_url, current_page_num)
                 if guessed:
-                    logger.debug("no explicit pager, try guessed next page: %s", guessed)
+                    logger.debug(
+                        "no explicit pager, try guessed next page: %s", guessed
+                    )
                     html_next = self._fetch(guessed)
                     if html_next and self._page_has_products(html_next):
-                        next_abs = guessed if re.match(r"^https?://", guessed, re.I) else urljoin(base, guessed)
+                        next_abs = (
+                            guessed
+                            if re.match(r"^https?://", guessed, re.I)
+                            else urljoin(base, guessed)
+                        )
             else:
-                next_abs = next_rel if re.match(r"^https?://", next_rel, re.I) else urljoin(base, next_rel)
+                next_abs = (
+                    next_rel
+                    if re.match(r"^https?://", next_rel, re.I)
+                    else urljoin(base, next_rel)
+                )
 
             # 4) переход на следующую страницу или остановка
             if next_abs:
                 current_url = next_abs
-                current_page_num = (self._extract_page_number(current_url) or (current_page_num + 1))
+                current_page_num = self._extract_page_number(current_url) or (
+                    current_page_num + 1
+                )
                 self._sleep_polite()
             else:
                 # Доп. предохранитель: если на текущей странице 0 товаров — тоже стоп
                 if page_count == 0:
-                    logger.info("pagination finished: no products on page (likely beyond last)")
+                    logger.info(
+                        "pagination finished: no products on page (likely beyond last)"
+                    )
                 else:
                     logger.info("pagination finished: no next page detected")
                 break
@@ -178,19 +206,33 @@ class RedeyeListingScraper:
                 # мягкие сбои (5xx) — пробуем с бэкофом
                 if 500 <= status < 600:
                     backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                    logger.warning("server %s for %s (attempt %s/%s), backoff=%.1fs",
-                                   status, url, attempt, self.max_retries, backoff)
+                    logger.warning(
+                        "server %s for %s (attempt %s/%s), backoff=%.1fs",
+                        status,
+                        url,
+                        attempt,
+                        self.max_retries,
+                        backoff,
+                    )
                     time.sleep(backoff)
                     continue
 
                 # подозрение на блок
                 if status in (403, 429):
-                    logger.warning("possible block %s for %s (attempt %s/%s) → cooldown %ss",
-                                   status, url, attempt, self.max_retries, self.cooldown_sec)
+                    logger.warning(
+                        "possible block %s for %s (attempt %s/%s) → cooldown %ss",
+                        status,
+                        url,
+                        attempt,
+                        self.max_retries,
+                        self.cooldown_sec,
+                    )
                     time.sleep(self.cooldown_sec)
                     if attempt == self.max_retries:
                         if self.stop_on_block:
-                            logger.error("stop_on_block=True → прекращаем работу на %s", url)
+                            logger.error(
+                                "stop_on_block=True → прекращаем работу на %s", url
+                            )
                             return None
                         else:
                             logger.warning("skip blocked page: %s", url)
@@ -205,11 +247,22 @@ class RedeyeListingScraper:
             except requests.RequestException as e:
                 last_exc = e
                 backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                logger.warning("request error for %s: %s (attempt %s/%s), backoff=%.1fs",
-                               url, e, attempt, self.max_retries, backoff)
+                logger.warning(
+                    "request error for %s: %s (attempt %s/%s), backoff=%.1fs",
+                    url,
+                    e,
+                    attempt,
+                    self.max_retries,
+                    backoff,
+                )
                 time.sleep(backoff)
 
-        logger.error("giving up on %s after %s attempts; last error: %s", url, self.max_retries, last_exc)
+        logger.error(
+            "giving up on %s after %s attempts; last error: %s",
+            url,
+            self.max_retries,
+            last_exc,
+        )
         return None
 
     def _sleep_polite(self):
@@ -308,7 +361,9 @@ class RedeyeListingScraper:
         return False
 
     # --- строгая пагинация по #pageLinks ---
-    def _next_via_pagelinks(self, soup: BeautifulSoup, current_url: str, base: str) -> Tuple[bool, Optional[str]]:
+    def _next_via_pagelinks(
+        self, soup: BeautifulSoup, current_url: str, base: str
+    ) -> Tuple[bool, Optional[str]]:
         """
         Если на странице есть <div id="pageLinks">, вычисляет ссылку на следующую страницу.
         Возвращает (has_pagelinks: bool, next_abs_url_or_none).
@@ -323,7 +378,9 @@ class RedeyeListingScraper:
         if a_next:
             href = a_next["href"].strip()
             if href:
-                next_abs = href if re.match(r"^https?://", href, re.I) else urljoin(base, href)
+                next_abs = (
+                    href if re.match(r"^https?://", href, re.I) else urljoin(base, href)
+                )
                 logger.debug("pageLinks: next via button -> %s", next_abs)
                 return True, next_abs
 
@@ -346,7 +403,11 @@ class RedeyeListingScraper:
             if cur_idx is not None and (cur_idx + 1) < len(options):
                 next_val = (options[cur_idx + 1].get("value") or "").strip()
                 if next_val:
-                    next_abs = next_val if re.match(r"^https?://", next_val, re.I) else urljoin(base, next_val)
+                    next_abs = (
+                        next_val
+                        if re.match(r"^https?://", next_val, re.I)
+                        else urljoin(base, next_val)
+                    )
                     logger.debug("pageLinks: next via select -> %s", next_abs)
                     return True, next_abs
 
@@ -367,7 +428,9 @@ class RedeyeListingScraper:
 
 
 # Удобный функциональный интерфейс
-def iterate_category_urls(category_url: str, *, limit: Optional[int] = None, delay_sec: float = 0.6) -> Iterator[str]:
+def iterate_category_urls(
+    category_url: str, *, limit: Optional[int] = None, delay_sec: float = 0.6
+) -> Iterator[str]:
     scraper = RedeyeListingScraper(delay_sec=delay_sec)
     yield from scraper.iter_product_urls(category_url, limit=limit)
 
@@ -402,25 +465,45 @@ def _cli():
         help="URL страницы категории, например: https://www.redeyerecords.co.uk/bass-music/pre-orders",
     )
     parser.add_argument(
-        "--limit", type=int, default=None,
+        "--limit",
+        type=int,
+        default=None,
         help="Максимум ссылок для вывода (по умолчанию — без ограничения)",
     )
     parser.add_argument(
-        "--delay", type=float, default=0.6,
+        "--delay",
+        type=float,
+        default=0.6,
         help="Задержка между страницами (сек.)",
     )
     parser.add_argument(
-        "--timeout", type=float, default=15.0,
+        "--timeout",
+        type=float,
+        default=15.0,
         help="HTTP таймаут (сек.)",
     )
     parser.add_argument(
-        "--debug", action="store_true",
+        "--debug",
+        action="store_true",
         help="Режим отладки (DEBUG): печатать каждую найденную ссылку",
     )
-    parser.add_argument("--jitter", type=float, default=0.5, help="Случайная прибавка к задержке (сек.)")
-    parser.add_argument("--max-retries", type=int, default=4, help="Число повторов при сетевых/серверных ошибках")
-    parser.add_argument("--cooldown", type=int, default=90, help="Охлаждение при 403/429 (сек.)")
-    parser.add_argument("--stop-on-block", action="store_true", help="Остановиться при повторном 403/429")
+    parser.add_argument(
+        "--jitter", type=float, default=0.5, help="Случайная прибавка к задержке (сек.)"
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=4,
+        help="Число повторов при сетевых/серверных ошибках",
+    )
+    parser.add_argument(
+        "--cooldown", type=int, default=90, help="Охлаждение при 403/429 (сек.)"
+    )
+    parser.add_argument(
+        "--stop-on-block",
+        action="store_true",
+        help="Остановиться при повторном 403/429",
+    )
     args = parser.parse_args()
 
     level = logging.DEBUG if args.debug else logging.INFO

@@ -15,8 +15,18 @@ from .parsers.redeye_tracks_parser import parse_redeye_tracks
 from .utils import normalize_redeye_url
 
 _MONTHS = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
 }
 
 
@@ -36,7 +46,6 @@ _MONTHS_EN_TO_RU = {
 }
 
 logger = logging.getLogger(__name__)
-
 
 
 def _format_expected_date_ru(text: str) -> Optional[str]:
@@ -96,8 +105,15 @@ class RedeyeService:
     # Кат.№ — короткий токен из букв/цифр/дефиса, 2..24 символа
     CAT_RE = re.compile(r"\b([A-Z0-9\-]{2,24})\b", re.I)
 
-    def __init__(self, *, delay_sec: float = 0.6, jitter_sec: float = 0.5,
-                 max_retries: int = 4, cooldown_sec: int = 90, stop_on_block: bool = False):
+    def __init__(
+        self,
+        *,
+        delay_sec: float = 0.6,
+        jitter_sec: float = 0.5,
+        max_retries: int = 4,
+        cooldown_sec: int = 90,
+        stop_on_block: bool = False,
+    ):
         self.session = requests.Session()
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
@@ -161,8 +177,12 @@ class RedeyeService:
         if not found_cat:
             payload["catalog_number"] = req_cat
         elif found_cat != req_cat:
-            logger.warning("[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
-                           req_cat, found_cat, norm_url)
+            logger.warning(
+                "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
+                req_cat,
+                found_cat,
+                norm_url,
+            )
 
         return RedeyeFetchResult(source_url=norm_url, payload=payload)
 
@@ -184,13 +204,14 @@ class RedeyeService:
         # Подстраховка: если каталог.№ не извлёкся, не заполняем тут — пусть остаётся как распарсилось
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
-
     # ---------------- NETWORK ----------------
 
     def _polite_sleep(self):
         time.sleep(self.delay_sec + random.uniform(0.0, self.jitter_sec))
 
-    def _get(self, url: str, *, referer: Optional[str] = None, slow: bool = False) -> str:
+    def _get(
+        self, url: str, *, referer: Optional[str] = None, slow: bool = False
+    ) -> str:
         last_exc = None
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -209,14 +230,26 @@ class RedeyeService:
 
                 if 500 <= status < 600:
                     backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                    logger.warning("server %s for %s (attempt %s/%s) backoff=%.1fs",
-                                   status, url, attempt, self.max_retries, backoff)
+                    logger.warning(
+                        "server %s for %s (attempt %s/%s) backoff=%.1fs",
+                        status,
+                        url,
+                        attempt,
+                        self.max_retries,
+                        backoff,
+                    )
                     time.sleep(backoff)
                     continue
 
                 if status in (403, 429):
-                    logger.warning("possible block %s for %s → cooldown %ss (attempt %s/%s)",
-                                   status, url, self.cooldown_sec, attempt, self.max_retries)
+                    logger.warning(
+                        "possible block %s for %s → cooldown %ss (attempt %s/%s)",
+                        status,
+                        url,
+                        self.cooldown_sec,
+                        attempt,
+                        self.max_retries,
+                    )
                     time.sleep(self.cooldown_sec)
                     if attempt == self.max_retries:
                         if self.stop_on_block:
@@ -231,8 +264,14 @@ class RedeyeService:
             except requests.RequestException as e:
                 last_exc = e
                 backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                logger.warning("request error for %s: %s (attempt %s/%s) backoff=%.1fs",
-                               url, e, attempt, self.max_retries, backoff)
+                logger.warning(
+                    "request error for %s: %s (attempt %s/%s) backoff=%.1fs",
+                    url,
+                    e,
+                    attempt,
+                    self.max_retries,
+                    backoff,
+                )
                 time.sleep(backoff)
 
         if last_exc:
@@ -240,7 +279,9 @@ class RedeyeService:
         return ""  # мягкий skip при неустранимом блоке
 
     def _resolve_product_url_by_catno(self, cat: str) -> Optional[str]:
-        search_url = f"{self.BASE}/search/?searchType=CAT&keywords={requests.utils.quote(cat)}"
+        search_url = (
+            f"{self.BASE}/search/?searchType=CAT&keywords={requests.utils.quote(cat)}"
+        )
         logger.info("[Redeye] search URL: %s", search_url)
         html_text = self._get(search_url, referer=f"{self.BASE}/", slow=True)
 
@@ -309,7 +350,9 @@ class RedeyeService:
         # 8) Признак наличия превью-плеера (добавлено)
         #    Селектор согласован с capture.py: BTN_QUERY = ".play a.btn-play[data-sample]"
         #    Если на странице есть такие кнопки — вероятнее всего, можно собирать mp3-превью.
-        has_audio_previews: bool = bool(soup.select_one(".play a.btn-play[data-sample]"))
+        has_audio_previews: bool = bool(
+            soup.select_one(".play a.btn-play[data-sample]")
+        )
 
         # 9) Форматы: на Redeye нет структурированных данных → не заполняем
         formats: List[str] = []
@@ -326,8 +369,14 @@ class RedeyeService:
         logger.info(
             "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s "
             "avail=%s img=%s has_audio_previews=%s",
-            record_title or title_text, artists, label_name, catno, price,
-            availability, bool(image_url), has_audio_previews,
+            record_title or title_text,
+            artists,
+            label_name,
+            catno,
+            price,
+            availability,
+            bool(image_url),
+            has_audio_previews,
         )
 
         return {
@@ -369,7 +418,11 @@ class RedeyeService:
     def _split_artist_title(full: str) -> Tuple[List[str], Optional[str]]:
         if " - " in full:
             artist_part, title_part = full.split(" - ", 1)
-            artists = [a.strip() for a in re.split(r"\s*(?:,|&|/)\s*", artist_part) if a.strip()]
+            artists = [
+                a.strip()
+                for a in re.split(r"\s*(?:,|&|/)\s*", artist_part)
+                if a.strip()
+            ]
             return artists, title_part.strip()
         return [], full
 
@@ -412,7 +465,9 @@ class RedeyeService:
                     val = span.get_text(strip=True)
                     return val or None
                 # запасной путь: вырезать префикс "Catalogue No."
-                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
+                tail = re.sub(
+                    r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE
+                ).strip()
                 return tail or None
         return None
 
@@ -428,15 +483,23 @@ class RedeyeService:
                 if span:
                     val = span.get_text(strip=True)
                     return val or None
-                tail = re.sub(r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE).strip()
+                tail = re.sub(
+                    r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE
+                ).strip()
                 return tail or None
         return None
 
-    def _extract_price_and_availability(self, soup: BeautifulSoup) -> Tuple[Optional[Decimal], Optional[str]]:
+    def _extract_price_and_availability(
+        self, soup: BeautifulSoup
+    ) -> Tuple[Optional[Decimal], Optional[str]]:
         text = soup.get_text(" ", strip=True)
 
         # приоритет: "£X ( £Y inc.vat )" → берём X
-        m = re.search(r"£\s*(\d+(?:\.\d{1,2})?)\s*\(\s*£\s*\d+(?:\.\d{1,2})?\s*inc\.?\s*vat", text, re.I)
+        m = re.search(
+            r"£\s*(\d+(?:\.\d{1,2})?)\s*\(\s*£\s*\d+(?:\.\d{1,2})?\s*inc\.?\s*vat",
+            text,
+            re.I,
+        )
         if m:
             price = Decimal(m.group(1))
         else:
@@ -482,10 +545,3 @@ class RedeyeService:
             if src:
                 return _norm(src)
         return None
-
-
-
-
-
-
-

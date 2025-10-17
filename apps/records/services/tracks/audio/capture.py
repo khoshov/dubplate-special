@@ -11,6 +11,7 @@
   https://sounds.redeyerecords.co.uk/<number><letter>.mp3, где prefix/number берём из уже пойманных URL
 - Логи на русском; подробности — на DEBUG
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,8 +21,14 @@ from collections import OrderedDict
 from typing import Dict, List, Optional
 
 import requests
-from playwright.sync_api import Page, TimeoutError as PWTimeout, Error as PWError, sync_playwright
+from playwright.sync_api import (
+    Page,
+    TimeoutError as PWTimeout,
+    Error as PWError,
+    sync_playwright,
+)
 from ...providers.redeye.utils import normalize_redeye_url
+
 logger = logging.getLogger(__name__)
 
 # --- эвристики для отсева и распознавания аудио ---
@@ -34,7 +41,7 @@ BTN_QUERY = ".play a.btn-play[data-sample]"
 COOKIE_SELECTORS = (
     'button:has-text("Accept")',
     'button:has-text("I Agree")',
-    'text=Accept all',
+    "text=Accept all",
     'button:has-text("OK")',
     'button[aria-label="Accept"]',
 )
@@ -47,6 +54,7 @@ PER_CLICK_WAIT_TICK_MS = 120.0
 # ---------------------------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ---------------------------------------------------------------------------
+
 
 def _dismiss_cookie_banners(page: Page) -> None:
     """Закрыть cookie-баннер (если есть). Ошибки игнорируем."""
@@ -69,7 +77,9 @@ def _is_audio_like(resp) -> bool:
     ct = str(headers.get("content-type", "")).lower()
     if status not in MEDIA_OK_STATUSES:
         return False
-    return any(h in ct for h in MEDIA_CT_HINTS) or any(h in url for h in MEDIA_URL_HINTS)
+    return any(h in ct for h in MEDIA_CT_HINTS) or any(
+        h in url for h in MEDIA_URL_HINTS
+    )
 
 
 def _wire_sniffer(page: Page) -> "OrderedDict[str, None]":
@@ -161,7 +171,9 @@ def _extract_redeye_no(html: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _fallback_fill_missing(html: str, urls_ordered: List[str], letters: List[str]) -> List[str]:
+def _fallback_fill_missing(
+    html: str, urls_ordered: List[str], letters: List[str]
+) -> List[str]:
     """
     Достроить недостающие mp3 по буквам (если их меньше, чем кнопок).
     Префикс и номер релиза берём сначала из уже пойманных URL, затем — из HTML, иначе — стандартный префикс.
@@ -210,7 +222,9 @@ def _fallback_fill_missing(html: str, urls_ordered: List[str], letters: List[str
     return _map_urls_by_letters(out, letters)
 
 
-def _wait_new_urls(bag: Dict[str, None], before: int, timeout_sec: float, page: Page) -> None:
+def _wait_new_urls(
+    bag: Dict[str, None], before: int, timeout_sec: float, page: Page
+) -> None:
     """Ожидаем появления новых URL в сниффере после клика по кнопке."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -222,6 +236,7 @@ def _wait_new_urls(bag: Dict[str, None], before: int, timeout_sec: float, page: 
 # ---------------------------------------------------------------------------
 # ОСНОВНАЯ ФУНКЦИЯ СБОРА
 # ---------------------------------------------------------------------------
+
 
 def collect_redeye_media_urls(
     page_url: str,
@@ -265,7 +280,9 @@ def collect_redeye_media_urls(
             letters = _btn_letters(page)  # например ['a','b','c','d']
             total = len(letters)
             if total == 0:
-                logger.warning("[capture] на странице нет кнопок плеера (%s)", BTN_QUERY)
+                logger.warning(
+                    "[capture] на странице нет кнопок плеера (%s)", BTN_QUERY
+                )
                 return []
 
             bag = _wire_sniffer(page)
@@ -311,7 +328,9 @@ def collect_redeye_media_urls(
                 html = page.content()
                 urls_ordered = _fallback_fill_missing(html, urls_ordered, letters)
                 if debug:
-                    logger.debug("[capture] HTML-сниппет (первые 1800 символов): %s", html[:1800])
+                    logger.debug(
+                        "[capture] HTML-сниппет (первые 1800 символов): %s", html[:1800]
+                    )
 
     except Exception as e:
         logger.exception("[capture] непредвиденная ошибка сбора: %s", e)
@@ -324,7 +343,12 @@ def collect_redeye_media_urls(
             pass
 
     elapsed = time.monotonic() - t0
-    logger.info("[capture] завершено: %d/%d ссылок; время=%.1fs", len(urls_ordered), total, elapsed)
+    logger.info(
+        "[capture] завершено: %d/%d ссылок; время=%.1fs",
+        len(urls_ordered),
+        total,
+        elapsed,
+    )
     return urls_ordered
 
 

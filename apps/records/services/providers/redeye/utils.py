@@ -29,7 +29,7 @@ def normalize_redeye_url(url: str) -> str:
     bad_prefix = f"{REDEYE_HOST}/"
     if path.lstrip("/").startswith(bad_prefix):
         # lstrip('/') чтобы корректно срезать даже если было несколько слэшей
-        path = "/" + path.lstrip("/")[len(bad_prefix):]
+        path = "/" + path.lstrip("/")[len(bad_prefix) :]
 
     # 3) сжать множественные слэши в path
     while "//" in path:
