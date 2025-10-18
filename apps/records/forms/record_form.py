@@ -6,7 +6,7 @@ from typing import Callable, Optional
 from django import forms
 from django.core.exceptions import ValidationError
 
-from .helpers import ApplyFieldsMixin
+from .mixins import ApplyFieldsMixin
 from .validators import RecordIdentifierValidator
 from ..constants.forms import SOURCE_DISCOGS, SOURCE_REDEYE, SOURCE_CHOICES
 from ..models import Record

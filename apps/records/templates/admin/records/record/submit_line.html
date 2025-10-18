@@ -2,27 +2,22 @@
 
 <div class="submit-row">
   {% if show_save %}<input type="submit" value="{% trans 'Save' %}" class="default" name="_save">{% endif %}
-
   {% if show_save_as_new %}<input type="submit" value="{% trans 'Save as new' %}" name="_saveasnew">{% endif %}
   {% if show_save_and_add_another %}<input type="submit" value="{% trans 'Save and add another' %}" name="_addanother">{% endif %}
   {% if show_save_and_continue %}<input type="submit" value="{% trans 'Save and continue editing' %}" name="_continue">{% endif %}
 
   {% if change and original.pk %}
-    {% url 'admin:records_record_refresh' original.pk as refresh_url %}
+    {% url 'admin:records_record_redeye_mp3_download' original.pk as refresh_url %}
     <span class="record-refresh-tools">
       <input
         type="submit"
-        name="_refresh"
-        value="Обновить данные"
+        name="_refresh_audio"
+        value="Закачать mp3 с Redeye"
         class="button"
         formmethod="post"
         formaction="{{ refresh_url }}"
         formnovalidate
       >
-      <label class="record-refresh-force">
-        <input type="checkbox" name="_refresh_force">
-        <span class="record-refresh-force__text">Перекачать аудио</span>
-      </label>
     </span>
   {% endif %}
 
