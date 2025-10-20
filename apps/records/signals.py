@@ -6,6 +6,7 @@
 Важно: перенос файлов из временных путей НЕ выполняется. Вместо этого
 сохранение обложки организовано двухфазно на уровне админки (см. RecordAdmin).
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,7 +49,9 @@ def _safe_rmdir(storage: Any, rel_dir: str) -> None:
 
 
 @receiver(pre_save, sender=Record)
-def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs: Any) -> None:
+def cleanup_old_cover_on_change(
+    sender: type[Record], instance: Record, **kwargs: Any
+) -> None:
     """
     Удаляет старую обложку при её замене (сравнение по относительному пути .name).
     Новые записи (без pk) не затрагиваются.
@@ -61,7 +64,9 @@ def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs
     except Record.DoesNotExist:
         return
     except Exception as exc:
-        logger.debug("cleanup_old_cover_on_change: не удалось загрузить старую версию: %s", exc)
+        logger.debug(
+            "cleanup_old_cover_on_change: не удалось загрузить старую версию: %s", exc
+        )
         return
 
     old_file = getattr(old, "cover_image", None)
@@ -75,7 +80,9 @@ def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs
 
 
 @receiver(post_delete, sender=Record)
-def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: Any) -> None:
+def cleanup_cover_on_delete(
+    sender: type[Record], instance: Record, **kwargs: Any
+) -> None:
     """Удаляет файл обложки и подчищает пустые директории при удалении записи."""
     f = getattr(instance, "cover_image", None)
     if not f or not getattr(f, "name", ""):
@@ -87,7 +94,9 @@ def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: An
     _safe_storage_delete(storage, rel_path)
 
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "cover_image"])
+    stop_at = "/".join(
+        [instance._meta.app_label, instance._meta.model_name, "cover_image"]
+    )
 
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)
@@ -95,7 +104,9 @@ def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: An
 
 
 @receiver(post_delete, sender=Track)
-def cleanup_audio_on_delete(sender: type[Track], instance: Track, **kwargs: Any) -> None:
+def cleanup_audio_on_delete(
+    sender: type[Track], instance: Track, **kwargs: Any
+) -> None:
     """Удаляет файл превью-аудио и подчищает пустые директории при удалении трека."""
     f = getattr(instance, "audio_preview", None)
     if not f or not getattr(f, "name", ""):
@@ -107,7 +118,9 @@ def cleanup_audio_on_delete(sender: type[Track], instance: Track, **kwargs: Any)
     _safe_storage_delete(storage, rel_path)
 
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "audio_preview"])
+    stop_at = "/".join(
+        [instance._meta.app_label, instance._meta.model_name, "audio_preview"]
+    )
 
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)

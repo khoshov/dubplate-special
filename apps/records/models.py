@@ -25,6 +25,7 @@ class PathByInstance(_PathByInstance):
     с существующими миграциями (сохраняем dotted-path apps.records.models.PathByInstance).
     Новой логики здесь нет.
     """
+
     pass
 
 

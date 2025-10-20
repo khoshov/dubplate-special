@@ -34,7 +34,9 @@ class PathByInstance:
         base_name, ext = os.path.splitext(filename or "")
         ext = (ext or ".bin").lower()
 
-        title = getattr(instance, "title", "") or getattr(instance, "name", "") or "file"
+        title = (
+            getattr(instance, "title", "") or getattr(instance, "name", "") or "file"
+        )
         safe_title = slugify(title) or "file"
 
         new_filename = f"{safe_title}{ext}"
@@ -45,6 +47,10 @@ class PathByInstance:
                     f"{self.__class__.__name__}: у instance нет pk — "
                     f"используйте двухфазное сохранение (сначала save(), затем запись файла)."
                 )
-            return os.path.join(app_label, model_name, self.field_name, "_new", new_filename)
+            return os.path.join(
+                app_label, model_name, self.field_name, "_new", new_filename
+            )
 
-        return os.path.join(app_label, model_name, self.field_name, str(instance.pk), new_filename)
+        return os.path.join(
+            app_label, model_name, self.field_name, str(instance.pk), new_filename
+        )
