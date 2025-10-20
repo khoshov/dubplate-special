@@ -1,547 +1,110 @@
-# apps/records/services/redeye_service.py
 from __future__ import annotations
+
 import logging
-import random
 import re
-import time
-import html
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Optional, List, Dict, Tuple
-import requests
-from bs4 import BeautifulSoup, NavigableString
-from urllib.parse import urljoin
-from .parsers.redeye_tracks_parser import parse_redeye_tracks
-from .utils import normalize_redeye_url
+from typing import Dict, Optional
+from urllib.parse import urljoin, quote
 
-_MONTHS = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
-}
-
-
-_MONTHS_EN_TO_RU = {
-    "jan": "января",
-    "feb": "февраля",
-    "mar": "марта",
-    "apr": "апреля",
-    "may": "мая",
-    "jun": "июня",
-    "jul": "июля",
-    "aug": "августа",
-    "sep": "сентября",
-    "oct": "октября",
-    "nov": "ноября",
-    "dec": "декабря",
-}
+from bs4 import BeautifulSoup
+from records.constants import REDEYE_BASE_URL
+from .http import RedeyeHTTPClient
+from .page_product_scraper import RedeyeProductParser
 
 logger = logging.getLogger(__name__)
 
 
-def _format_expected_date_ru(text: str) -> Optional[str]:
-    """
-    Ищет в произвольном тексте фразу вида:
-      'Expected 24 Oct 2025' / 'expected 7 September 2025'
-    Возвращает строку: '24 октября 2025 года' или None.
-    """
-    m = re.search(
-        r"Expected\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not m:
-        return None
-    day = int(m.group(1))
-    mon = m.group(2).lower().strip(".")
-    year = int(m.group(3))
-
-    # принимаем как полные, так и сокращённые названия месяцев
-    key = mon[:3]
-    mon_ru = _MONTHS_EN_TO_RU.get(key)
-    if not mon_ru:
-        return None
-
-    return f"{day} {mon_ru} {year} года"
-
-
 @dataclass
 class RedeyeFetchResult:
+    """
+    Класс описывает результат выборки карточки товара Redeye.
+
+    Атрибуты:
+        source_url: Страница товара Redeye, из которой извлечены данные.
+        payload:    Словарь с распарсенными полями релиза (см. RedeyeProductParser).
+    """
     source_url: str
     payload: Dict
 
 
-def _parse_expected_date_parts(text: str):
-    """
-    Ищет 'Expected 24 Oct 2025' / 'Expected 7 September 2025' и
-    возвращает кортеж (year, month, day) как ints, либо (None, None, None).
-    """
-    m = re.search(r"Expected\s+(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})", text, re.I)
-    if not m:
-        return None, None, None
-    day = int(m.group(1))
-    mon_raw = m.group(2).lower().strip(".")
-    mon = _MONTHS.get(mon_raw[:3])
-    year = int(m.group(3))
-    if not mon:
-        return None, None, None
-    return year, mon, day
-
-
 class RedeyeService:
-    BASE = "https://www.redeyerecords.co.uk"
-    TIMEOUT = 20
+    """
+    Сервис реализует получение и разбор карточек Redeye.
 
-    GBP_PRICE_RE = re.compile(r"£\s*(\d+(?:\.\d{1,2})?)")
-    # Кат.№ — короткий токен из букв/цифр/дефиса, 2..24 символа
-    CAT_RE = re.compile(r"\b([A-Z0-9\-]{2,24})\b", re.I)
+    Публичные методы:
+        - fetch_by_catalog_number(catalog_number): ищет карточку по каталожному номеру.
+        - parse_product_by_url(url): парсит карточку по прямому URL.
+    """
 
-    def __init__(
-        self,
-        *,
-        delay_sec: float = 0.6,
-        jitter_sec: float = 0.5,
-        max_retries: int = 4,
-        cooldown_sec: int = 90,
-        stop_on_block: bool = False,
-    ):
-        self.session = requests.Session()
-        self.user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-        ]
-        self.base_headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-GB,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
-            "Connection": "keep-alive",
-        }
-        self.delay_sec = float(delay_sec)
-        self.jitter_sec = float(jitter_sec)
-        self.max_retries = int(max_retries)
-        self.cooldown_sec = int(cooldown_sec)
-        self.stop_on_block = bool(stop_on_block)
-
-    # ---------------- PUBLIC ----------------
+    def __init__(self, http: Optional[RedeyeHTTPClient] = None) -> None:
+        self.http = http or RedeyeHTTPClient()
+        self.parser = RedeyeProductParser()
 
     def fetch_by_catalog_number(self, catalog_number: str) -> RedeyeFetchResult:
         """
-        Получить карточку Redeye по каталожному номеру.
+        Метод получает карточку товара по каталожному номеру.
 
         Шаги:
-          1) Резолвим URL карточки по CAT.
-          2) Нормализуем URL (фиксим кейс с продублированным доменом и лишними слэшами).
-          3) Скачиваем HTML и парсим страницу.
-          4) Возвращаем RedeyeFetchResult(source_url, payload).
-
-        В payload уже будет:
-          - "tracks": list[dict]
-          - "has_audio_previews": bool
-          - "catalog_number": str (если не удалось извлечь — подставим запрошенный CAT)
-          - другие распарсенные поля
+            1) Находит URL карточки через поисковую страницу.
+            2) Запрашивает HTML карточки.
+            3) Делегирует разбор в RedeyeProductParser и возвращает результат.
         """
         cat = (catalog_number or "").strip()
         if not cat:
-            raise ValueError("Catalogue number is required")
+            raise ValueError("Catalogue number is required.")
 
         logger.info("[Redeye] search by CAT: '%s'", cat)
-        url = self._resolve_product_url_by_catno(cat)
-        if not url:
+        product_url = self._product_page_url_by_catalog_number(cat)
+        if not product_url:
             raise ValueError(f"Redeye: release not found by Catalogue No. '{cat}'")
 
-        # --- нормализация URL (чинит '.../www.redeyerecords.co.uk/...', сжимает // и т.п.) ---
-        norm_url = normalize_redeye_url(url)
-        if norm_url != url:
-            logger.debug("[Redeye] normalize_redeye_url: %s -> %s", url, norm_url)
-        else:
-            logger.debug("[Redeye] product URL is already normalized: %s", norm_url)
+        abs_url = product_url if re.match(r"^https?://", product_url, re.I) else urljoin(REDEYE_BASE_URL, product_url)
+        logger.info("[Redeye] opening product: %s", abs_url)
+        html_text = self.http.get_text(abs_url)
 
-        logger.info("[Redeye] opening product: %s", norm_url)
-        html_text = self._get(norm_url)
+        payload = self.parser.parse(abs_url, html_text)
 
-        payload = self._parse_product_page(norm_url, html_text)
-
-        # Страховка по catalog_number: если не распарсился — сохраняем запрошенный CAT
-        found_cat = (payload.get("catalog_number") or "").strip().upper()
+        parsed_cat = (payload.get("catalog_number") or "").strip().upper()
         req_cat = cat.upper()
-        if not found_cat:
+        if not parsed_cat:
             payload["catalog_number"] = req_cat
-        elif found_cat != req_cat:
-            logger.warning(
-                "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
-                req_cat,
-                found_cat,
-                norm_url,
-            )
+        elif parsed_cat != req_cat:
+            logger.warning("[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)", req_cat, parsed_cat, abs_url)
 
-        return RedeyeFetchResult(source_url=norm_url, payload=payload)
-
-    def parse_product_by_url(self, url: str) -> RedeyeFetchResult:
-        """
-        Открывает страницу товара по переданному URL и возвращает распарсенные поля.
-        Возвращаем тот же тип, что и fetch_by_catalog_number: RedeyeFetchResult(source_url, payload).
-        """
-        if not url:
-            raise ValueError("Product URL is required")
-
-        # Нормализуем до абсолютного
-        abs_url = url if re.match(r"^https?://", url, re.I) else urljoin(self.BASE, url)
-
-        logger.info("[Redeye] opening product by URL: %s", abs_url)
-        html_text = self._get(abs_url)
-        payload = self._parse_product_page(abs_url, html_text)
-
-        # Подстраховка: если каталог.№ не извлёкся, не заполняем тут — пусть остаётся как распарсилось
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
-    # ---------------- NETWORK ----------------
+    def parse_product_by_url(self, url: str) -> RedeyeFetchResult:
+        """Метод получает карточку товара по прямому URL и возвращает распарсенные поля."""
+        if not url:
+            raise ValueError("Product URL is required.")
 
-    def _polite_sleep(self):
-        time.sleep(self.delay_sec + random.uniform(0.0, self.jitter_sec))
+        abs_url = url if re.match(r"^https?://", url, re.I) else urljoin(REDEYE_BASE_URL, url)
+        logger.info("[Redeye] opening product by URL: %s", abs_url)
+        html_text = self.http.get_text(abs_url)
+        payload = self.parser.parse(abs_url, html_text)
+        return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
-    def _get(
-        self, url: str, *, referer: Optional[str] = None, slow: bool = False
-    ) -> str:
-        last_exc = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                if slow:
-                    self._polite_sleep()
-                headers = dict(self.base_headers)
-                headers["User-Agent"] = random.choice(self.user_agents)
-                if referer:
-                    headers["Referer"] = referer
 
-                resp = self.session.get(url, headers=headers, timeout=self.TIMEOUT)
-                status = resp.status_code
+    def _product_page_url_by_catalog_number(self, catalog_number: str) -> Optional[str]:
+        """
+        Метод возвращает URL карточки по каталожному номеру.
 
-                if status == 200:
-                    return html.unescape(resp.text)
+        Алгоритм:
+            - Запрашивает страницу поиска с параметрами searchType=CAT&keywords=<CAT>.
+            - Извлекает первую ссылку, ведущую на /vinyl/....
+        """
 
-                if 500 <= status < 600:
-                    backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                    logger.warning(
-                        "server %s for %s (attempt %s/%s) backoff=%.1fs",
-                        status,
-                        url,
-                        attempt,
-                        self.max_retries,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    continue
 
-                if status in (403, 429):
-                    logger.warning(
-                        "possible block %s for %s → cooldown %ss (attempt %s/%s)",
-                        status,
-                        url,
-                        self.cooldown_sec,
-                        attempt,
-                        self.max_retries,
-                    )
-                    time.sleep(self.cooldown_sec)
-                    if attempt == self.max_retries:
-                        if self.stop_on_block:
-                            raise requests.HTTPError(f"blocked: {status} {url}")
-                        else:
-                            logger.warning("skip blocked page: %s", url)
-                            break
-                    continue
-
-                resp.raise_for_status()
-
-            except requests.RequestException as e:
-                last_exc = e
-                backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                logger.warning(
-                    "request error for %s: %s (attempt %s/%s) backoff=%.1fs",
-                    url,
-                    e,
-                    attempt,
-                    self.max_retries,
-                    backoff,
-                )
-                time.sleep(backoff)
-
-        if last_exc:
-            raise last_exc
-        return ""  # мягкий skip при неустранимом блоке
-
-    def _resolve_product_url_by_catno(self, cat: str) -> Optional[str]:
-        search_url = (
-            f"{self.BASE}/search/?searchType=CAT&keywords={requests.utils.quote(cat)}"
-        )
+        search_url = f"{REDEYE_BASE_URL}/search/?searchType=CAT&keywords={quote(catalog_number)}"
         logger.info("[Redeye] search URL: %s", search_url)
-        html_text = self._get(search_url, referer=f"{self.BASE}/", slow=True)
 
-        # на странице поиска обычно одна большая карточка с ссылкой вида /vinyl/…
+        html_text = self.http.get_text(search_url, referer=f"{REDEYE_BASE_URL}/", slow=True)
         soup = BeautifulSoup(html_text, "html.parser")
-        for a in soup.select('a[href*="/vinyl/"]'):
-            href = a.get("href", "")
+
+        for link in soup.select('a[href*="/vinyl/"]'):
+            href = link.get("href", "")
             if not href:
                 continue
-            return href if href.startswith("http") else self.BASE + href
-        return None
+            return href if href.startswith("http") else urljoin(REDEYE_BASE_URL, href)
 
-    # ---------------- PARSE PRODUCT ----------------
-
-    def _parse_product_page(self, url: str, html_text: str) -> Dict:
-        """
-        Разбирает HTML карточки товара Redeye и возвращает словарь с данными релиза.
-
-        Возвращает ключи (основные):
-          - title: str
-          - artists: list[str]
-          - label: Optional[str]
-          - catalog_number: Optional[str]
-          - price_gbp: Optional[str]  # Decimal → str
-          - availability: Optional[str]  # 'preorder'|'in_stock'|'out_of_stock'|None
-          - image_url: Optional[str]
-          - tracks: list[dict]  # {'position','title','duration','position_index'}
-          - release_year/release_month/release_day: Optional[int]
-          - source: {'name': 'redeye', 'url': url}
-          - has_audio_previews: bool  # --- добавлено: признак наличия плеера превью на странице ---
-
-        Примечание:
-          Флаг `has_audio_previews` ставится, если на странице присутствуют кнопки
-          плеера превью, определяемые селектором `.play a.btn-play[data-sample]`.
-          Это синхронизировано с селектором из capture.py. Мы не ходим в сеть и не
-          инициируем проигрывание — просто проверяем DOM. Это дешёвая эвристика,
-          достаточная для решения задачи “есть смысл пробовать докачку mp3 или нет”.
-        """
-        soup = BeautifulSoup(html_text, "html.parser")
-
-        # 1) Заголовок «Artist - Title»
-        title_text = self._extract_title(soup)
-        artists, record_title = self._split_artist_title(title_text)
-
-        # 2) Label
-        label_name = self._extract_label(soup)
-
-        # 3) Catalogue No.
-        catno = self._extract_catalog_number(soup)
-
-        # 4) Цена/наличие
-        price, availability = self._extract_price_and_availability(soup)
-
-        # 5) Expected date parts (если это предзаказ)
-        y, m, d = _parse_expected_date_parts(soup.get_text(" ", strip=True))
-        release_year = y or None
-        release_month = m or None
-        release_day = d or None
-
-        # 6) Картинка
-        image_url = self._extract_image_url(soup, base=url)
-
-        # 7) Список треков
-        tracks: list[dict] = parse_redeye_tracks(soup)
-
-        # 8) Признак наличия превью-плеера (добавлено)
-        #    Селектор согласован с capture.py: BTN_QUERY = ".play a.btn-play[data-sample]"
-        #    Если на странице есть такие кнопки — вероятнее всего, можно собирать mp3-превью.
-        has_audio_previews: bool = bool(
-            soup.select_one(".play a.btn-play[data-sample]")
-        )
-
-        # 9) Форматы: на Redeye нет структурированных данных → не заполняем
-        formats: List[str] = []
-
-        # аккуратная длина label (у тебя CharField(255))
-        if label_name:
-            label_name = label_name[:255]
-
-        # 10) Notes: добавляем в текст чистую цену (ex-VAT), если нашли
-        notes = None
-        if price is not None:
-            notes = f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP"
-
-        logger.info(
-            "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s "
-            "avail=%s img=%s has_audio_previews=%s",
-            record_title or title_text,
-            artists,
-            label_name,
-            catno,
-            price,
-            availability,
-            bool(image_url),
-            has_audio_previews,
-        )
-
-        return {
-            "title": record_title or title_text,
-            "artists": artists,
-            "label": label_name,
-            "catalog_number": catno,
-            "barcode": None,
-            "country": None,
-            "year": None,
-            "genres": [],
-            "styles": [],
-            "formats": formats or [],
-            "tracks": tracks or [],
-            "price_gbp": str(price) if price is not None else None,
-            "availability": availability,
-            "image_url": image_url,
-            "notes": notes,
-            "release_year": release_year,
-            "release_month": release_month,
-            "release_day": release_day,
-            "source": {"name": "redeye", "url": url},
-            # --- добавлено: признак наличия плеера превью ---
-            "has_audio_previews": has_audio_previews,
-        }
-
-    # ---------------- HELPERS ----------------
-
-    @staticmethod
-    def _extract_title(soup: BeautifulSoup) -> str:
-        h1 = soup.find("h1")
-        if h1:
-            return h1.get_text(" ", strip=True)
-        if soup.title and soup.title.string:
-            return soup.title.string.strip()
-        return "Unknown Title"
-
-    @staticmethod
-    def _split_artist_title(full: str) -> Tuple[List[str], Optional[str]]:
-        if " - " in full:
-            artist_part, title_part = full.split(" - ", 1)
-            artists = [
-                a.strip()
-                for a in re.split(r"\s*(?:,|&|/)\s*", artist_part)
-                if a.strip()
-            ]
-            return artists, title_part.strip()
-        return [], full
-
-    def _extract_label(self, soup: BeautifulSoup) -> Optional[str]:
-        """
-        Ищет лейбл в блоке вида:
-            <p>Label <span><a href="...">Some Label</a></span></p>
-        Возвращает строку (<=255 символов) или None.
-        """
-        for p in soup.find_all("p"):
-            if not p.contents:
-                continue
-            first = p.contents[0]
-            if isinstance(first, NavigableString) and first.strip().lower() == "label":
-                # приоритет: <a> внутри <span>
-                a = p.find("a")
-                if a and a.get_text(strip=True):
-                    return a.get_text(strip=True)[:255]
-                # запасной: текст в <span> или во всём <p> после слова "Label"
-                span = p.find("span")
-                if span and span.get_text(strip=True):
-                    return span.get_text(strip=True)[:255]
-                txt = p.get_text(" ", strip=True)
-                tail = re.sub(r"^label\s*", "", txt, flags=re.IGNORECASE).strip()
-                return tail[:255] if tail else None
-        return None
-
-    def _extract_catalog_number(self, soup: BeautifulSoup) -> Optional[str]:
-        """
-        Ищет каталожный номер в блоке вида:
-            <p>Catalogue No. <span>TEMPA124</span></p>
-        Возвращает строку без префиксов (например, 'TEMPA124') или None.
-        """
-        for p in soup.find_all("p"):
-            txt = p.get_text(" ", strip=True)
-            if re.match(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
-                # приоритет: содержимое <span>
-                span = p.find("span")
-                if span:
-                    val = span.get_text(strip=True)
-                    return val or None
-                # запасной путь: вырезать префикс "Catalogue No."
-                tail = re.sub(
-                    r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE
-                ).strip()
-                return tail or None
-        return None
-
-    def _parse_catalog_number(self, soup: BeautifulSoup) -> Optional[str]:
-        """
-        Резервный способ: пройтись по <p> и найти вариант с 'Catalogue No.'.
-        Возвращает строку без префикса, например 'TEMPA124'.
-        """
-        for p in soup.find_all("p"):
-            txt = p.get_text(" ", strip=True)
-            if re.match(r"^catalogue\s+no\.?\b", txt, re.IGNORECASE):
-                span = p.find("span")
-                if span:
-                    val = span.get_text(strip=True)
-                    return val or None
-                tail = re.sub(
-                    r"^catalogue\s+no\.?\s*", "", txt, flags=re.IGNORECASE
-                ).strip()
-                return tail or None
-        return None
-
-    def _extract_price_and_availability(
-        self, soup: BeautifulSoup
-    ) -> Tuple[Optional[Decimal], Optional[str]]:
-        text = soup.get_text(" ", strip=True)
-
-        # приоритет: "£X ( £Y inc.vat )" → берём X
-        m = re.search(
-            r"£\s*(\d+(?:\.\d{1,2})?)\s*\(\s*£\s*\d+(?:\.\d{1,2})?\s*inc\.?\s*vat",
-            text,
-            re.I,
-        )
-        if m:
-            price = Decimal(m.group(1))
-        else:
-            # иначе соберём все £… и возьмём МИНИМАЛЬНУЮ (обычно это ex-VAT)
-            prices = []
-            for p in re.findall(r"£\s*(\d+(?:\.\d{1,2})?)", text):
-                try:
-                    prices.append(Decimal(p))
-                except Exception:
-                    pass
-            price = min(prices) if prices else None
-
-        availability = None
-        t = text.lower()
-        if "pre-order" in t or "expected" in t:
-            availability = "preorder"
-        elif "out of stock" in t:
-            availability = "out_of_stock"
-        elif "add to basket" in t or "in stock" in t:
-            availability = "in_stock"
-
-        return price, availability
-
-    @staticmethod
-    def _extract_image_url(soup: BeautifulSoup, base: str) -> Optional[str]:
-        # сначала og:image
-        og = soup.find("meta", attrs={"property": "og:image"})
-
-        def _norm(u: str) -> str:
-            if u.startswith("http"):
-                return u
-            if u.startswith("//"):
-                return "https:" + u
-            if u.startswith("/"):
-                return RedeyeService.BASE + u
-            return u
-
-        if og and og.get("content"):
-            return _norm(og["content"])
-        # затем обычные <img>
-        for img in soup.select("img"):
-            src = img.get("src")
-            if src:
-                return _norm(src)
         return None

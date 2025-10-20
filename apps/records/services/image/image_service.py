@@ -4,7 +4,7 @@ import requests
 
 from django.core.files.base import ContentFile
 
-from ..models import Record
+from records.models import Record
 from django.conf import settings
 
 logger = logging.getLogger(__name__)

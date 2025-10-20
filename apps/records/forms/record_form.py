@@ -8,10 +8,10 @@ from django.core.exceptions import ValidationError
 
 from .mixins import ApplyFieldsMixin
 from .validators import RecordIdentifierValidator
-from ..constants.forms import SOURCE_DISCOGS, SOURCE_REDEYE, SOURCE_CHOICES
+from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE, SOURCE_CHOICES
 from ..models import Record
-from ..services.discogs_service import DiscogsService
-from ..services.image_service import ImageService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.image.image_service import ImageService
 from ..services.providers.redeye.redeye_service import RedeyeService
 from ..services.record_service import RecordService
 
@@ -34,7 +34,6 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
     """
 
     record_service: RecordService
-    validator: RecordIdentifierValidator
     save_m2m: Callable[[], None]
     duplicate_record: Optional[Record] = None
 
@@ -75,7 +74,6 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             redeye_service=RedeyeService(),
             image_service=ImageService(),
         )
-        self.validator = RecordIdentifierValidator()
         self.save_m2m = lambda: None  # type: ignore[assignment]
 
         if "barcode" in self.fields:
@@ -130,12 +128,12 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
     def clean_barcode(self) -> Optional[str]:
         """Строгая проверка штрих-кода (для edit и create)."""
         barcode = self.cleaned_data.get("barcode")
-        return self.validator.validate_barcode(barcode, self.instance.pk)
+        return RecordIdentifierValidator.validate_barcode(barcode, self.instance.pk)
 
     def clean_catalog_number(self) -> Optional[str]:
         """Строгая проверка каталожного номера (для edit и create)."""
         catalog_number = self.cleaned_data.get("catalog_number")
-        return self.validator.validate_catalog_number(catalog_number, self.instance.pk)
+        return RecordIdentifierValidator.validate_catalog_number(catalog_number, self.instance.pk)
 
     def clean(self):
         """
@@ -163,7 +161,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 )
             return cleaned
         elif source == SOURCE_DISCOGS:
-            return self.validator.validate_identifiers_required(cleaned)
+            return RecordIdentifierValidator.validate_identifiers_required(cleaned)
         return cleaned
 
     def validate_unique(self) -> None:

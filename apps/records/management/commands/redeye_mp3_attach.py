@@ -16,11 +16,10 @@ from django.db.models import Exists, OuterRef, Q, Count  # --- добавлен�
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-# относительные импорты — как просил
 from ...models import Record, Track, RecordSource
 from ...services.record_service import RecordService
-from ...services.discogs_service import DiscogsService
-from ...services.image_service import ImageService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.image.image_service import ImageService
 
 logger = logging.getLogger(__name__)
 

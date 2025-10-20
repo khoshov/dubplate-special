@@ -15,7 +15,7 @@ from typing import Any, Iterable, List, Mapping
 
 from django.db import transaction
 
-from ...models import Record, Track
+from records.models import Record, Track
 
 logger = logging.getLogger(__name__)
 

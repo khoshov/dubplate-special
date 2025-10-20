@@ -1,4 +1,3 @@
-# apps/records/management/commands/parse_redeye.py
 
 """
 Management-команда: парсинг разделов Redeye и (опционально) сохранение в БД.
@@ -33,8 +32,8 @@ from typing import List
 
 from django.core.management.base import BaseCommand, CommandError
 
-from ...pipelines.redeye.redeye_bulk_import import RedeyeBulkImporter
-from ...constants.redeye import REDEYE_URLS
+from records.pipelines.redeye.redeye_bulk_import import RedeyeBulkImporter
+from records.constants import REDEYE_URLS
 
 
 logger = logging.getLogger(__name__)

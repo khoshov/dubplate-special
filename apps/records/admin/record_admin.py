@@ -7,8 +7,8 @@ from django.http import HttpRequest
 from .inlines import TrackInline
 from ..forms import RecordForm
 from ..models import Record, Artist
-from ..services.discogs_service import DiscogsService
-from ..services.image_service import ImageService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.image.image_service import ImageService
 from ..services.providers.redeye.redeye_service import RedeyeService
 from ..services.record_service import RecordService
 from .actions import update_from_discogs, update_from_redeye

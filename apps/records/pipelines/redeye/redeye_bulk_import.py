@@ -25,8 +25,8 @@ from ...services.providers.redeye.redeye_service import RedeyeService
 from ...services.tracks import create_tracks_for_record
 from ...models import RecordSource
 from ...services.record_service import RecordService
-from ...services.discogs_service import DiscogsService
-from ...services.image_service import ImageService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.image.image_service import ImageService
 
 logger = logging.getLogger(__name__)
 
