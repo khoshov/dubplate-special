@@ -19,7 +19,6 @@ from .managers import (
 from sorl.thumbnail import ImageField
 
 
-
 @deconstructible
 class PathByInstance:
     """Формирует путь вида:

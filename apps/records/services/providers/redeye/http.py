@@ -53,7 +53,9 @@ class RedeyeHTTPClient:
     def _polite_sleep(self) -> None:
         time.sleep(self.delay_sec + random.uniform(0.0, self.jitter_sec))
 
-    def get_text(self, url: str, *, referer: Optional[str] = None, slow: bool = False) -> str:
+    def get_text(
+        self, url: str, *, referer: Optional[str] = None, slow: bool = False
+    ) -> str:
         """
         Метод выполняет GET и возвращает html.unescape(resp.text), применяя задержки и ретраи.
         """
@@ -79,7 +81,11 @@ class RedeyeHTTPClient:
                     backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
                     logger.warning(
                         "[redeye:http] %s for %s (attempt %s/%s) backoff=%.1fs",
-                        status, url, attempt, self.max_retries, backoff
+                        status,
+                        url,
+                        attempt,
+                        self.max_retries,
+                        backoff,
                     )
                     time.sleep(backoff)
                     continue
@@ -87,7 +93,11 @@ class RedeyeHTTPClient:
                 if status in (403, 429):
                     logger.warning(
                         "[redeye:http] possible block %s for %s → cooldown %ss (attempt %s/%s)",
-                        status, url, self.cooldown_sec, attempt, self.max_retries
+                        status,
+                        url,
+                        self.cooldown_sec,
+                        attempt,
+                        self.max_retries,
                     )
                     time.sleep(self.cooldown_sec)
                     if attempt == self.max_retries:
@@ -104,7 +114,11 @@ class RedeyeHTTPClient:
                 backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
                 logger.warning(
                     "[redeye:http] request error for %s: %s (attempt %s/%s) backoff=%.1fs",
-                    url, e, attempt, self.max_retries, backoff
+                    url,
+                    e,
+                    attempt,
+                    self.max_retries,
+                    backoff,
                 )
                 time.sleep(backoff)
 

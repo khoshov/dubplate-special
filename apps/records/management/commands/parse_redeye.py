@@ -1,4 +1,3 @@
-
 """
 Management-команда: парсинг разделов Redeye и (опционально) сохранение в БД.
 
@@ -10,15 +9,15 @@ Management-команда: парсинг разделов Redeye и (опцио
  БЫСТРЫЙ КОД ЗАПУСКА
 
 docker compose exec django uv run python manage.py parse_redeye `
-  --category all `
-  --limit 2 `
-  --delay 0.8 `
-  --jitter 0.3 `
-  --max-retries 3 `
-  --cooldown 60 `
-  --stop-on-block `
-  --save `
-  --debug
+   --category all `
+   --limit 2 `
+   --delay 0.8 `
+   --jitter 0.3 `
+   --max-retries 3 `
+   --cooldown 60 `
+   --stop-on-block `
+   --save `
+   --debug
 
 
 
@@ -26,15 +25,14 @@ docker compose exec django uv run python manage.py parse_redeye `
 
 from __future__ import annotations
 
-import re
 import logging
+import re
 from typing import List
 
 from django.core.management.base import BaseCommand, CommandError
 
-from records.pipelines.redeye.redeye_bulk_import import RedeyeBulkImporter
 from records.constants import REDEYE_URLS
-
+from records.pipelines.redeye.bulk_import_from_redeye import RedeyeBulkImporter
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +59,6 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser):
-        # Сформируем список доступных кодов (поддерживаем и явный 'code', и авто-derivation)
         codes: List[str] = []
         for c in REDEYE_URLS:
             code = c.get("code") or _derive_code(
@@ -131,7 +128,6 @@ class Command(BaseCommand):
             stop_on_block=options["stop_on_block"],
         )
 
-        # Подберём нужные категории под переданный код
         category_code = options["category"]
         selected = []
         for cfg in REDEYE_URLS:

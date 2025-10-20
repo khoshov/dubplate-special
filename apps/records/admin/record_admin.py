@@ -1,18 +1,18 @@
 import logging
 from typing import Optional
-from django.contrib import admin
 
+from django.contrib import admin
 from django.http import HttpRequest
 
-from .inlines import TrackInline
-from ..forms import RecordForm
-from ..models import Record, Artist
-from records.services.providers.discogs.discogs_service import DiscogsService
+from records.forms import RecordForm
+from records.models import Record, Artist
+from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
-from ..services.audio.audio_service import AudioService
-from ..services.providers.redeye.redeye_service import RedeyeService
-from ..services.record_service import RecordService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.providers.redeye.redeye_service import RedeyeService
+from records.services.record_service import RecordService
 from .actions import update_from_discogs, update_from_redeye
+from .inlines import TrackInline
 from .mixins import RedeyeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,6 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     )
     date_hierarchy = "created"
 
-    # Оптимизация запросов
     list_select_related = ("label",)
 
     def __init__(self, *args, **kwargs):

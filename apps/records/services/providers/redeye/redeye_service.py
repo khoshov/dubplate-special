@@ -23,6 +23,7 @@ class RedeyeFetchResult:
         source_url: Страница товара Redeye, из которой извлечены данные.
         payload:    Словарь с распарсенными полями релиза (см. RedeyeProductParser).
     """
+
     source_url: str
     payload: Dict
 
@@ -58,7 +59,11 @@ class RedeyeService:
         if not product_url:
             raise ValueError(f"Redeye: release not found by Catalogue No. '{cat}'")
 
-        abs_url = product_url if re.match(r"^https?://", product_url, re.I) else urljoin(REDEYE_BASE_URL, product_url)
+        abs_url = (
+            product_url
+            if re.match(r"^https?://", product_url, re.I)
+            else urljoin(REDEYE_BASE_URL, product_url)
+        )
         logger.info("[Redeye] opening product: %s", abs_url)
         html_text = self.http.get_text(abs_url)
 
@@ -69,21 +74,27 @@ class RedeyeService:
         if not parsed_cat:
             payload["catalog_number"] = req_cat
         elif parsed_cat != req_cat:
-            logger.warning("[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)", req_cat, parsed_cat, abs_url)
+            logger.warning(
+                "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
+                req_cat,
+                parsed_cat,
+                abs_url,
+            )
 
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
     def parse_redeye_product_by_url(self, url: str) -> RedeyeFetchResult:
-        """Метод получает карточку товара по прямому URL и возвращает распарсенные поля."""
+        """Метод получает карточку товара по-прямому URL и возвращает распарсенные поля."""
         if not url:
             raise ValueError("Product URL is required.")
 
-        abs_url = url if re.match(r"^https?://", url, re.I) else urljoin(REDEYE_BASE_URL, url)
+        abs_url = (
+            url if re.match(r"^https?://", url, re.I) else urljoin(REDEYE_BASE_URL, url)
+        )
         logger.info("[Redeye] opening product by URL: %s", abs_url)
         html_text = self.http.get_text(abs_url)
         payload = self.parser.parse(abs_url, html_text)
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
-
 
     def _product_page_url_by_catalog_number(self, catalog_number: str) -> Optional[str]:
         """
@@ -94,11 +105,14 @@ class RedeyeService:
             - Извлекает первую ссылку, ведущую на /vinyl/....
         """
 
-
-        search_url = f"{REDEYE_BASE_URL}/search/?searchType=CAT&keywords={quote(catalog_number)}"
+        search_url = (
+            f"{REDEYE_BASE_URL}/search/?searchType=CAT&keywords={quote(catalog_number)}"
+        )
         logger.info("[Redeye] search URL: %s", search_url)
 
-        html_text = self.http.get_text(search_url, referer=f"{REDEYE_BASE_URL}/", slow=True)
+        html_text = self.http.get_text(
+            search_url, referer=f"{REDEYE_BASE_URL}/", slow=True
+        )
         soup = BeautifulSoup(html_text, "html.parser")
 
         for link in soup.select('a[href*="/vinyl/"]'):

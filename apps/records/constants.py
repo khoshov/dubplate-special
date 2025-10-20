@@ -34,9 +34,9 @@ REDEYE_USER_AGENTS = [
 ]
 
 
-AUDIO_STREAM_CHUNK_SIZE = 64 * 1024            # 64 KiB
-AUDIO_DEFAULT_TIMEOUT = 20                     # сек
-AUDIO_DEFAULT_MAX_BYTES = 15 * 1024 * 1024     # 15 MiB
+AUDIO_STREAM_CHUNK_SIZE = 64 * 1024  # 64 KiB
+AUDIO_DEFAULT_TIMEOUT = 20  # сек
+AUDIO_DEFAULT_MAX_BYTES = 15 * 1024 * 1024  # 15 MiB
 
 ALLOWED_AUDIO_CONTENT_TYPES = {
     "audio/mpeg",
@@ -58,7 +58,6 @@ HTTP_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,
 HTTP_ACCEPT_LANGUAGE = "ru,en;q=0.9"
 
 
-
 # Настройки для модуля захвата mp3-превью со страницы Redeye
 
 # Redeye / захват аудио (Playwright)
@@ -77,10 +76,10 @@ MEDIA_CONTENT_TYPE_HINTS = ("audio/", "mpegurl", "application/vnd.apple.mpegurl"
 MEDIA_URL_HINTS = (".mp3", ".aac", ".m3u8", "/stream/")
 
 # Тайминги захвата
-CAPTURE_FALLBACK_HTTP_TIMEOUT = 5.0       # сек, HEAD-проверка недостающих mp3
-CAPTURE_WAIT_TICK_MS = 120.0              # мс, «тик» ожидания после клика
-CAPTURE_GLOBAL_TIMEOUT_SEC = 25.0         # сек, общий мягкий предел работы
-CAPTURE_POST_CLICK_SETTLE_SEC = 2.0       # сек, «доохота» после серии кликов
+CAPTURE_FALLBACK_HTTP_TIMEOUT = 5.0  # сек, HEAD-проверка недостающих mp3
+CAPTURE_WAIT_TICK_MS = 120.0  # мс, «тик» ожидания после клика
+CAPTURE_GLOBAL_TIMEOUT_SEC = 25.0  # сек, общий мягкий предел работы
+CAPTURE_POST_CLICK_SETTLE_SEC = 2.0  # сек, «доохота» после серии кликов
 
 # Хост CDN аудио Redeye (для fallback-конструкции ссылок)
 REDEYE_SOUNDS_BASE_URL = "https://sounds.redeyerecords.co.uk/"
@@ -88,8 +87,7 @@ REDEYE_SOUNDS_BASE_URL = "https://sounds.redeyerecords.co.uk/"
 
 # Redeye / player
 REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC = 20
-REDEYE_PLAYER_PRUNE_UNTITLED = True   # удалять плейсхолдеры "Untitled..." без аудио
-
+REDEYE_PLAYER_PRUNE_UNTITLED = True  # удалять плейсхолдеры "Untitled..." без аудио
 
 
 # Redeye: базовый URL и сетевые параметры
@@ -128,8 +126,16 @@ MONTHS_EN_TO_RU_GENITIVE = {
     "dec": "декабря",
 }
 MONTHS_EN_TO_NUM = {
-    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
 }
-
-

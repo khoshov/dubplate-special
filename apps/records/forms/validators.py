@@ -12,6 +12,7 @@ class RecordIdentifierValidator:
     а также обеспечивает наличие хотя бы одного идентификатора
     при создании записи.
     """
+
     @staticmethod
     def validate_barcode(
         barcode: Optional[str], exclude_pk: Optional[int] = None
@@ -69,9 +70,7 @@ class RecordIdentifierValidator:
         return catalog_number
 
     @staticmethod
-    def validate_identifiers_required(
-        cleaned_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def validate_identifiers_required(cleaned_data: Dict[str, Any]) -> Dict[str, Any]:
         """Проверка наличия хотя бы одного идентификатора.
 
         Используется при создании новой записи для обеспечения

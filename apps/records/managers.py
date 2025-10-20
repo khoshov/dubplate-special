@@ -1,46 +1,52 @@
-# apps/records/managers.py
 """
-Кастомные QuerySet/Manager для моделей записей.
-Здесь же централизуем, что треки всегда подгружаются в порядке числового индекса.
+Кастомные QuerySet и Manager классы для моделей приложения `records`.
+
+Здесь централизуется логика выборок и оптимизации запросов:
+- фильтрация по полям (barcode, catalog_number, artist и т.п.);
+- аннотации со статистикой;
+- предзагрузка связанных данных (artists, genres, tracks и т.д.);
+- гарантированный порядок треков (по числовому индексу).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from apps.core.managers import BaseManager, BaseQuerySet
 from django.db.models import Count, F, Prefetch, Q
+from apps.core.managers import BaseManager, BaseQuerySet
 
 if TYPE_CHECKING:
     from .models import Artist, Format, Genre, Label, Record, Style
 
 
 class RecordQuerySet(BaseQuerySet):
-    """QuerySet для Record с методами фильтрации и оптимизации."""
+    """Расширенный QuerySet для модели Record."""
 
-    # === Фильтрация ===
     def available(self):
-        """Записи в наличии."""
+        """Возвращает записи, находящиеся в наличии."""
         return self.filter(stock__gt=0)
 
     def out_of_stock(self):
-        """Записи не в наличии."""
+        """Возвращает записи, отсутствующие в наличии."""
         return self.filter(stock=0)
 
     def by_barcode(self, barcode: str):
-        """Поиск по штрих-коду."""
+        """Фильтрует записи по штрих-коду."""
         return self.filter(barcode=barcode)
 
     def by_catalog_number(self, catalog_number: str):
-        """Поиск по каталожному номеру."""
+        """Фильтрует записи по каталожному номеру."""
         return self.filter(catalog_number=catalog_number)
 
     def by_discogs_id(self, discogs_id: int):
-        """Поиск по Discogs ID."""
+        """Фильтрует записи по Discogs-ID."""
         return self.filter(discogs_id=discogs_id)
 
     def by_identifier(self, identifier: str):
-        """Поиск по любому идентификатору."""
+        """
+        Выполняет универсальный поиск по любому идентификатору:
+        barcode / catalog_number / discogs_id.
+        """
         return self.filter(
             Q(barcode=identifier)
             | Q(catalog_number=identifier)
@@ -48,25 +54,23 @@ class RecordQuerySet(BaseQuerySet):
         )
 
     def by_artist(self, artist_name: str):
-        """Фильтр по артисту."""
+        """Фильтрует записи по имени артиста."""
         return self.filter(artists__name__icontains=artist_name)
 
     def by_genre(self, genre_name: str):
-        """Фильтр по жанру."""
+        """Фильтрует записи по названию жанра."""
         return self.filter(genres__name__icontains=genre_name)
 
     def by_year_range(self, start_year: int, end_year: int):
-        """Фильтр по диапазону годов."""
+        """Фильтрует записи по диапазону годов релиза."""
         return self.filter(release_year__range=(start_year, end_year))
 
-    # === Оптимизация запросов ===
     def with_related(self):
         """
-        Загрузка связанных объектов + треки в корректном порядке:
-        сначала по числовому индексу (position_index), затем по текстовой позиции (для стабильности),
-        затем по id на случай одинаковых значений.
+        Выполняет предзагрузку связанных объектов:
+        label, artists, genres, styles, formats и треков в корректном порядке.
         """
-        from .models import Track  # локальный импорт, чтобы избежать циклов
+        from .models import Track  # локальный импорт во избежание циклов
 
         tracks_qs = Track.objects.order_by("position_index", "position", "id")
         return self.select_related("label").prefetch_related(
@@ -78,14 +82,14 @@ class RecordQuerySet(BaseQuerySet):
         )
 
     def with_tracks(self):
-        """Только треки в правильном порядке (см. выше)."""
+        """Добавляет предзагрузку треков в порядке (position_index, position, id)."""
         from .models import Track
 
         tracks_qs = Track.objects.order_by("position_index", "position", "id")
         return self.prefetch_related(Prefetch("tracks", queryset=tracks_qs))
 
     def with_stats(self):
-        """С подсчётом статистики по связанным таблицам."""
+        """Добавляет статистические поля (tracks_count, artists_count, total_value)."""
         return self.annotate(
             tracks_count=Count("tracks"),
             artists_count=Count("artists", distinct=True),
@@ -94,31 +98,34 @@ class RecordQuerySet(BaseQuerySet):
 
 
 class RecordManager(BaseManager):
-    """Manager для Record."""
+    """Менеджер для модели Record."""
 
-    def get_queryset(self):
+    def get_queryset(self) -> RecordQuerySet:
         return RecordQuerySet(self.model, using=self._db)
 
-    # === Простые методы поиска ===
     def find_by_barcode(self, barcode: str) -> Optional["Record"]:
+        """Возвращает запись по штрих-коду (или None)."""
         return self.filter(barcode=barcode).first()
 
     def find_by_catalog_number(self, catalog_number: str) -> Optional["Record"]:
+        """Возвращает запись по каталожному номеру (или None)."""
         return self.filter(catalog_number=catalog_number).first()
 
     def find_by_discogs_id(self, discogs_id: int) -> Optional["Record"]:
+        """Возвращает запись по Discogs-ID (или None)."""
         return self.filter(discogs_id=discogs_id).first()
 
-    # === Chainable методы ===
     def available(self):
+        """Возвращает записи, находящиеся в наличии."""
         return self.get_queryset().available()
 
     def with_related(self):
+        """Возвращает queryset с предзагруженными зависимостями."""
         return self.get_queryset().with_related()
 
 
 class ArtistManager(BaseManager):
-    """Manager для Artist."""
+    """Менеджер для модели Artist."""
 
     def find_by_discogs_id(self, discogs_id: int) -> Optional["Artist"]:
         return self.filter(discogs_id=discogs_id).first()
@@ -127,11 +134,12 @@ class ArtistManager(BaseManager):
         return self.filter(name=name).first()
 
     def with_records_count(self):
+        """Добавляет поле records_count — количество записей у артиста."""
         return self.annotate(records_count=Count("records"))
 
 
 class LabelManager(BaseManager):
-    """Manager для Label."""
+    """Менеджер для модели Label."""
 
     def find_by_discogs_id(self, discogs_id: int) -> Optional["Label"]:
         return self.filter(discogs_id=discogs_id).first()
@@ -141,21 +149,21 @@ class LabelManager(BaseManager):
 
 
 class GenreManager(BaseManager):
-    """Manager для Genre."""
+    """Менеджер для модели Genre."""
 
     def find_by_name(self, name: str) -> Optional["Genre"]:
         return self.filter(name=name).first()
 
 
 class StyleManager(BaseManager):
-    """Manager для Style."""
+    """Менеджер для модели Style."""
 
     def find_by_name(self, name: str) -> Optional["Style"]:
         return self.filter(name=name).first()
 
 
 class FormatManager(BaseManager):
-    """Manager для Format."""
+    """Менеджер для модели Format."""
 
     def find_by_name(self, name: str) -> Optional["Format"]:
         return self.filter(name=name).first()

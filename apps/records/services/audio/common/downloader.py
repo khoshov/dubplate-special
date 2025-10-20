@@ -122,9 +122,13 @@ def http_get(
     scheme = urlsplit(url).scheme.lower()
     if scheme == "http" and not allow_http:
         # Раньше выбрасывали ValueError; теперь не рвём поток по умолчанию, а даём возможность жёстко запретить.
-        logger.warning("HTTP-ссылка (не https): %s — запрещено (allow_http=False).", url)
+        logger.warning(
+            "HTTP-ссылка (не https): %s — запрещено (allow_http=False).", url
+        )
         # Эмулируем «жёсткий» запрет явным исключением только если так просили:
-        raise ValueError(f"Небезопасная схема URL (http) для {url} при allow_http=False.")
+        raise ValueError(
+            f"Небезопасная схема URL (http) для {url} при allow_http=False."
+        )
 
     headers: Dict[str, str] = {}
     if referer:
@@ -133,13 +137,17 @@ def http_get(
         headers["User-Agent"] = random.choice(REDEYE_USER_AGENTS)
 
     if scheme == "http":
-        logger.warning("Используется http-ссылка (не https): %s — продолжаем по совместимости.", url)
+        logger.warning(
+            "Используется http-ссылка (не https): %s — продолжаем по совместимости.",
+            url,
+        )
 
     logger.debug("HTTP GET %s params=%s stream=%s", url, params, stream)
-    response = SESSION.get(url, params=params, headers=headers, timeout=timeout, stream=stream)
+    response = SESSION.get(
+        url, params=params, headers=headers, timeout=timeout, stream=stream
+    )
     response.raise_for_status()
     return response
-
 
 
 def _guess_extension_from_url_or_ct(url: str, content_type: str) -> str:
@@ -179,7 +187,11 @@ def make_audio_filename(track_title: Optional[str], url: str, content_type: str)
 
 def _validate_content_type(url: str, content_type: str) -> None:
     """Пишет предупреждение, если тип контента не из разрешённых и URL без ожидаемого расширения."""
-    if content_type and (content_type not in ALLOWED_AUDIO_CONTENT_TYPES) and not url.lower().endswith((".mp3", ".aac")):
+    if (
+        content_type
+        and (content_type not in ALLOWED_AUDIO_CONTENT_TYPES)
+        and not url.lower().endswith((".mp3", ".aac"))
+    ):
         logger.warning(
             "Неожиданный Content-Type '%s' для URL %s — продолжаем осторожно.",
             content_type,
@@ -205,7 +217,9 @@ def _content_length_ok(response: requests.Response, *, max_bytes: int) -> bool:
     return True
 
 
-def _write_stream_to_temp(response: requests.Response, *, max_bytes: int) -> Optional[str]:
+def _write_stream_to_temp(
+    response: requests.Response, *, max_bytes: int
+) -> Optional[str]:
     """Пишет поток ответа в временный файл с ограничением размера. Возвращает путь или None при превышении лимита."""
     written = 0
     with tempfile.NamedTemporaryFile("wb", delete=False) as tmp_file:
@@ -230,7 +244,9 @@ def _write_stream_to_temp(response: requests.Response, *, max_bytes: int) -> Opt
     return tmp_path
 
 
-def _save_temp_to_filefield(track: TrackLike, url: str, tmp_path: str, content_type: str) -> str:
+def _save_temp_to_filefield(
+    track: TrackLike, url: str, tmp_path: str, content_type: str
+) -> str:
     """Сохраняет временный файл в track.audio_preview и возвращает FieldFile.name."""
     filename = make_audio_filename(getattr(track, "title", None), url, content_type)
     with open(tmp_path, "rb") as fh:
@@ -293,8 +309,12 @@ def download_audio_to_track(
 
     tmp_path: Optional[str] = None
     try:
-        response = http_get(url, timeout=timeout, referer=referer, stream=True, allow_http=allow_http)
-        content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        response = http_get(
+            url, timeout=timeout, referer=referer, stream=True, allow_http=allow_http
+        )
+        content_type = (
+            (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        )
 
         _validate_content_type(url, content_type)
         if not _content_length_ok(response, max_bytes=max_bytes):
@@ -315,7 +335,9 @@ def download_audio_to_track(
 
     except requests.HTTPError as http_error:
         status = getattr(getattr(http_error, "response", None), "status_code", "?")
-        logger.warning("HTTP-ошибка при скачивании %s (status=%s): %s.", url, status, http_error)
+        logger.warning(
+            "HTTP-ошибка при скачивании %s (status=%s): %s.", url, status, http_error
+        )
         return None
     except (requests.RequestException, OSError, ValueError) as error:
         logger.error("Ошибка скачивания/сохранения %s: %s.", url, error, exc_info=True)
@@ -339,7 +361,10 @@ if __name__ == "__main__":
         confirm = input("Обнаружен http. Продолжить? [y/N]: ").strip().lower()
         allow_http_flag = confirm == "y"
 
-    destination = (input("Имя файла для сохранения (по умолчанию track.mp3): ").strip() or "track.mp3")
+    destination = (
+        input("Имя файла для сохранения (по умолчанию track.mp3): ").strip()
+        or "track.mp3"
+    )
 
     try:
         resp = http_get(test_url, timeout=30, stream=True, allow_http=allow_http_flag)

@@ -1,5 +1,7 @@
-# apps/records/management/commands/redeye_mp3_attach.py
 """
+Массовая докачка mp3-превью для записей с источником Redeye.
+
+Пример:
 docker compose exec django uv run python manage.py redeye_mp3_attach `
   --limit 20 `
   --force
@@ -11,15 +13,18 @@ import logging
 import random
 import time
 from typing import Iterable, Optional
-from django.db.models import Exists, OuterRef, Q, Count  # --- добавлено Count ---
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
-from ...models import Record, Track, RecordSource
-from ...services.record_service import RecordService
-from records.services.providers.discogs.discogs_service import DiscogsService
+from records.models import Record, RecordSource, Track
+from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.providers.redeye.redeye_service import RedeyeService
+from records.services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +38,8 @@ class Command(BaseCommand):
          - по умолчанию: записи, у которых есть источник Redeye c role=product_page И can_fetch_audio=True,
            И у хотя бы одного трека нет локального превью (audio_preview пуст).
          - --all: игнорируем проверку на отсутствие превью (но источник/роль/can_fetch_audio всё равно обязательны).
-         - --catalog: точечная обработка по одному каталогу (перекрывает остальную фильтрацию).
-      2) Для каждой записи вызываем RecordService._maybe_attach_redeye_previews(record, force=...).
+         - --catalog: точечная обработка по одному каталожному номеру (перекрывает остальную фильтрацию).
+      2) Для каждой записи вызываем RecordService.attach_audio_from_redeye(record, force=...).
 
     Важные флаги:
       --force         Перекачать превью даже если файлы уже есть.
@@ -43,15 +48,20 @@ class Command(BaseCommand):
       --delay/--jitter/--max-retries/--cooldown/--stop-on-block  Антиблок-поведение.
     """
 
-    help = "Массовая загрузка mp3-превью для записей с источником Redeye (product_page, can_fetch_audio=True)."
+    help = (
+        "Массовая загрузка mp3-превью для записей с источником Redeye "
+        "(role=product_page, can_fetch_audio=True)."
+    )
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser) -> None:
         # Целевые записи
         parser.add_argument(
             "--all",
             action="store_true",
-            help="Обрабатывать все записи Redeye (product_page, can_fetch_audio=True), "
-            "даже если превью уже есть.",
+            help=(
+                "Обрабатывать все записи Redeye (product_page, can_fetch_audio=True), "
+                "даже если превью уже есть."
+            ),
         )
         parser.add_argument(
             "--catalog",
@@ -65,7 +75,10 @@ class Command(BaseCommand):
             help="Ограничить число записей для обработки.",
         )
         parser.add_argument(
-            "--offset", type=int, default=0, help="Пропустить первые N записей выборки."
+            "--offset",
+            type=int,
+            default=0,
+            help="Пропустить первые N записей выборки.",
         )
         parser.add_argument(
             "--order",
@@ -121,15 +134,18 @@ class Command(BaseCommand):
             action="store_true",
             help="Вывести подробную диагностику выборки и причин отсеивания записей.",
         )
-        # Логгирование
+
         parser.add_argument(
-            "--debug", action="store_true", help="Включить подробное логирование."
+            "--debug",
+            action="store_true",
+            help="Включить подробное логирование.",
         )
 
-    # --- вспомогательные ---------------------------------------------------------
+    @staticmethod
     def _iter_queryset_in_order(
-        self, qs, order: str, offset: int = 0, limit: Optional[int] = None
+        qs, order: str, offset: int = 0, limit: Optional[int] = None
     ) -> Iterable[Record]:
+        """Итерирует queryset с учётом сортировки/offset/limit."""
         qs = qs.order_by("id" if order == "asc" else "-id")
         if offset:
             qs = qs[offset:]
@@ -137,12 +153,13 @@ class Command(BaseCommand):
             qs = qs[:limit]
         yield from qs.iterator(chunk_size=200)
 
-    def _sleep_with_jitter(self, base: float, jitter: float) -> None:
+    @staticmethod
+    def _sleep_with_jitter(base: float, jitter: float) -> None:
+        """Пауза между обработкой записей (anti-ban), добавляет случайный джиттер."""
         pause = max(0.0, base + random.uniform(0, jitter))
         time.sleep(pause)
 
-    # --- основная логика ---------------------------------------------------------
-    def handle(self, *args, **options):
+    def handle(self, *args, **options) -> None:
         logging.getLogger().setLevel(
             logging.DEBUG if options["debug"] else logging.INFO
         )
@@ -179,8 +196,10 @@ class Command(BaseCommand):
             cooldown,
             stop_on_block,
         )
+
         if options["diagnose"]:
             self._log_selection_diagnostics()
+
         try:
             qs = self._build_queryset(all_mode=all_mode, catalog=catalog)
         except Exception as exc:
@@ -203,7 +222,10 @@ class Command(BaseCommand):
             return
 
         service = RecordService(
-            discogs_service=DiscogsService(), image_service=ImageService()
+            discogs_service=DiscogsService(),
+            redeye_service=RedeyeService(),
+            image_service=ImageService(),
+            audio_service=AudioService(),
         )
 
         processed = 0
@@ -217,8 +239,14 @@ class Command(BaseCommand):
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    # --- главное действие ---
-                    updated = service._maybe_attach_redeye_previews(record, force=force)  # noqa: SLF001
+                    # основное действие
+                    with transaction.atomic():
+                        updated = service.attach_audio_from_redeye(
+                            record=record,
+                            force=force,
+                            per_click_timeout_sec=20,
+                        )
+
                     logger.info(
                         "OK  id=%s catalog=%s: обновлено треков=%s (attempt %d/%d)",
                         record.id,
@@ -230,7 +258,7 @@ class Command(BaseCommand):
                     break
 
                 except Exception as exc:
-                    # простая эвристика «похоже на блокировку»
+                    # эвристика «похоже на блокировку»
                     msg = str(exc).lower()
                     is_block = any(
                         tok in msg
@@ -269,10 +297,9 @@ class Command(BaseCommand):
 
         logger.info("Готово. Обработано записей: %d", processed)
 
-    # --- построение выборки ------------------------------------------------------
     def _build_queryset(self, all_mode: bool, catalog: Optional[str]):
         """
-        Выборка записей, для которых реально есть смысл пытаться качать превью:
+        Формирует выборку записей, для которых имеет смысл пытаться качать превью:
           - есть RecordSource(provider=REDEYE, role=PRODUCT_PAGE, can_fetch_audio=True);
           - если --all не передан, то у каких-то треков нет локальных превью.
         """
@@ -299,12 +326,12 @@ class Command(BaseCommand):
 
         return qs
 
-    def _log_selection_diagnostics(self) -> None:
+    @staticmethod
+    def _log_selection_diagnostics() -> None:
         """
         Печатает сводку по базе: сколько записей всего, сколько с источником Redeye,
         сколько с role=product_page, сколько с can_fetch_audio=True, сколько с отсутствующими превью и их пересечения.
         """
-        # 1) базовые числа
         total_records = Record.objects.count()
         total_sources = RecordSource.objects.count()
         logger.info(
@@ -313,7 +340,6 @@ class Command(BaseCommand):
             total_sources,
         )
 
-        # 2) провайдеры/роли, как они реально хранятся
         providers = list(
             RecordSource.objects.values_list("provider", flat=True).distinct()
         )
@@ -321,10 +347,8 @@ class Command(BaseCommand):
         logger.info("[DIAG] distinct provider values: %s", providers)
         logger.info("[DIAG] distinct role values: %s", roles)
 
-        # 3) значения для фильтра (устойчиво к enum/строке)
         role_value = getattr(RecordSource.Role, "PRODUCT_PAGE", "product_page")
 
-        # 4) посчитаем по шагам
         recs_with_redeye = (
             RecordSource.objects.filter(provider__iexact="redeye")
             .values("record_id")
@@ -351,7 +375,6 @@ class Command(BaseCommand):
         n_with_redeye_pp_can = recs_with_redeye_pp_can.count()
         logger.info("[DIAG] из них с can_fetch_audio=True: %d", n_with_redeye_pp_can)
 
-        # 5) у каких записей вообще есть «дыры» по превью
         missing_audio_q = Track.objects.filter(record=OuterRef("pk")).filter(
             Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
         )
@@ -363,7 +386,6 @@ class Command(BaseCommand):
             "[DIAG] записей, где у треков отсутствуют превью: %d", n_missing_audio
         )
 
-        # 6) пересечение «можно качать» и «не хватает превью» (это дефолтная выборка без --all)
         n_candidates_default = recs_missing_qs.filter(
             id__in=recs_with_redeye_pp_can
         ).count()
@@ -372,7 +394,6 @@ class Command(BaseCommand):
             n_candidates_default,
         )
 
-        # 7) покажем короткие списки ID, если всё ещё мало
         if n_candidates_default <= 10:
             ids_default = list(
                 recs_missing_qs.filter(id__in=recs_with_redeye_pp_can).values_list(
@@ -381,10 +402,9 @@ class Command(BaseCommand):
             )
             logger.info("[DIAG] candidate IDs: %s", ids_default)
 
-        # 8) диагностируем те, кто «не попал», но почти подходит
         almost_ids = list(
-            Record.objects.filter(id__in=recs_with_redeye_pp)  # есть product_page
-            .exclude(id__in=recs_with_redeye_pp_can)  # но can_fetch_audio=False
+            Record.objects.filter(id__in=recs_with_redeye_pp)
+            .exclude(id__in=recs_with_redeye_pp_can)
             .values_list("id", flat=True)
         )
         if almost_ids:
@@ -393,7 +413,6 @@ class Command(BaseCommand):
                 almost_ids,
             )
 
-        # 9) выведем пометку по трекам для маленьких наборов
         if total_records <= 50:
             for r in Record.objects.filter(id__in=recs_with_redeye_pp_can).order_by(
                 "id"
@@ -420,7 +439,6 @@ class Command(BaseCommand):
                     totals["miss"],
                 )
 
-            # и покажем сводку источников, чтобы увидеть реальное значение provider/role/url
             for r in Record.objects.filter(id__in=recs_with_redeye).order_by("id"):
                 srcs = list(
                     RecordSource.objects.filter(record=r).values_list(

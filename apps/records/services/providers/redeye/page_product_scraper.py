@@ -51,9 +51,15 @@ class RedeyeProductParser:
 
         tracks: List[TrackPayload] = parse_redeye_tracks(soup)
 
-        has_audio_previews: bool = bool(soup.select_one(".play a.btn-play[data-sample]"))
+        has_audio_previews: bool = bool(
+            soup.select_one(".play a.btn-play[data-sample]")
+        )
 
-        notes = f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP" if price is not None else None
+        notes = (
+            f"Цена пластинки на redeyerecords.co.uk составляет: {price:.2f} GBP"
+            if price is not None
+            else None
+        )
 
         logger.info(
             "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s avail=%s img=%s has_audio_previews=%s",
@@ -104,7 +110,11 @@ class RedeyeProductParser:
         if " - " in full:
             artist_part, title_part = full.split(" - ", 1)
             # класс символов вместо альтернаций одного символа
-            artists = [name.strip() for name in re.split(r"\s*[,&/]\s*", artist_part) if name.strip()]
+            artists = [
+                name.strip()
+                for name in re.split(r"\s*[,&/]\s*", artist_part)
+                if name.strip()
+            ]
             return artists, title_part.strip()
         return [], full
 
@@ -114,7 +124,10 @@ class RedeyeProductParser:
             if not paragraph.contents:
                 continue
             first_child = paragraph.contents[0]
-            if isinstance(first_child, NavigableString) and first_child.strip().lower() == "label":
+            if (
+                isinstance(first_child, NavigableString)
+                and first_child.strip().lower() == "label"
+            ):
                 link = paragraph.find("a")
                 if link and link.get_text(strip=True):
                     return link.get_text(strip=True)
@@ -135,14 +148,22 @@ class RedeyeProductParser:
                 if span:
                     value = span.get_text(strip=True)
                     return value or None
-                tail = re.sub(r"^catalogue\s+no\.?\s*", "", text, flags=re.IGNORECASE).strip()
+                tail = re.sub(
+                    r"^catalogue\s+no\.?\s*", "", text, flags=re.IGNORECASE
+                ).strip()
                 return tail or None
         return None
 
-    def _extract_price_and_availability(self, soup: BeautifulSoup) -> Tuple[Optional[Decimal], Optional[str]]:
+    def _extract_price_and_availability(
+        self, soup: BeautifulSoup
+    ) -> Tuple[Optional[Decimal], Optional[str]]:
         full_text = page_text(soup)
 
-        match = re.search(r"£\s*(\d+(?:\.\d{1,2})?)\s*\(\s*£\s*\d+(?:\.\d{1,2})?\s*inc\.?\s*vat", full_text, re.I)
+        match = re.search(
+            r"£\s*(\d+(?:\.\d{1,2})?)\s*\(\s*£\s*\d+(?:\.\d{1,2})?\s*inc\.?\s*vat",
+            full_text,
+            re.I,
+        )
         if match:
             price = Decimal(match.group(1))
         else:

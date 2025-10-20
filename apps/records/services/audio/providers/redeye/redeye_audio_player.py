@@ -16,7 +16,9 @@ from .redeye_audio_scraper import collect_redeye_audio_urls
 logger = logging.getLogger(__name__)
 
 
-def _resolve_product_page_url(record: Record, explicit_url: Optional[str] = None) -> Optional[str]:
+def _resolve_product_page_url(
+    record: Record, explicit_url: Optional[str] = None
+) -> Optional[str]:
     """Метод определяет URL карточки Redeye для записи.
 
     Приоритет источников:
@@ -96,10 +98,14 @@ def _prune_empty_untitled_placeholders(record: Record) -> None:
     """Метод удаляет плейсхолдеры «Untitled...» без аудио, если все треки — 'Untitled…'."""
     qs = record.tracks.order_by("position_index", "id")
     titles = list(qs.values_list("title", flat=True))
-    all_untitled = bool(titles) and all((t or "").lower().startswith("untitled") for t in titles)
+    all_untitled = bool(titles) and all(
+        (t or "").lower().startswith("untitled") for t in titles
+    )
     if not all_untitled:
         return
-    deleted = qs.filter(Q(audio_preview__isnull=True) | Q(audio_preview__exact="")).delete()
+    deleted = qs.filter(
+        Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
+    ).delete()
     logger.info("[audio] удалено плейсхолдеров без аудио: %s.", deleted[0])
 
 
@@ -136,7 +142,9 @@ def attach_audio_from_redeye_player(
     # URL карточки
     page_url = _resolve_product_page_url(record, page_url)
     if not page_url:
-        logger.info("[redeye_player] у записи %s отсутствует URL карточки — пропуск.", record.pk)
+        logger.info(
+            "[redeye_player] у записи %s отсутствует URL карточки — пропуск.", record.pk
+        )
         return 0
 
     # Треки в порядке привязки
@@ -146,10 +154,14 @@ def attach_audio_from_redeye_player(
         return 0
 
     # Сбор ссылок плеера
-    urls = collect_redeye_audio_urls(page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False)
+    urls = collect_redeye_audio_urls(
+        page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False
+    )
     logger.debug("[redeye_player] ссылок получено=%d: %s", len(urls), urls)
     if not urls:
-        logger.info("[redeye_player] не удалось получить медиа-ссылки для %s.", page_url)
+        logger.info(
+            "[redeye_player] не удалось получить медиа-ссылки для %s.", page_url
+        )
         return 0
 
     # Сопоставление и скачивание

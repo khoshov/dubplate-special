@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import logging
@@ -6,7 +5,9 @@ from typing import Optional
 
 from records.models import Record, Track
 from records.services.audio.common.downloader import download_audio_to_track
-from records.services.audio.providers.redeye.redeye_audio_player import attach_audio_from_redeye_player
+from records.services.audio.providers.redeye.redeye_audio_player import (
+    attach_audio_from_redeye_player,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,18 @@ class AudioService:
         Returns:
             int: Количество треков, у которых аудио появилось или обновилось.
         """
-        logger.info("[audio] старт прикрепления аудио из Redeye для записи %s.", record.pk)
-        updated = attach_audio_from_redeye_player(record, page_url=page_url, force=force,
-                                                  per_click_timeout_sec=per_click_timeout_sec)
-        logger.info("[audio] завершено прикрепление аудио из Redeye: обновлено %d.", updated)
+        logger.info(
+            "[audio] старт прикрепления аудио из Redeye для записи %s.", record.pk
+        )
+        updated = attach_audio_from_redeye_player(
+            record,
+            page_url=page_url,
+            force=force,
+            per_click_timeout_sec=per_click_timeout_sec,
+        )
+        logger.info(
+            "[audio] завершено прикрепление аудио из Redeye: обновлено %d.", updated
+        )
         return updated
 
     @staticmethod
@@ -71,5 +80,11 @@ class AudioService:
         Returns:
             Optional[str]: Относительный путь к файлу (`FieldFile.name`) или `None` при неуспехе.
         """
-        return download_audio_to_track(track, url, timeout=timeout, max_bytes=max_bytes, overwrite=overwrite,
-                                       referer=referer)
+        return download_audio_to_track(
+            track,
+            url,
+            timeout=timeout,
+            max_bytes=max_bytes,
+            overwrite=overwrite,
+            referer=referer,
+        )

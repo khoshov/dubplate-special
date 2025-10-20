@@ -1,54 +1,83 @@
-# apps/records/signals.py
+"""
+Сигналы для обслуживания файловых полей моделей:
+- корректное удаление старой обложки при замене;
+- перенос обложки из временной папки '_new' в папку с pk после первого сохранения;
+- уборка файлов и пустых директорий при удалении Record/Track.
+"""
+from __future__ import annotations
+
+import logging
 import os
+from typing import Any, Optional
+
 from django.db.models.signals import pre_save, post_save, post_delete
 from django.dispatch import receiver
+
 from .models import Record, Track
 
+logger = logging.getLogger(__name__)
 
-# ------- helpers -------
 
+def _safe_storage_delete(storage: Any, rel_path: str) -> None:
+    """
+    Удаляет файл из storage по относительному пути, не прерывая основной поток.
 
-def _safe_storage_delete(storage, rel_path: str) -> None:
-    """Безопасно удаляет файл из storage по относительному пути."""
+    Args:
+        storage: backend хранилища (FileSystemStorage, S3 и т.п.).
+        rel_path: относительный путь внутри стораджа.
+
+    """
     if not rel_path:
         return
     try:
         storage.delete(rel_path)
-    except Exception:
-        # не валим сохранение/удаление модели из-за файловой ошибки
-        pass
+    except Exception as exc:  # --- изменено: логируем на DEBUG, не валим сигнал ---
+        logger.debug("Не удалось удалить файл из storage (%s): %s", rel_path, exc)
 
 
-def _safe_rmdir(storage, rel_dir: str) -> None:
+def _safe_rmdir(storage: Any, rel_dir: str) -> None:
     """
-    Пытается удалить ПУСТУЮ директорию. Работает с FileSystemStorage.
-    Для других стораджей просто молча игнорируем.
+    Пытается удалить пустую директорию (актуально для FileSystemStorage).
+    Для стораджей без .path() — молча игнорирует.
+
+    Args:
+        storage: backend хранилища.
+        rel_dir: относительная директория.
+
     """
     try:
-        abs_dir = storage.path(rel_dir)  # у FileSystemStorage есть .path()
+        abs_dir = storage.path(rel_dir)
     except Exception:
         return
 
     try:
         if os.path.isdir(abs_dir) and not os.listdir(abs_dir):
             os.rmdir(abs_dir)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Не удалось удалить пустую директорию (%s): %s", abs_dir, exc)
 
 
 def _move_file_to_id_folder(instance: Record, field_name: str) -> None:
     """
-    Если файл лежит в папке '_new', переносим его в папку с реальным id:
-    <app>/<model>/<field>/_new/filename -> <app>/<model>/<field>/<id>/filename
+    Переносит файл из временной папки '_new' в папку с реальным pk:
+    <app>/<model>/<field>/_new/filename → <app>/<model>/<field>/<pk>/filename
+
+    Args:
+        instance: экземпляр модели Record (уже сохранён).
+        field_name: имя File/Image-поля модели.
+
     """
+    if not instance.pk:
+        return
+
     f = getattr(instance, field_name, None)
     if not f or not getattr(f, "name", ""):
         return
 
-    old_rel = f.name.replace("\\", "/")
+    old_rel = str(f.name).replace("\\", "/")
     parts = old_rel.split("/")
     if "_new" not in parts:
-        return  # уже в целевой структуре
+        return
 
     storage = f.storage
     filename = parts[-1]
@@ -60,114 +89,117 @@ def _move_file_to_id_folder(instance: Record, field_name: str) -> None:
         return
 
     try:
-        # читаем → сохраняем → апдейтим поле в БД (без повторного save модели) → удаляем старый файл
         with storage.open(old_rel, "rb") as src:
             storage.save(new_rel, src)
 
         type(instance).objects.filter(pk=instance.pk).update(**{field_name: new_rel})
-        # локально обновим name — чтобы в админке сразу отобразился новый путь
         getattr(instance, field_name).name = new_rel
 
         _safe_storage_delete(storage, old_rel)
-    except Exception:
-        # не прерываем post_save
-        pass
-
-
-# ------- signals -------
+    except FileNotFoundError as exc:  # --- добавлено: узкий перехват ---
+        logger.debug("Исходный файл для переноса не найден (%s): %s", old_rel, exc)
+    except Exception as exc:
+        logger.debug("Не удалось перенести файл %s → %s: %s", old_rel, new_rel, exc)
 
 
 @receiver(pre_save, sender=Record)
-def cleanup_old_cover_on_change(sender, instance: Record, **kwargs):
+def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs: Any) -> None:
     """
-    Если у записи уже была обложка и её заменили — удалить старый файл.
-    Работает и при переименовании/перемещении (сравниваем относительные пути).
+    Метод удаляет старую обложку при её замене.
+
+    Сценарии:
+      - при редактировании записи, если относительный путь cover_image изменился;
+      - работает и при фактическом перемещении файла (сравнение по .name).
+
+    Args:
+        sender: класс модели (Record).
+        instance: редактируемый объект.
+        **kwargs: дополнительные аргументы от сигналов Django.
+
     """
     if not instance.pk:
         return
 
     try:
-        old = Record.objects.get(pk=instance.pk)
+        old: Optional[Record] = Record.objects.get(pk=instance.pk)
     except Record.DoesNotExist:
+        return
+    except Exception as exc:
+        logger.debug("cleanup_old_cover_on_change: ошибка получения старой версии: %s", exc)
         return
 
     old_file = getattr(old, "cover_image", None)
     new_file = getattr(instance, "cover_image", None)
 
-    old_name = getattr(old_file, "name", "") or ""
-    new_name = getattr(new_file, "name", "") or ""
+    old_name = (getattr(old_file, "name", "") or "").strip()
+    new_name = (getattr(new_file, "name", "") or "").strip()
 
     if old_name and old_name != new_name:
-        _safe_storage_delete(old_file.storage, old_name)
+        _safe_storage_delete(getattr(old_file, "storage", None), old_name)
 
 
 @receiver(post_save, sender=Record)
-def move_cover_after_save(sender, instance: Record, created, **kwargs):
+def move_cover_after_save(sender: type[Record], instance: Record, created: bool, **kwargs: Any) -> None:
     """
-    После первого сохранения переносим файл из '_new' в '<id>/'.
-    Если будут другие File/Image-поля — вызови _move_file_to_id_folder для них тоже.
+    Метод переносит обложку из '_new' в папку с pk после сохранения.
+
+    Args:
+        sender: класс модели (Record).
+        instance: сохранённый объект.
+        created: флаг «создан новый» от Django.
+        **kwargs: дополнительные аргументы.
+
     """
     _move_file_to_id_folder(instance, "cover_image")
 
 
 @receiver(post_delete, sender=Record)
-def cleanup_cover_on_delete(sender, instance: Record, **kwargs):
+def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: Any) -> None:
     """
-    Удаляем файл обложки и очищаем пустые директории вверх до каталога поля:
-    <app>/<model>/<field>/<id>/filename → чистим <id>/ и, если опустело, <field>/.
+    Метод удаляет обложку и чистит пустые директории при удалении записи.
+
+    Структура путей:
+      records/record/cover_image/<id>/filename → чистим <id>/ и (при необходимости) cover_image/
+
     """
     f = getattr(instance, "cover_image", None)
     if not f or not getattr(f, "name", ""):
         return
 
     storage = f.storage
-    rel_path = f.name.replace(
-        "\\", "/"
-    )  # e.g. "records/record/cover_image/42/title.jpg"
+    rel_path = str(f.name).replace("\\", "/")
 
-    # 1) удалить сам файл
     _safe_storage_delete(storage, rel_path)
 
-    # 2) подниматься вверх и удалять пустые каталоги до уровня <app>/<model>/<field>
-    #    (не поднимаемся выше директории поля)
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join(
-        [instance._meta.app_label, instance._meta.model_name, "cover_image"]
-    )
+    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "cover_image"])
 
-    # сначала удалим папку с id, затем — при необходимости — сам каталог поля
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)
-
     _safe_rmdir(storage, stop_at)
 
 
-# --- добавлено: очистка mp3 при удалении треков ---
-
-
 @receiver(post_delete, sender=Track)
-def cleanup_audio_on_delete(sender, instance: Track, **kwargs):
+def cleanup_audio_on_delete(sender: type[Track], instance: Track, **kwargs: Any) -> None:
     """
-    При удалении трека удаляем файл превью (audio_preview)
-    и чистим пустые директории, если используется FileSystemStorage.
+    Метод удаляет превью-аудио и чистит пустые директории при удалении трека.
+
+    Структура путей:
+      records/track/audio_preview/<id>/clip.mp3 → чистим <id>/ и (при необходимости) audio_preview/
+
     """
     f = getattr(instance, "audio_preview", None)
     if not f or not getattr(f, "name", ""):
         return
 
     storage = f.storage
-    rel_path = f.name.replace(
-        "\\", "/"
-    )  # например: "records/track/audio_preview/123/clip.mp3"
+    rel_path = str(f.name).replace("\\", "/")
 
-    # удалить сам mp3
     _safe_storage_delete(storage, rel_path)
 
-    # удалить пустые директории вверх до уровня поля audio_preview
     rel_dir = os.path.dirname(rel_path)
-    stop_at = "/".join(
-        [instance._meta.app_label, instance._meta.model_name, "audio_preview"]
-    )
+    stop_at = "/".join([instance._meta.app_label, instance._meta.model_name, "audio_preview"])
+
     if rel_dir and rel_dir != stop_at:
         _safe_rmdir(storage, rel_dir)
     _safe_rmdir(storage, stop_at)

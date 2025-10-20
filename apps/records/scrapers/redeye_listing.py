@@ -1,40 +1,51 @@
-# apps/records/scrapers/redeye_listing.py
 from __future__ import annotations
 
 import argparse
 import logging
+import random
 import re
 import time
-import random
+from dataclasses import dataclass
 from textwrap import dedent
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
+from records.constants import REDEYE_USER_AGENTS
+
 logger = logging.getLogger(__name__)
+
+_PRODUCT_HREF_PATTERNS = (
+    re.compile(r"/vinyl/\d+[-a-z0-9]+", re.IGNORECASE),
+    re.compile(r"/(?:downloads|cd)/\d+[-a-z0-9]+", re.IGNORECASE),
+)
+
+
+@dataclass(frozen=True)
+class _PagerDecision:
+    """Результат анализа пагинации в #pageLinks."""
+
+    has_pagelinks: bool
+    next_absolute_url: Optional[str]
 
 
 class RedeyeListingScraper:
     """
-    Обходит категорию Redeye (например, /bass-music/pre-orders) с пагинацией
-    и отдаёт абсолютные URL карточек товаров.
+    Класс реализует обход страниц категории Redeye (например, `/bass-music/pre-orders`)
+    и генерацию абсолютных URL карточек товаров.
 
-    Порядок определения "следующей страницы":
-      1) Если есть <div id="pageLinks">:
-         - берём <a class="ml-2" ...> (кнопка >>), если она есть;
-         - иначе смотрим <select id="pageNumber"> и берём option, следующий за текущим selected;
-         - если ничего нет — это последняя страница, ОСТАНАВЛИВАЕМСЯ (никаких guess /page-N).
-      2) Если #pageLinks нет:
-         - rel="next" / класс .next / текстовые эвристики;
-         - если и их нет — пробуем аккуратно синтезировать /page-{n+1} (резерв).
+    Порядок перехода по страницам:
+      1) Если на странице есть `<div id="pageLinks">` — используем только его:
+         - сначала кнопка `>>` (`a.ml-2`);
+         - иначе `<select id="pageNumber">` и берём следующий `option`;
+         - если ни того, ни другого — это последняя страница (остановка).
+      2) Если `#pageLinks` отсутствует — пробуем:
+         - `rel="next"` / элементы с классом `next` / текстовые эвристики;
+         - при их отсутствии — резервный синтез `.../page-{n+1}` с проверкой,
+           что страница действительно содержит карточки.
     """
-
-    _PRODUCT_HREF_PATTERNS = (
-        re.compile(r"/vinyl/\d+[-a-z0-9]+", re.IGNORECASE),
-        re.compile(r"/(downloads|cd)/\d+[-a-z0-9]+", re.IGNORECASE),
-    )
 
     def __init__(
         self,
@@ -48,6 +59,19 @@ class RedeyeListingScraper:
         cooldown_sec: int = 90,
         stop_on_block: bool = False,
     ) -> None:
+        """
+        Инициализирует скрапер.
+
+        Args:
+            user_agent: строка User-Agent; если не указана — берётся случайная из пула.
+            delay_sec: базовая задержка между страницами.
+            timeout: таймаут HTTP-запроса в секундах.
+            session: внешняя requests.Session (опционально).
+            jitter_sec: случайная прибавка к задержке (0..jitter_sec).
+            max_retries: количество повторов при сбоях.
+            cooldown_sec: охлаждение (сек.) при кодах 403/429.
+            stop_on_block: прекращать работу при повторном блоке на последней попытке.
+        """
         self.delay_sec = max(0.0, float(delay_sec))
         self.jitter_sec = max(0.0, float(jitter_sec))
         self.timeout = float(timeout)
@@ -56,13 +80,9 @@ class RedeyeListingScraper:
         self.stop_on_block = bool(stop_on_block)
 
         self.session = session or requests.Session()
-        self._user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-        ]
         self.session.headers.update(
             {
-                "User-Agent": user_agent or random.choice(self._user_agents),
+                "User-Agent": user_agent or random.choice(REDEYE_USER_AGENTS),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-GB,en;q=0.9",
                 "Cache-Control": "no-cache",
@@ -71,18 +91,22 @@ class RedeyeListingScraper:
             }
         )
 
-    # ---------- публичный API ----------
     def iter_product_urls(
         self, category_url: str, limit: Optional[int] = None
     ) -> Iterator[str]:
         """
-        Обходит ВСЕ страницы категории и yield'ит абсолютные URL карточек товаров.
-        :param category_url: абсолютный URL страницы категории
-        :param limit: максимум ссылок (None — без ограничения)
+        Генерирует абсолютные URL карточек для всех страниц категории.
+
+        Args:
+            category_url: абсолютный URL страницы категории.
+            limit: максимальное число ссылок (None — без ограничения).
+
+        Yields:
+            Абсолютные URL карточек.
         """
-        base = self._base_origin(category_url)
-        seen: set[str] = set()
-        collected = 0
+        origin = self._base_origin(category_url)
+        seen_keys: set[str] = set()
+        emitted = 0
 
         current_url = category_url
         current_page_num = self._extract_page_number(current_url) or 1
@@ -98,72 +122,62 @@ class RedeyeListingScraper:
 
             soup = BeautifulSoup(html, "html.parser")
 
-            # 1) собрать ссылки карточек на текущей странице
             page_count = 0
-            for href in self._extract_product_hrefs(soup):
-                abs_url = urljoin(base, href)
+            for rel_href in self._extract_product_hrefs(soup):
+                abs_url = urljoin(origin, rel_href)
                 key = self._canon_product_key(abs_url)
-                if key in seen:
+                if key in seen_keys:
                     continue
-                seen.add(key)
+                seen_keys.add(key)
+
                 logger.debug("product url: %s", abs_url)
                 yield abs_url
 
-                collected += 1
                 page_count += 1
-                if limit is not None and collected >= limit:
-                    logger.info("limit reached: %s items", collected)
+                emitted += 1
+                if limit is not None and emitted >= limit:
+                    logger.info("limit reached: %s items", emitted)
                     return
 
             logger.info(
                 "page %s: collected %s items (total %s)",
                 current_page_num,
                 page_count,
-                collected,
+                emitted,
             )
 
-            # 2) сначала — строгая логика #pageLinks
-            has_pagelinks, next_abs_from_pagelinks = self._next_via_pagelinks(
-                soup, current_url, base
-            )
-
-            if has_pagelinks:
-                # Если есть #pageLinks и в нём НЕТ следующей страницы — стоп
-                if not next_abs_from_pagelinks:
+            decision = self._next_via_pagelinks(soup, current_url, origin)
+            if decision.has_pagelinks:
+                if not decision.next_absolute_url:
                     logger.info("pagination finished by #pageLinks: last page reached")
                     break
-                # Идём строго по ссылке из #pageLinks
-                current_url = next_abs_from_pagelinks
+                current_url = decision.next_absolute_url
                 current_page_num = self._extract_page_number(current_url) or (
                     current_page_num + 1
                 )
                 self._sleep_polite()
                 continue
 
-            # 3) если #pageLinks нет — используем старые эвристики (rel='next'/guess)
             next_rel = self._find_next_page_href(soup)
-            next_abs = None
-            if not next_rel:
-                guessed = self._guess_next_page_path(current_url, current_page_num)
-                if guessed:
-                    logger.debug(
-                        "no explicit pager, try guessed next page: %s", guessed
-                    )
-                    html_next = self._fetch(guessed)
-                    if html_next and self._page_has_products(html_next):
-                        next_abs = (
-                            guessed
-                            if re.match(r"^https?://", guessed, re.I)
-                            else urljoin(base, guessed)
-                        )
-            else:
+            next_abs: Optional[str] = None
+            if next_rel:
                 next_abs = (
                     next_rel
-                    if re.match(r"^https?://", next_rel, re.I)
-                    else urljoin(base, next_rel)
+                    if self._is_absolute(next_rel)
+                    else urljoin(origin, next_rel)
                 )
+            else:
+                guess = self._guess_next_page_path(current_url, current_page_num)
+                if guess:
+                    logger.debug("no explicit pager, try guessed next page: %s", guess)
+                    html_next = self._fetch(guess)
+                    if html_next and self._page_has_products(html_next):
+                        next_abs = (
+                            guess
+                            if self._is_absolute(guess)
+                            else urljoin(origin, guess)
+                        )
 
-            # 4) переход на следующую страницу или остановка
             if next_abs:
                 current_url = next_abs
                 current_page_num = self._extract_page_number(current_url) or (
@@ -171,7 +185,6 @@ class RedeyeListingScraper:
                 )
                 self._sleep_polite()
             else:
-                # Доп. предохранитель: если на текущей странице 0 товаров — тоже стоп
                 if page_count == 0:
                     logger.info(
                         "pagination finished: no products on page (likely beyond last)"
@@ -180,32 +193,38 @@ class RedeyeListingScraper:
                     logger.info("pagination finished: no next page detected")
                 break
 
-    # ---------- внутренние помощники ----------
     def _fetch(self, url: str, *, referer: Optional[str] = None) -> Optional[str]:
         """
-        Политный fetch с ретраями, бэкофом и охлаждением на 403/429.
-        Возвращает текст HTML или None.
+        Выполняет HTTP GET с ретраями и «охлаждением» при 403/429.
+
+        Args:
+            url: абсолютный URL страницы.
+            referer: заголовок Referer (опционально).
+
+        Returns:
+            Текст HTML либо None при неуспехе.
         """
-        last_exc = None
+        last_error: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                # умеренная ротация агента
-                self.session.headers["User-Agent"] = random.choice(self._user_agents)
+                self.session.headers["User-Agent"] = random.choice(
+                    REDEYE_USER_AGENTS
+                )  # лёгкая ротация
                 if referer:
                     self.session.headers["Referer"] = referer
+
                 resp = self.session.get(url, timeout=self.timeout)
                 status = resp.status_code
 
                 if status == 200:
-                    ctype = resp.headers.get("Content-Type", "")
+                    ctype = resp.headers.get("Content-Type") or ""
                     if "text/html" not in ctype:
                         logger.warning("unexpected content-type %s for %s", ctype, url)
                         return None
                     return resp.text
 
-                # мягкие сбои (5xx) — пробуем с бэкофом
                 if 500 <= status < 600:
-                    backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+                    backoff = min(2 ** (attempt - 1), 8) + random.uniform(0.0, 0.8)
                     logger.warning(
                         "server %s for %s (attempt %s/%s), backoff=%.1fs",
                         status,
@@ -217,7 +236,6 @@ class RedeyeListingScraper:
                     time.sleep(backoff)
                     continue
 
-                # подозрение на блок
                 if status in (403, 429):
                     logger.warning(
                         "possible block %s for %s (attempt %s/%s) → cooldown %ss",
@@ -234,23 +252,20 @@ class RedeyeListingScraper:
                                 "stop_on_block=True → прекращаем работу на %s", url
                             )
                             return None
-                        else:
-                            logger.warning("skip blocked page: %s", url)
-                            return None
-                    # после охлаждения — ещё попытка (без лишнего сна)
-                    continue
+                        logger.warning("skip blocked page: %s", url)
+                        return None
+                    continue  # ещё попытка после охлаждения
 
-                # прочие статусы — без ретраев
                 logger.warning("bad status %s for %s", status, url)
                 return None
 
-            except requests.RequestException as e:
-                last_exc = e
-                backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
+            except requests.RequestException as err:
+                last_error = err
+                backoff = min(2 ** (attempt - 1), 8) + random.uniform(0.0, 0.8)
                 logger.warning(
                     "request error for %s: %s (attempt %s/%s), backoff=%.1fs",
                     url,
-                    e,
+                    err,
                     attempt,
                     self.max_retries,
                     backoff,
@@ -261,82 +276,93 @@ class RedeyeListingScraper:
             "giving up on %s after %s attempts; last error: %s",
             url,
             self.max_retries,
-            last_exc,
+            last_error,
         )
         return None
 
-    def _sleep_polite(self):
-        # базовая задержка + джиттер
-        jitter = random.uniform(0.0, self.jitter_sec)
-        time.sleep(self.delay_sec + jitter)
+    def _sleep_polite(self) -> None:
+        """Делает паузу между запросами: базовая задержка + джиттер."""
+        time.sleep(self.delay_sec + random.uniform(0.0, self.jitter_sec))
+
+    @staticmethod
+    def _is_absolute(url: str) -> bool:
+        return bool(re.match(r"^https?://", url, re.IGNORECASE))
 
     @staticmethod
     def _base_origin(url: str) -> str:
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}"
 
-    def _extract_product_hrefs(self, soup: BeautifulSoup) -> Iterator[str]:
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
+    @staticmethod
+    def _extract_product_hrefs(soup: BeautifulSoup) -> Iterator[str]:
+        """
+        Извлекает относительные пути карточек с текущей страницы.
+
+        Returns:
+            Итератор относительных путей вида `/vinyl/186174-onef079-...`.
+        """
+        for anchor in soup.find_all("a", href=True):
+            href = anchor["href"].strip()
             if not href or href.startswith("#"):
                 continue
-            rel = href
-            if href.startswith("http://") or href.startswith("https://"):
+
+            relative = href
+            if href.startswith(("http://", "https://")):
                 parsed = urlparse(href)
-                rel = parsed.path or "/"
-            for pat in self._PRODUCT_HREF_PATTERNS:
-                if pat.search(rel):
-                    yield rel
+                relative = parsed.path or "/"
+
+            for pattern in _PRODUCT_HREF_PATTERNS:
+                if pattern.search(relative):
+                    yield relative
                     break
 
     @staticmethod
     def _find_next_page_href(soup: BeautifulSoup) -> Optional[str]:
-        # rel="next"
+        """Пытается найти ссылку на следующую страницу без учёта #pageLinks."""
         tag = soup.find("a", attrs={"rel": "next"}, href=True)
         if tag:
             return tag["href"]
 
-        # класс next
-        tag = soup.find("a", class_=re.compile(r"\bnext\b", re.I), href=True)
+        tag = soup.find("a", class_=re.compile(r"\bnext\b", re.IGNORECASE), href=True)
         if tag:
             return tag["href"]
 
-        # текстовые эвристики
-        for a in soup.find_all("a", href=True):
-            text = (a.get_text() or "").strip().lower()
+        for anchor in soup.find_all("a", href=True):
+            text = (anchor.get_text() or "").strip().lower()
             if text in {"next", "older", "›", "»"}:
-                return a["href"]
+                return anchor["href"]
 
-        # элементы пагинации (резерв)
-        pagers = soup.select("ul.pagination a[href], nav.pagination a[href]")
-        for a in pagers:
-            classes = " ".join(a.get("class", []))
-            if re.search(r"\bnext\b", classes, re.I):
-                return a["href"]
+        for anchor in soup.select("ul.pagination a[href], nav.pagination a[href]"):
+            classes = " ".join(anchor.get("class", []))
+            if re.search(r"\bnext\b", classes, re.IGNORECASE):
+                return anchor["href"]
 
         return None
 
     @staticmethod
     def _extract_page_number(url: str) -> Optional[int]:
-        m = re.search(r"/page-(\d+)", url)
-        if not m:
+        """Извлекает номер страницы из пути вида `/page-3`."""
+        match = re.search(r"/page-(\d+)", url)
+        if not match:
             return None
         try:
-            return int(m.group(1))
+            return int(match.group(1))
         except ValueError:
             return None
 
     @staticmethod
     def _guess_next_page_path(current_url: str, current_page_num: int) -> Optional[str]:
-        # уже на /page-N
-        m = re.search(r"(/page-)(\d+)(/?)$", current_url)
-        if m:
-            base = current_url[: m.start(1)]
-            n = int(m.group(2)) + 1
-            tail = m.group(3) or ""
-            return f"{base}/page-{n}{tail}"
+        """
+        Синтезирует путь следующей страницы (резервный вариант),
+        корректно обрабатывая случаи без `page-1`.
+        """
+        match = re.search(r"(/page-)(\d+)(/?)$", current_url)
+        if match:
+            base = current_url[: match.start(1)]
+            next_num = int(match.group(2)) + 1
+            tail = match.group(3) or ""
+            return f"{base}/page-{next_num}{tail}"
 
-        # первая страница без page-1
         if re.search(r"/pre-orders/?$", current_url):
             return f"{current_url.rstrip('/')}/page-2"
 
@@ -345,169 +371,143 @@ class RedeyeListingScraper:
     @staticmethod
     def _canon_product_key(url: str) -> str:
         """
-        Канонизируем ссылку для дедупликации:
-        - берём только path (без схемы/хоста/параметров/якорей);
-        - режем хвостовой слэш;
-        - приводим к нижнему регистру (пути у них не чувствительны к регистру).
+        Нормализует ссылку карточки для дедупликации:
+        - берётся только path (без схемы/хоста/параметров/якорей),
+        - срезается хвостовой слэш,
+        - приводится к нижнему регистру.
         """
-        p = urlparse(url)
-        path = (p.path or "/").rstrip("/")
+        parsed = urlparse(url)
+        path = (parsed.path or "/").rstrip("/")
         return path.lower() or "/"
 
     def _page_has_products(self, html: str) -> bool:
+        """Возвращает True, если HTML содержит хотя бы одну ссылку карточки."""
         soup = BeautifulSoup(html, "html.parser")
         for _ in self._extract_product_hrefs(soup):
             return True
         return False
 
-    # --- строгая пагинация по #pageLinks ---
     def _next_via_pagelinks(
-        self, soup: BeautifulSoup, current_url: str, base: str
-    ) -> Tuple[bool, Optional[str]]:
+        self, soup: BeautifulSoup, current_url: str, origin: str
+    ) -> _PagerDecision:
         """
-        Если на странице есть <div id="pageLinks">, вычисляет ссылку на следующую страницу.
-        Возвращает (has_pagelinks: bool, next_abs_url_or_none).
-        Если has_pagelinks == True и next == None -> это последняя страница (жёсткая остановка).
+        Анализирует `<div id="pageLinks">` и определяет ссылку на следующую страницу.
+
+        Returns:
+            _PagerDecision(has_pagelinks=<bool>, next_absolute_url=<str|None>)
+
+            Если has_pagelinks == True и next_absolute_url == None — это последняя страница.
         """
         page_links = soup.find(id="pageLinks")
         if not page_links:
-            return False, None
+            return _PagerDecision(False, None)
 
-        # 1) Явная кнопка ">>"
-        a_next = page_links.find("a", class_=re.compile(r"\bml-2\b", re.I), href=True)
-        if a_next:
-            href = a_next["href"].strip()
+        button_next = page_links.find(
+            "a", class_=re.compile(r"\bml-2\b", re.IGNORECASE), href=True
+        )
+        if button_next:
+            href = (button_next.get("href") or "").strip()
             if href:
-                next_abs = (
-                    href if re.match(r"^https?://", href, re.I) else urljoin(base, href)
-                )
+                next_abs = href if self._is_absolute(href) else urljoin(origin, href)
                 logger.debug("pageLinks: next via button -> %s", next_abs)
-                return True, next_abs
+                return _PagerDecision(True, next_abs)
 
-        # 2) Селектор с вариантами страниц
         select = page_links.find("select", id="pageNumber")
         if select:
             options = select.find_all("option")
-            # найти текущий selected (по атрибуту selected ИЛИ по совпадению value/current_url)
-            cur_idx = None
-            for i, opt in enumerate(options):
-                val = (opt.get("value") or "").strip()
-                is_selected = opt.has_attr("selected")
-                if is_selected:
-                    cur_idx = i
+            current_index: Optional[int] = None
+
+            for idx, opt in enumerate(options):
+                value = (opt.get("value") or "").strip()
+                if opt.has_attr("selected"):
+                    current_index = idx
                     break
-                if val and self._urls_equivalent(val, current_url):
-                    cur_idx = i
+                if value and self._urls_equivalent(value, current_url):
+                    current_index = idx
                     break
 
-            if cur_idx is not None and (cur_idx + 1) < len(options):
-                next_val = (options[cur_idx + 1].get("value") or "").strip()
-                if next_val:
+            if current_index is not None and (current_index + 1) < len(options):
+                next_value = (options[current_index + 1].get("value") or "").strip()
+                if next_value:
                     next_abs = (
-                        next_val
-                        if re.match(r"^https?://", next_val, re.I)
-                        else urljoin(base, next_val)
+                        next_value
+                        if self._is_absolute(next_value)
+                        else urljoin(origin, next_value)
                     )
                     logger.debug("pageLinks: next via select -> %s", next_abs)
-                    return True, next_abs
+                    return _PagerDecision(True, next_abs)
 
-        # ничего нет → последняя страница
         logger.debug("pageLinks: no next page (last page reached)")
-        return True, None
+        return _PagerDecision(True, None)
 
     @staticmethod
     def _urls_equivalent(a: str, b: str) -> bool:
         """Сравнивает URL без учёта trailing slash; если один относительный — сравниваем только path."""
 
-        def norm(u: str) -> str:
-            p = urlparse(u)
-            path = p.path.rstrip("/")
+        def _norm(u: str) -> str:
+            parsed = urlparse(u)
+            path = (parsed.path or "/").rstrip("/")
             return path or "/"
 
-        return norm(a) == norm(b)
+        return _norm(a) == _norm(b)
 
 
-# Удобный функциональный интерфейс
-def iterate_category_urls(
-    category_url: str, *, limit: Optional[int] = None, delay_sec: float = 0.6
-) -> Iterator[str]:
-    scraper = RedeyeListingScraper(delay_sec=delay_sec)
-    yield from scraper.iter_product_urls(category_url, limit=limit)
-
-
-# ---------- CLI для тестового запуска ----------
-def _cli():
+def _cli() -> None:
     parser = argparse.ArgumentParser(
         description="Собрать ВСЕ ссылки карточек Redeye с указанной страницы категории (с пагинацией).",
-        epilog=dedent("""\
-                Примеры запуска:
+        epilog=dedent(
+            """\
+            Примеры запуска:
 
-                  1) Локально (из IDE/терминала) из директории файла:
-                     python  records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/bass-music/pre-orders
+              1) Локально:
+                 python apps/records/scrapers/redeye_listing.py --url https://www.redeyerecords.co.uk/bass-music/pre-orders --limit 20 --debug
 
-                     Через uv:
-                     uv run records.scrapers.redeye_listing --url https://www.redeyerecords.co.uk/drum-and-bass/pre-orders --debug
-
-                  2) Внутри Docker-контейнера (рекомендуется для проекта):
-                     docker compose exec django uv run -m records.scrapers.redeye_listing --url "https://www.redeyerecords.co.uk/bass-music/pre-orders" --debug
-
-                     Подсказки:
-                    - --limit N            : ограничить количество найденных ссылок (для быстрой проверки)
-                    - --delay 0.6          : задержка между страницами (секунды)
-                    - --timeout 15         : таймаут HTTP (секунды)
-                    - --debug              : подробные логи, печатаем каждую найденную ссылку
-            """),
+              2) В Docker-контейнере:
+                 docker compose exec django uv run -m apps.records.scrapers.redeye_listing --url "https://www.redeyerecords.co.uk/drum-and-bass/pre-orders" --limit 10 --debug
+            """
+        ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument(
-        "--url",
-        required=True,
-        help="URL страницы категории, например: https://www.redeyerecords.co.uk/bass-music/pre-orders",
-    )
+    parser.add_argument("--url", required=True, help="URL страницы категории Redeye.")
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Максимум ссылок для вывода (по умолчанию — без ограничения)",
+        help="Максимум ссылок (по умолчанию — без ограничения).",
     )
     parser.add_argument(
-        "--delay",
+        "--delay", type=float, default=0.6, help="Задержка между страницами (сек.)."
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=15.0, help="HTTP таймаут (сек.)."
+    )
+    parser.add_argument("--debug", action="store_true", help="Подробный лог (DEBUG).")
+    parser.add_argument(
+        "--jitter",
         type=float,
-        default=0.6,
-        help="Задержка между страницами (сек.)",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=15.0,
-        help="HTTP таймаут (сек.)",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Режим отладки (DEBUG): печатать каждую найденную ссылку",
-    )
-    parser.add_argument(
-        "--jitter", type=float, default=0.5, help="Случайная прибавка к задержке (сек.)"
+        default=0.5,
+        help="Случайная прибавка к задержке (сек.).",
     )
     parser.add_argument(
         "--max-retries",
         type=int,
         default=4,
-        help="Число повторов при сетевых/серверных ошибках",
+        help="Число повторов при сетевых/серверных ошибках.",
     )
     parser.add_argument(
-        "--cooldown", type=int, default=90, help="Охлаждение при 403/429 (сек.)"
+        "--cooldown", type=int, default=90, help="Охлаждение при 403/429 (сек.)."
     )
     parser.add_argument(
         "--stop-on-block",
         action="store_true",
-        help="Остановиться при повторном 403/429",
+        help="Остановиться при повторном 403/429.",
     )
-    args = parser.parse_args()
 
-    level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
+    args = parser.parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
     scraper = RedeyeListingScraper(
         delay_sec=args.delay,
@@ -517,11 +517,11 @@ def _cli():
         cooldown_sec=args.cooldown,
         stop_on_block=args.stop_on_block,
     )
-    count = 0
-    for u in scraper.iter_product_urls(args.url, limit=args.limit):
-        print(u)
-        count += 1
 
+    count = 0
+    for link in scraper.iter_product_urls(args.url, limit=args.limit):
+        print(link)
+        count += 1
     logger.info("Готово. Всего ссылок: %s", count)
 
 

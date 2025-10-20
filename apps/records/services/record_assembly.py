@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Сборка модели Record из нормализованного payload провайдера.
 
@@ -25,6 +23,8 @@ from __future__ import annotations
       - position: str (например 'A1') — опционально
       - position_index: int (1..N) — используется для будущей привязки аудио
 """
+
+from __future__ import annotations
 
 import logging
 from typing import Mapping, Sequence
@@ -83,7 +83,9 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
         attach_relations(record, data)
         create_tracklist(record, tracks_payload, replace=True)
 
-    logger.info("Создана запись Record (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—")
+    logger.info(
+        "Создана запись Record (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—"
+    )
     return record
 
 
@@ -126,7 +128,11 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
     tracks_payload = _seq_of_maps(data.get("tracks"))
     create_tracklist(record, tracks_payload, replace=True)
 
-    logger.info("Запись обновлена из нормализованных данных (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—")
+    logger.info(
+        "Запись обновлена из нормализованных данных (pk=%s, CAT=%s)",
+        record.pk,
+        record.catalog_number or "—",
+    )
     return record
 
 
@@ -166,29 +172,35 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
         name = _canon_vocab(raw)
         if not name:
             continue
-        obj = Genre.objects.filter(name__iexact=name).first() or Genre.objects.create(name=name)
+        obj = Genre.objects.filter(name__iexact=name).first() or Genre.objects.create(
+            name=name
+        )
         record.genres.add(obj)
 
     for raw in _list_of_str(data.get("styles")):
         name = _canon_vocab(raw)
         if not name:
             continue
-        obj = Style.objects.filter(name__iexact=name).first() or Style.objects.create(name=name)
+        obj = Style.objects.filter(name__iexact=name).first() or Style.objects.create(
+            name=name
+        )
         record.styles.add(obj)
 
     for raw in _list_of_str(data.get("formats")):
         name = _clean_or_none(raw)
         if not name:
             continue
-        obj = Format.objects.filter(name__iexact=name).first() or Format.objects.create(name=name)
+        obj = Format.objects.filter(name__iexact=name).first() or Format.objects.create(
+            name=name
+        )
         record.formats.add(obj)
 
 
 def create_tracklist(
-        record: Record,
-        tracks: Sequence[Mapping[str, object]],
-        *,
-        replace: bool = True,
+    record: Record,
+    tracks: Sequence[Mapping[str, object]],
+    *,
+    replace: bool = True,
 ) -> int:
     """
     Метод создаёт треклист записи.

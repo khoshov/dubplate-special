@@ -1,6 +1,3 @@
-# apps/records/services/tracklist_writer.py
-from __future__ import annotations
-
 """
 Запись треклиста в базу данных.
 
@@ -19,6 +16,8 @@ from __future__ import annotations
     }
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Any, Iterable, List, Mapping
 
@@ -28,7 +27,6 @@ from records.models import Record, Track
 
 logger = logging.getLogger(__name__)
 
-# ожидаемый «вид» входного трека
 TrackInput = Mapping[str, Any]
 
 
@@ -87,7 +85,11 @@ def create_tracks_for_record(
     if replace:
         deleted = Track.objects.filter(record=record).delete()[0]
         if deleted:
-            logger.debug("create_tracks_for_record(%s): удалено старых треков: %d", record.pk, deleted)
+            logger.debug(
+                "create_tracks_for_record(%s): удалено старых треков: %d",
+                record.pk,
+                deleted,
+            )
 
     to_create: List[Track] = []
     for index, row in enumerate(normalized_rows, start=1):
@@ -103,11 +105,16 @@ def create_tracks_for_record(
         )
 
     if not to_create:
-        logger.info("create_tracks_for_record(%s): отсутствуют валидные элементы после нормализации.", record.pk)
+        logger.info(
+            "create_tracks_for_record(%s): отсутствуют валидные элементы после нормализации.",
+            record.pk,
+        )
         return []
 
     Track.objects.bulk_create(to_create)
-    logger.info("create_tracks_for_record(%s): создано треков: %d", record.pk, len(to_create))
+    logger.info(
+        "create_tracks_for_record(%s): создано треков: %d", record.pk, len(to_create)
+    )
     return to_create
 
 

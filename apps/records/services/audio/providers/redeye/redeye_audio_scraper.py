@@ -97,7 +97,9 @@ def _collect_button_letters(page: Page) -> List[str]:
         buttons = page.locator(REDEYE_PLAYER_BUTTON_SELECTOR)
         count = buttons.count()
         for i in range(count):
-            data_sample = (buttons.nth(i).get_attribute("data-sample") or "").strip().lower()
+            data_sample = (
+                (buttons.nth(i).get_attribute("data-sample") or "").strip().lower()
+            )
             if data_sample:
                 unique_letters.add(data_sample)
     except PWError:
@@ -159,7 +161,9 @@ def _extract_redeye_number_from_html(html: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _fallback_fill_missing(html: str, urls_ordered: List[str], letters: List[str]) -> List[str]:
+def _fallback_fill_missing(
+    html: str, urls_ordered: List[str], letters: List[str]
+) -> List[str]:
     """Метод достраивает недостающие mp3-ссылки по буквам при нехватке.
 
     Правила:
@@ -199,14 +203,20 @@ def _fallback_fill_missing(html: str, urls_ordered: List[str], letters: List[str
             if resp.status_code in MEDIA_ACCEPTABLE_HTTP_STATUSES:
                 out.append(candidate)
                 present.add(candidate)
-                logger.info("[capture:fallback] добавлена недостающая ссылка: %s", candidate)
+                logger.info(
+                    "[capture:fallback] добавлена недостающая ссылка: %s", candidate
+                )
         except requests.RequestException as req_err:
-            logger.debug("[capture:fallback] ошибка проверки %s: %s", candidate, req_err)
+            logger.debug(
+                "[capture:fallback] ошибка проверки %s: %s", candidate, req_err
+            )
 
     return _map_urls_by_letters(out, letters)
 
 
-def _wait_new_urls(bag: Dict[str, None], before_count: int, timeout_sec: float, page: Page) -> None:
+def _wait_new_urls(
+    bag: Dict[str, None], before_count: int, timeout_sec: float, page: Page
+) -> None:
     """Метод ожидает появления новых URL в «сниффере» после клика по кнопке."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
@@ -261,7 +271,10 @@ def collect_redeye_audio_urls(
             letters = _collect_button_letters(page)
             total = len(letters)
             if total == 0:
-                logger.warning("[capture] на странице нет кнопок плеера: %s", REDEYE_PLAYER_BUTTON_SELECTOR)
+                logger.warning(
+                    "[capture] на странице нет кнопок плеера: %s",
+                    REDEYE_PLAYER_BUTTON_SELECTOR,
+                )
                 urls_ordered = []
             else:
                 bag = _attach_response_sniffer(page)
@@ -276,7 +289,9 @@ def collect_redeye_audio_urls(
                         btn.click(timeout=1_500)
                         _wait_new_urls(bag, before_count, per_click_timeout_sec, page)
                     except PWTimeout:
-                        logger.debug("[capture] таймаут ожидания после клика idx=%s", idx)
+                        logger.debug(
+                            "[capture] таймаут ожидания после клика idx=%s", idx
+                        )
                     except PWError as pw_err:
                         logger.debug("[capture] ошибка клика idx=%s: %s", idx, pw_err)
 
@@ -300,7 +315,10 @@ def collect_redeye_audio_urls(
                     html = page.content()
                     urls_ordered = _fallback_fill_missing(html, urls_ordered, letters)
                     if debug:
-                        logger.debug("[capture] HTML-сниппет (первые 1800 символов): %s", html[:1800])
+                        logger.debug(
+                            "[capture] HTML-сниппет (первые 1800 символов): %s",
+                            html[:1800],
+                        )
 
     except PWError as pw_exc:
         logger.exception("[capture] ошибка Playwright: %s", pw_exc)

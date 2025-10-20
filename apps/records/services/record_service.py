@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 RecordService — фасад-оркестратор операций с записями:
   - импорт из Discogs (по штрих-коду или каталожному номеру);
@@ -16,6 +14,8 @@ RecordService — фасад-оркестратор операций с запи
   - records.services.provider_payload_adapter.adapt_redeye_payload
 """
 
+from __future__ import annotations
+
 import logging
 from typing import Optional, Tuple
 
@@ -25,18 +25,17 @@ from records.models import (
     Record,
     RecordSource,
 )
-
 from records.services.audio.audio_service import AudioService
-from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.image.image_service import ImageService
-from records.services.providers.redeye.redeye_service import RedeyeService
-from records.services.providers.redeye.helpers import validate_redeye_product_url
-from records.services.record_assembly import update_record_from_payload
-from records.services.record_assembly import build_record_from_payload
 from records.services.provider_payload_adapter import (
     adapt_redeye_payload,
     adapt_discogs_release,
 )
+from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.providers.redeye.helpers import validate_redeye_product_url
+from records.services.providers.redeye.redeye_service import RedeyeService
+from records.services.record_assembly import build_record_from_payload
+from records.services.record_assembly import update_record_from_payload
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +60,9 @@ class RecordService:
 
     def __init__(
         self,
-        discogs_service: "DiscogsService",
-        redeye_service: "RedeyeService",
-        image_service: "ImageService",
+        discogs_service: DiscogsService,
+        redeye_service: RedeyeService,
+        image_service: ImageService,
         audio_service: "AudioService | None" = None,
     ) -> None:
         """
@@ -81,10 +80,10 @@ class RecordService:
         self.audio_service = audio_service or AudioService()
 
     def import_from_discogs(
-            self,
-            barcode: Optional[str] = None,
-            catalog_number: Optional[str] = None,
-            save_image: bool = True,
+        self,
+        barcode: Optional[str] = None,
+        catalog_number: Optional[str] = None,
+        save_image: bool = True,
     ) -> Tuple[Record, bool]:
         """
         Метод реализует импорт записи из Discogs (по barcode или catalog_number).
@@ -104,7 +103,6 @@ class RecordService:
         Returns:
             (record, created): created=True — создана новая запись; False — возвращена существующая.
         """
-        # 1) уже существует?
         existing: Optional[Record] = None
         if barcode:
             existing = Record.objects.find_by_barcode(barcode)
@@ -115,29 +113,26 @@ class RecordService:
             self._update_missing_identifiers(existing, barcode, catalog_number)
             return existing, False
 
-        # 2) Discogs: поиск релиза
         if barcode:
             release = self.discogs_service.search_by_barcode(barcode)
         elif catalog_number:
             release = self.discogs_service.search_by_catalog_number(catalog_number)
         else:
-            raise ValueError("Нужно указать barcode или catalog_number для импорта из Discogs.")
+            raise ValueError(
+                "Нужно указать barcode или catalog_number для импорта из Discogs."
+            )
         if not release:
             raise ValueError("Релиз не найден в Discogs.")
 
-        # 3) адаптация → единая структура данных
         payload = adapt_discogs_release(release)
-        # страховка: если искали по идентификаторам, подставим недостающие
         if barcode and not payload.get("barcode"):
             payload["barcode"] = barcode
         if catalog_number and not payload.get("catalog_number"):
             payload["catalog_number"] = catalog_number
 
-        # 4) сборка записи (атомарно)
         with transaction.atomic():
             record = build_record_from_payload(payload)
 
-            # 5) обложка
             if save_image and getattr(release, "images", None):
                 first = release.images[0]
                 uri = first.get("uri") if isinstance(first, dict) else None
@@ -153,7 +148,9 @@ class RecordService:
         Обновляются: базовые поля, связи и треклист (полная замена). Обложка — опционально.
         """
         if not record.discogs_id:
-            raise ValueError("Для обновления из Discogs у записи должен быть discogs_id.")
+            raise ValueError(
+                "Для обновления из Discogs у записи должен быть discogs_id."
+            )
 
         logger.info(
             "Начато обновление из Discogs для записи %s (Discogs ID: %s, Barcode: '%s', Catalog: '%s')",
@@ -170,11 +167,13 @@ class RecordService:
         payload = adapt_discogs_release(release)
 
         with transaction.atomic():
-            # обновляем модель единым способом
             update_record_from_payload(record, payload)
 
-            # при необходимости — обложка
-            if update_image and not record.cover_image and getattr(release, "images", None):
+            if (
+                update_image
+                and not record.cover_image
+                and getattr(release, "images", None)
+            ):
                 first = release.images[0]
                 uri = first.get("uri") if isinstance(first, dict) else None
                 if uri and self.image_service.download_cover(record, uri):
@@ -184,11 +183,11 @@ class RecordService:
         return record
 
     def import_from_redeye(
-            self,
-            catalog_number: Optional[str] = None,
-            save_image_decision: bool = True,
-            *,
-            download_audio_decision: bool = True,
+        self,
+        catalog_number: Optional[str] = None,
+        save_image_decision: bool = True,
+        *,
+        download_audio_decision: bool = True,
     ) -> Tuple[Record, bool]:
         """
         Метод выполняет импорт записи по каталожному номеру с сайта Redeye.
@@ -204,16 +203,24 @@ class RecordService:
             (record, created): created=True при создании, False — если запись уже существовала.
         """
         if not catalog_number:
-            raise ValueError("Не указан каталожный номер (catalog_number) для импорта из Redeye.")
+            raise ValueError(
+                "Не указан каталожный номер (catalog_number) для импорта из Redeye."
+            )
 
         existing = Record.objects.find_by_catalog_number(catalog_number)
         if existing:
-            logger.info("Найдена существующая запись по каталожному номеру (Redeye): %s", existing.id)
+            logger.info(
+                "Найдена существующая запись по каталожному номеру (Redeye): %s",
+                existing.id,
+            )
             if download_audio_decision:
                 try:
                     self.attach_audio_from_redeye(existing, force=False)
                 except Exception as err:  # noqa: BLE001 — логируем любую ошибку привязки
-                    logger.warning("Докачка аудио для существующей записи завершилась с ошибкой: %s", err)
+                    logger.warning(
+                        "Докачка аудио для существующей записи завершилась с ошибкой: %s",
+                        err,
+                    )
             return existing, False
 
         result = self.redeye_service.fetch_by_catalog_number(catalog_number)
@@ -230,13 +237,19 @@ class RecordService:
                 if self.image_service.download_cover(record, cover_url):
                     logger.info("Обложка скачана для записи %s (Redeye)", record.id)
 
-            source_url = (raw_payload.get("source") or {}).get("url") or result.source_url
+            source_url = (raw_payload.get("source") or {}).get(
+                "url"
+            ) or result.source_url
             if source_url:
                 try:
                     validate_redeye_product_url(source_url)
-                    self._upsert_record_source(record=record, provider=RecordSource.Provider.REDEYE,
-                                               role=RecordSource.Role.PRODUCT_PAGE, url=source_url,
-                                               can_fetch_audio=True)
+                    self._upsert_record_source(
+                        record=record,
+                        provider=RecordSource.Provider.REDEYE,
+                        role=RecordSource.Role.PRODUCT_PAGE,
+                        url=source_url,
+                        can_fetch_audio=True,
+                    )
                 except ValueError as ve:
                     logger.warning("Валидация URL источника Redeye не пройдена: %s", ve)
 
@@ -244,44 +257,52 @@ class RecordService:
             try:
                 self.attach_audio_from_redeye(record, force=False)
             except Exception as err:  # noqa: BLE001
-                logger.warning("Докачка аудио завершилась с ошибкой для записи %s: %s", record.pk, err)
+                logger.warning(
+                    "Докачка аудио завершилась с ошибкой для записи %s: %s",
+                    record.pk,
+                    err,
+                )
 
         logger.info("Импорт из Redeye завершён успешно: %s", record.id)
         return record, True
 
     def attach_audio_from_redeye(
-            self,
-            record: Record,
-            *,
-            force: bool = False,
-            per_click_timeout_sec: int = 20,
-            page_url: Optional[str] = None,
+        self,
+        record: "Record",
+        *,
+        force: bool = False,
+        per_click_timeout_sec: int = 20,
     ) -> int:
         """
-        Метод инициирует прикрепление аудио-превью из Redeye к трекам записи.
+        Метод прикрепляет аудио-превью для записи через Redeye.
 
-        Делегирует выполнение в `AudioService.attach_audio_from_redeye(...)`.
+        Предполагается, что URL карточки уже сохранён в RecordSource (роль PRODUCT_PAGE).
+        Здесь нет парсинга/резолва — только вызов AudioService.
 
-        Args:
-            record: Запись для обновления треков.
-            force: Если True — перезаписывает существующие превью.
-            per_click_timeout_sec: Таймаут ожидания после клика по каждой кнопке плеера.
-            page_url: Необязательная явная ссылка на карточку Redeye (валидируется).
-
-        Returns:
-            Количество треков, у которых появилось/обновилось превью.
+        Возврат: количество обновлённых треков.
         """
-        if page_url:
-            validate_redeye_product_url(page_url)
+        from records.models import RecordSource
 
-        logger.info("Запуск прикрепления аудио из Redeye для записи %s", record.pk)
+        page_url: str | None = (
+            record.sources.filter(
+                provider=RecordSource.Provider.REDEYE,
+                role=RecordSource.Role.PRODUCT_PAGE,
+            )
+            .values_list("url", flat=True)
+            .first()
+        ) or None
+
         updated = self.audio_service.attach_audio_from_redeye(
-            record,
+            record=record,
+            page_url=page_url,
             force=force,
             per_click_timeout_sec=per_click_timeout_sec,
-            page_url=page_url,
         )
-        logger.info("Завершено прикрепление аудио из Redeye: обновлено %d треков (record=%s)", updated, record.pk)
+        logger.info(
+            "Завершено прикрепление аудио из Redeye: обновлено %d треков (record=%s)",
+            updated,
+            record.pk,
+        )
         return updated
 
     def parse_redeye_product_by_url(self, url: str) -> dict:
@@ -306,29 +327,34 @@ class RecordService:
         result = self.redeye_service.parse_redeye_product_by_url(clean)
         return result.payload
 
-
     @staticmethod
     def _is_empty_identifier(value: Optional[str]) -> bool:
         """Метод проверяет, является ли идентификатор пустым (None/''/пробелы)."""
         return value is None or (isinstance(value, str) and value.strip() == "")
 
     def _update_missing_identifiers(
-            self,
-            record: Record,
-            barcode: Optional[str] = None,
-            catalog_number: Optional[str] = None,
+        self,
+        record: Record,
+        barcode: Optional[str] = None,
+        catalog_number: Optional[str] = None,
     ) -> None:
         """Метод заполняет недостающие barcode/catalog_number у записи (если были пусты)."""
         updated = False
         if barcode and self._is_empty_identifier(record.barcode):
             record.barcode = barcode
             updated = True
-            logger.info("Добавлен недостающий barcode для записи %s: %s", record.id, barcode)
+            logger.info(
+                "Добавлен недостающий barcode для записи %s: %s", record.id, barcode
+            )
 
         if catalog_number and self._is_empty_identifier(record.catalog_number):
             record.catalog_number = catalog_number
             updated = True
-            logger.info("Добавлен недостающий catalog_number для записи %s: %s", record.id, catalog_number)
+            logger.info(
+                "Добавлен недостающий catalog_number для записи %s: %s",
+                record.id,
+                catalog_number,
+            )
 
         if updated:
             record.save()
@@ -350,9 +376,13 @@ class RecordService:
         record.country = record_data.get("country")
         record.notes = record_data.get("notes")
 
-        if self._is_empty_identifier(record.catalog_number) and record_data.get("catalog_number"):
+        if self._is_empty_identifier(record.catalog_number) and record_data.get(
+            "catalog_number"
+        ):
             record.catalog_number = record_data["catalog_number"]
-            logger.info("Добавлен недостающий catalog_number: %s", record.catalog_number)
+            logger.info(
+                "Добавлен недостающий catalog_number: %s", record.catalog_number
+            )
 
         if self._is_empty_identifier(record.barcode) and record_data.get("barcode"):
             record.barcode = record_data["barcode"]
@@ -370,12 +400,12 @@ class RecordService:
 
     @staticmethod
     def _upsert_record_source(
-            *,
-            record: Record,
-            provider: RecordSource.Provider,
-            role: RecordSource.Role,
-            url: str,
-            can_fetch_audio: bool,
+        *,
+        record: Record,
+        provider: RecordSource.Provider,
+        role: RecordSource.Role,
+        url: str,
+        can_fetch_audio: bool,
     ) -> RecordSource:
         """
         Метод создаёт или обновляет RecordSource для заданной записи/провайдера/роли.
@@ -401,7 +431,9 @@ class RecordService:
             defaults={"url": url, "can_fetch_audio": can_fetch_audio},
         )
         if created:
-            logger.info("Добавлен источник %s/%s для записи %s", provider, role, record.pk)
+            logger.info(
+                "Добавлен источник %s/%s для записи %s", provider, role, record.pk
+            )
             return obj
 
         updated = False
@@ -413,5 +445,7 @@ class RecordService:
             updated = True
         if updated:
             obj.save(update_fields=["url", "can_fetch_audio", "updated_at"])
-            logger.info("Обновлён источник %s/%s для записи %s", provider, role, record.pk)
+            logger.info(
+                "Обновлён источник %s/%s для записи %s", provider, role, record.pk
+            )
         return obj

@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 Вспомогательные функции провайдера Redeye.
 
@@ -11,12 +10,19 @@ from __future__ import annotations
   - format_expected_date_ru(year, month, day): форматирование даты на русском.
 """
 
+from __future__ import annotations
+
 from typing import Iterable, Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
-from records.constants import REDEYE_BASE_URL, REDEYE_HOST, MONTHS_EN_TO_NUM, MONTHS_EN_TO_RU_GENITIVE
+from records.constants import (
+    REDEYE_BASE_URL,
+    REDEYE_HOST,
+    MONTHS_EN_TO_NUM,
+    MONTHS_EN_TO_RU_GENITIVE,
+)
 
 
 def text_join(node: object) -> str:
@@ -94,7 +100,10 @@ def validate_redeye_product_url(url: str) -> None:
     if scheme and scheme not in {"http", "https"}:
         raise ValueError(f"Недопустимая схема URL: {scheme}. Ожидается http/https.")
 
-def parse_expected_date_parts_from_text(text: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+
+def parse_expected_date_parts_from_text(
+    text: str,
+) -> Tuple[Optional[int], Optional[int], Optional[int]]:
     """
     Метод извлекает из произвольного текста дату формата
     'Expected 24 Oct 2025' → (year, month, day), где month — число (1..12).

@@ -9,11 +9,12 @@ from django.core.exceptions import ValidationError
 from .mixins import ApplyFieldsMixin
 from .validators import RecordIdentifierValidator
 from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE, SOURCE_CHOICES
-from ..models import Record
+from records.models import Record
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.image.image_service import ImageService
-from ..services.providers.redeye.redeye_service import RedeyeService
-from ..services.record_service import RecordService
+from records.services.audio.audio_service import AudioService
+from records.services.providers.redeye.redeye_service import RedeyeService
+from records.services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             discogs_service=DiscogsService(),
             redeye_service=RedeyeService(),
             image_service=ImageService(),
+            audio_service=AudioService(),
         )
         self.save_m2m = lambda: None  # type: ignore[assignment]
 
@@ -133,7 +135,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
     def clean_catalog_number(self) -> Optional[str]:
         """Строгая проверка каталожного номера (для edit и create)."""
         catalog_number = self.cleaned_data.get("catalog_number")
-        return RecordIdentifierValidator.validate_catalog_number(catalog_number, self.instance.pk)
+        return RecordIdentifierValidator.validate_catalog_number(
+            catalog_number, self.instance.pk
+        )
 
     def clean(self):
         """
@@ -205,7 +209,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         try:
             if source == SOURCE_REDEYE:
                 logger.debug("Выбран redeye в качестве источника")
-                record, record_is_new = self.record_service.import_from_redeye(catalog_number=catalog_number)
+                record, record_is_new = self.record_service.import_from_redeye(
+                    catalog_number=catalog_number
+                )
             elif source == SOURCE_DISCOGS:
                 logger.debug("Выбран discogs в качестве источника")
                 record, record_is_new = self.record_service.import_from_discogs(

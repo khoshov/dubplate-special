@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 """
 Преобразователь данных от провайдеров (Redeye, Discogs) к единому формату,
 который использует модуль сборки записи `record_assembly.build_record_from_payload`.
 """
+
+from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Mapping, Optional
@@ -108,7 +108,7 @@ def adapt_redeye_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
 
     # особые поля Redeye
-    src["catalog_number"] = (_to_str(src.get("catalog_number") or "").upper() or None)
+    src["catalog_number"] = _to_str(src.get("catalog_number") or "").upper() or None
     price = _to_price_str_or_none(src.get("price_gbp"))
     if price is not None:
         out["price_gbp"] = price
@@ -166,7 +166,7 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
             src["catalog_number"] = value
 
     # Артисты
-    for artist_obj in (getattr(release, "artists", []) or []):
+    for artist_obj in getattr(release, "artists", []) or []:
         name = _to_str(getattr(artist_obj, "name", ""))
         if name:
             src["artists"].append(name)
@@ -178,11 +178,13 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
 
     # Форматы
     out_formats: List[str] = []
-    for fmt in (getattr(release, "formats", []) or []):
+    for fmt in getattr(release, "formats", []) or []:
         if not isinstance(fmt, dict):
             continue
         qty = _to_int_or_none(fmt.get("qty")) or 1
-        descriptions = [d.upper() for d in (fmt.get("descriptions") or []) if isinstance(d, str)]
+        descriptions = [
+            d.upper() for d in (fmt.get("descriptions") or []) if isinstance(d, str)
+        ]
         if "LP" in descriptions:
             out_formats.append(f"{qty}LP" if qty > 1 else "LP")
         for description in descriptions:
@@ -192,7 +194,9 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
 
     # Треки (position_index = порядковый номер)
     tracks_src: List[Dict[str, Any]] = []
-    for index, track_obj in enumerate((getattr(release, "tracklist", []) or []), start=1):
+    for index, track_obj in enumerate(
+        (getattr(release, "tracklist", []) or []), start=1
+    ):
         title_track = _to_str(getattr(track_obj, "title", ""))
         if not title_track:
             continue
