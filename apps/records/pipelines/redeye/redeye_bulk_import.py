@@ -22,9 +22,10 @@ from django.utils.text import slugify
 from ...models import Record, Genre, Style, Label, Artist
 from ...scrapers.redeye_listing import iterate_category_urls
 from ...services.providers.redeye.redeye_service import RedeyeService
-from ...services.tracks import create_tracks_for_record
-from ...models import RecordSource
 from ...services.record_service import RecordService
+from records.services.tracklist_writer import create_tracks_for_record
+from ...models import RecordSource
+# from .services.record_service import RecordService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.image.image_service import ImageService
 
@@ -93,7 +94,7 @@ class RedeyeBulkImporter:
             category_url, delay_sec=self.delay_sec, limit=limit
         ):
             try:
-                parsed = self.svc.parse_product_by_url(product_url)
+                parsed = self.svc.parse_redeye_product_by_url(product_url)
                 payload = parsed.payload or {}
                 payload.setdefault("source", "redeye")
                 payload.setdefault(
@@ -293,7 +294,7 @@ class RedeyeBulkImporter:
 
         rec.cover_image.save(filename, ContentFile(content), save=True)
 
-    # ДОБАВЬ в класс RedeyeBulkImporter (ниже методов класса)
+
     def _ensure_redeye_record_source(self, rec: Record, payload: dict) -> None:
         """
         Создать/обновить RecordSource для Redeye product_page.
@@ -313,13 +314,8 @@ class RedeyeBulkImporter:
             service = RecordService(
                 discogs_service=DiscogsService(), image_service=ImageService()
             )
-            service._upsert_record_source(  # noqa: SLF001 (используем твой существующий helper)
-                record=rec,
-                provider=RecordSource.Provider.REDEYE,
-                role=RecordSource.Role.PRODUCT_PAGE,
-                url=url,
-                can_fetch_audio=can_fetch,
-            )
+            service._upsert_record_source(record=rec, provider=RecordSource.Provider.REDEYE,
+                                          role=RecordSource.Role.PRODUCT_PAGE, url=url, can_fetch_audio=can_fetch)
             logger.debug(
                 "RecordSource upserted: record=%s provider=redeye role=product_page can_fetch_audio=%s",
                 rec.id,

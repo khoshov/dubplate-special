@@ -1,14 +1,23 @@
-"""
-Ингест треков в БД.
-
-Единая точка для записи Track из любых источников:
-- гарантирует натуральную нумерацию 1..N (position_index) без дырок,
-- создаёт записи атомарно (транзакция),
-- игнорирует пустые/битые элементы с внятным логом,
-- умеет заменять существующий треклист (replace=True).
-"""
-
+# apps/records/services/tracklist_writer.py
 from __future__ import annotations
+
+"""
+Запись треклиста в базу данных.
+
+Назначение:
+- Создать треки для записи с плотной натуральной нумерацией 1..N (position_index).
+- По желанию полностью заменить существующий треклист (replace=True).
+- Игнорировать пустые/битые элементы входа, вести понятный лог.
+
+Формат входного элемента:
+    {
+        "title": str,           # обязательно (непустая строка)
+        "position": str,        # опционально
+        "duration": str|None,   # опционально
+        "youtube_url": str|None # опционально
+        # входящий position_index игнорируется — нумерация всегда 1..N
+    }
+"""
 
 import logging
 from typing import Any, Iterable, List, Mapping
@@ -19,84 +28,87 @@ from records.models import Record, Track
 
 logger = logging.getLogger(__name__)
 
-# минимальные требования к элементу входного списка
-TrackLike = Mapping[
-    str, Any
-]  # ожидаем "title"; опц. "position","duration","youtube_url","position_index"
+# ожидаемый «вид» входного трека
+TrackInput = Mapping[str, Any]
 
 
-def _normalize_row(t: TrackLike) -> dict:
-    """Минимальная нормализация входного словаря трека (без индекса)."""
+def _normalize_input_row(data: TrackInput) -> dict:
+    """
+    Метод нормализует один входной словарь трека (без индекса).
+
+    Возвращает словарь с ключами: title, position, duration, youtube_url.
+    Пустые строки приводятся к ''/None в зависимости от поля.
+    """
+    title = (data.get("title") or "").strip()
+    position = (data.get("position") or "").strip()
+    duration = (data.get("duration") or None) or None
+    youtube_url = (data.get("youtube_url") or "").strip() or None
+
     return {
-        "title": (t.get("title") or "").strip(),
-        "position": (t.get("position") or "").strip(),
-        "duration": (t.get("duration") or None) or None,
-        "youtube_url": (t.get("youtube_url") or "").strip() or None,
+        "title": title,
+        "position": position,
+        "duration": duration,
+        "youtube_url": youtube_url,
     }
 
 
 @transaction.atomic
 def create_tracks_for_record(
     record: Record,
-    tracks: Iterable[TrackLike],
+    tracks: Iterable[TrackInput],
     *,
     replace: bool = True,
 ) -> List[Track]:
     """
-    Создаёт треки для указанной записи, с новой плотной нумерацией 1..N.
+    Метод создаёт треки для указанной записи с новой плотной нумерацией 1..N.
 
     Args:
-        record: объект Record, для которого пишем треки.
-        tracks: последовательность словарей, например результат парсера:
-                {
-                    "title": str,                 # обязательно
-                    "position": str,              # опционально
-                    "duration": str|None,         # опционально
-                    "youtube_url": str|None,      # опционально
-                    # входящий position_index игнорируется — индексация всегда 1..N
-                }
-        replace: если True — предварительно удаляет старые треки записи.
+        record: Объект Record, для которого пишутся треки.
+        tracks: Последовательность словарей (см. формат входного элемента).
+        replace: Если True — предварительно удаляет старые треки записи.
 
     Returns:
         Список созданных объектов Track (в порядке добавления).
     """
-    items: List[TrackLike] = list(tracks or [])
+    items: List[TrackInput] = list(tracks or [])
     if not items:
-        logger.info("create_tracks_for_record(%s): empty input", record.pk)
+        logger.info("create_tracks_for_record(%s): входной список пуст.", record.pk)
         if replace:
             Track.objects.filter(record=record).delete()
         return []
 
-    rows = [_normalize_row(t) for t in items if (t and (t.get("title") or "").strip())]
+    # нормализация + отсев пустых заголовков
+    normalized_rows = [
+        _normalize_input_row(data)
+        for data in items
+        if data and (data.get("title") or "").strip()
+    ]
 
     if replace:
-        Track.objects.filter(record=record).delete()
+        deleted = Track.objects.filter(record=record).delete()[0]
+        if deleted:
+            logger.debug("create_tracks_for_record(%s): удалено старых треков: %d", record.pk, deleted)
 
-    objs: List[Track] = []
-    for i, r in enumerate(rows, start=1):
-        objs.append(
+    to_create: List[Track] = []
+    for index, row in enumerate(normalized_rows, start=1):
+        to_create.append(
             Track(
                 record=record,
-                position=r["position"],
-                position_index=i,
-                title=r["title"],
-                duration=r["duration"],
-                youtube_url=r["youtube_url"],
+                position=row["position"],
+                position_index=index,
+                title=row["title"],
+                duration=row["duration"],
+                youtube_url=row["youtube_url"],
             )
         )
 
-    if not objs:
-        logger.info(
-            "create_tracks_for_record(%s): nothing to create after normalization",
-            record.pk,
-        )
+    if not to_create:
+        logger.info("create_tracks_for_record(%s): отсутствуют валидные элементы после нормализации.", record.pk)
         return []
 
-    Track.objects.bulk_create(objs)
-    logger.debug(
-        "create_tracks_for_record(%s): created %d tracks", record.pk, len(objs)
-    )
-    return objs
+    Track.objects.bulk_create(to_create)
+    logger.info("create_tracks_for_record(%s): создано треков: %d", record.pk, len(to_create))
+    return to_create
 
 
-__all__ = ["TrackLike", "create_tracks_for_record"]
+__all__ = ["TrackInput", "create_tracks_for_record"]

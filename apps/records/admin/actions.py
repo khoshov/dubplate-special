@@ -124,9 +124,7 @@ def update_from_redeye(admin_obj: Any, request: HttpRequest, queryset) -> None:
         fail_header="Ошибки:",
         id_label="каталожный номер",
         get_id=lambda record: getattr(record, "catalog_number", None),
-        do_update=lambda record: record_service.import_from_redeye(
-            catalog_number=record.catalog_number,
-            save_image=True,
-            download_audio=True,
-        ),
+        do_update=lambda record: record_service.import_from_redeye(catalog_number=record.catalog_number,
+                                                                   save_image_decision=True,
+                                                                   download_audio_decision=True),
     )

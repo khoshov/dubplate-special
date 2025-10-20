@@ -205,9 +205,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         try:
             if source == SOURCE_REDEYE:
                 logger.debug("Выбран redeye в качестве источника")
-                record, record_is_new = self.record_service.import_from_redeye(
-                    catalog_number=catalog_number
-                )
+                record, record_is_new = self.record_service.import_from_redeye(catalog_number=catalog_number)
             elif source == SOURCE_DISCOGS:
                 logger.debug("Выбран discogs в качестве источника")
                 record, record_is_new = self.record_service.import_from_discogs(

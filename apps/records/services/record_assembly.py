@@ -81,9 +81,52 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
             release_day=release_day,
         )
         attach_relations(record, data)
-        write_tracklist(record, tracks_payload, replace=True)
+        create_tracklist(record, tracks_payload, replace=True)
 
     logger.info("Создана запись Record (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—")
+    return record
+
+
+def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Record:
+    """
+    Метод обновляет существующую запись `Record` по нормализованной структуре данных.
+    Обновляет базовые поля, связи и полностью пересоздаёт треклист.
+
+    Args:
+        record: Запись, которую нужно обновить.
+        data:   Нормализованная структура данных (как у адаптеров).
+
+    Returns:
+        Record: Обновлённая запись.
+    """
+    title = _str_or_empty(data.get("title"))
+    if title and record.title != title:
+        record.title = title
+
+    # базовые идентификаторы/метаданные (обновляем только если данные даны)
+    catalog_number = _clean_or_none(data.get("catalog_number"))
+    if catalog_number:
+        record.catalog_number = catalog_number
+
+    record.barcode = _clean_or_none(data.get("barcode")) or record.barcode
+    record.country = _clean_or_none(data.get("country")) or record.country
+    record.notes = _clean_or_none(data.get("notes")) or record.notes
+
+    ry = _int_or_none(data.get("release_year"))
+    rm = _int_or_none(data.get("release_month"))
+    rd = _int_or_none(data.get("release_day"))
+    record.release_year = ry if ry is not None else record.release_year
+    record.release_month = rm if rm is not None else record.release_month
+    record.release_day = rd if rd is not None else record.release_day
+
+    record.save()
+
+    # связи и треклист — одинаково для всех источников
+    attach_relations(record, data)
+    tracks_payload = _seq_of_maps(data.get("tracks"))
+    create_tracklist(record, tracks_payload, replace=True)
+
+    logger.info("Запись обновлена из нормализованных данных (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—")
     return record
 
 
@@ -141,11 +184,11 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
         record.formats.add(obj)
 
 
-def write_tracklist(
-    record: Record,
-    tracks: Sequence[Mapping[str, object]],
-    *,
-    replace: bool = True,
+def create_tracklist(
+        record: Record,
+        tracks: Sequence[Mapping[str, object]],
+        *,
+        replace: bool = True,
 ) -> int:
     """
     Метод создаёт треклист записи.
@@ -161,12 +204,10 @@ def write_tracklist(
     Returns:
         int: Количество созданных треков.
     """
-    # --- изменено: create_tracks_for_record возвращает List[Track], а мы — int ---
     created_tracks = create_tracks_for_record(record, tracks, replace=replace)
     created_count = len(created_tracks)
     logger.info("Создан треклист (%d треков) для записи %s", created_count, record.pk)
     return created_count
-
 
 
 def _clean_or_none(value: object) -> str | None:

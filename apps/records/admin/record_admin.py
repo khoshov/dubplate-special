@@ -9,6 +9,7 @@ from ..forms import RecordForm
 from ..models import Record, Artist
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.image.image_service import ImageService
+from ..services.audio.audio_service import AudioService
 from ..services.providers.redeye.redeye_service import RedeyeService
 from ..services.record_service import RecordService
 from .actions import update_from_discogs, update_from_redeye
@@ -108,6 +109,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             discogs_service=DiscogsService(),
             redeye_service=RedeyeService(),
             image_service=ImageService(),
+            audio_service=AudioService(),
         )
 
     def get_artists_display(self, obj: Record) -> str:

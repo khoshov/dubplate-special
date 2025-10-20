@@ -73,7 +73,7 @@ class RedeyeService:
 
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
-    def parse_product_by_url(self, url: str) -> RedeyeFetchResult:
+    def parse_redeye_product_by_url(self, url: str) -> RedeyeFetchResult:
         """Метод получает карточку товара по прямому URL и возвращает распарсенные поля."""
         if not url:
             raise ValueError("Product URL is required.")
