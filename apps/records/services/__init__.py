@@ -1,5 +1,5 @@
-from .discogs_service import DiscogsService
-from .image_service import ImageService
-from .record_service import RecordService
+# apps/records/services/__init__.py
+from __future__ import annotations
 
-__all__ = ["RecordService", "DiscogsService", "ImageService"]
+# Пакет services. Намеренно пустой, чтобы не плодить ранние/тяжёлые импорты.
+__all__ = []

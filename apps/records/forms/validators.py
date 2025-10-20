@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 from django.core.exceptions import ValidationError
 
-from records.models import Record
+from ..models import Record
 
 
 class RecordIdentifierValidator:
@@ -13,8 +13,9 @@ class RecordIdentifierValidator:
     при создании записи.
     """
 
+    @staticmethod
     def validate_barcode(
-        self, barcode: Optional[str], exclude_pk: Optional[int] = None
+        barcode: Optional[str], exclude_pk: Optional[int] = None
     ) -> Optional[str]:
         """Валидация штрих-кода на уникальность.
 
@@ -40,8 +41,9 @@ class RecordIdentifierValidator:
 
         return barcode
 
+    @staticmethod
     def validate_catalog_number(
-        self, catalog_number: Optional[str], exclude_pk: Optional[int] = None
+        catalog_number: Optional[str], exclude_pk: Optional[int] = None
     ) -> Optional[str]:
         """Валидация каталожного номера на уникальность.
 
@@ -67,9 +69,8 @@ class RecordIdentifierValidator:
 
         return catalog_number
 
-    def validate_identifiers_required(
-        self, cleaned_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    @staticmethod
+    def validate_identifiers_required(cleaned_data: Dict[str, Any]) -> Dict[str, Any]:
         """Проверка наличия хотя бы одного идентификатора.
 
         Используется при создании новой записи для обеспечения

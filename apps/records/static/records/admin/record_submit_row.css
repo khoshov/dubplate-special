@@ -1,0 +1,74 @@
+/* === Горизонтальный ряд === */
+
+/* Группа "Обновить данные" + чекбокс: идём в одну линию и центрируем по высоте,
+   но БЕЗ общего левого отступа — отступ дадим кнопке (как у штатных). */
+.submit-row .record-refresh-tools{
+  display:inline-flex;
+  align-items:center;
+  gap:.5em;                  /* как у соседних кнопок по ощущениям Django */
+  vertical-align:middle;
+}
+
+/* Кнопка "Обновить данные": такой же горизонтальный зазор, как у штатных кнопок */
+.submit-row input[name="_refresh"]{
+  margin-left:.0em;          /* ← (1) расстояние справа от "Save and continue..." */
+  vertical-align:middle;
+}
+
+/* Лейбл с чекбоксом — компактен и по центру линии */
+.submit-row .record-refresh-force{
+  display:inline-flex;
+  align-items:center;
+  gap:.45em;
+  margin:0;
+  line-height:1;
+}
+
+/* Сам чекбокс не имеет внешних отступов */
+.submit-row .record-refresh-force input[type="checkbox"]{
+  margin:0;
+}
+
+/* Текст "Перекачать аудио" — опускаем на ~треть высоты кнопки
+   (обычно кнопка ~30px, треть ≈ 10px). Можно тонко подкрутить цифру. */
+.submit-row .record-refresh-force__text{
+  position:relative;
+  top:0px;                  /* ← (3) положение текста задаётся здесь */
+}
+
+/* Delete — в самом конце ряда и по центру по высоте */
+.submit-row .deletelink-box--at-end{
+  float:none !important;
+  display:inline-block;
+  margin:0 0 0 .5em;        /* как у кнопок */
+  vertical-align:middle;
+}
+
+/* === Узкий экран: Django кладёт кнопки в столбец. Повторим поведение. === */
+@media (max-width: 767px){
+  /* Штатные кнопки уже становятся блочными.
+     Делаем и нашу группу блочной, чтобы она шла следующей строкой. */
+  .submit-row .record-refresh-tools{
+    display:block;
+    margin: .5em 0 0 0;     /* такой же верхний отступ, как у соседей */
+  }
+  /* Кнопка обновления — на всю строку, как у остальных */
+  .submit-row input[name="_refresh"]{
+    display:block;
+    margin: .5em 0 0 0;     /* совпадение с отступами штатных input в столбик */
+  }
+  /* Чекбокс под кнопкой: выравниваем слева, маленький интервал сверху */
+  .submit-row .record-refresh-force{
+    display:inline-flex;
+    margin-top:.25em;
+  }
+  /* Для узкого экрана опускаем текст немного меньше, чтобы не «уезжал» */
+  .submit-row .record-refresh-force__text{
+    top:6px;                /* тоньше, чем 10px в горизонтальном режиме */
+  }
+  /* Delete остаётся последним, но также идёт новой строкой */
+  .submit-row .deletelink-box--at-end{
+    display:block;
+    margin: .5em 0 0 0;
+  }
+}
