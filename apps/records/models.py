@@ -1,13 +1,14 @@
 import calendar
-import os
 from datetime import date
-from django.utils.deconstruct import deconstructible
+
 from django.db import models
 from django.utils import timezone
-from django.utils.text import slugify
 from django.utils.translation import gettext_lazy as _
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
+from sorl.thumbnail import ImageField
+
+from apps.records.utils.storage_paths import PathByInstance as _PathByInstance
 from .managers import (
     ArtistManager,
     FormatManager,
@@ -16,40 +17,15 @@ from .managers import (
     RecordManager,
     StyleManager,
 )
-from sorl.thumbnail import ImageField
 
 
-@deconstructible
-class PathByInstance:
-    """Формирует путь вида:
-    <app>/<model>/<field>/<id>/<slugified_title>.<ext>
-    Если объект ещё не сохранён (id нет) — временно кладём в "_new".
+class PathByInstance(_PathByInstance):
     """
-
-    def __init__(self, field_name: str):
-        self.field_name = field_name
-
-    def __call__(self, instance, filename):
-        app_label = instance._meta.app_label
-        model_name = instance._meta.model_name
-        obj_id = instance.pk or "_new"
-
-        # определяем расширение оригинального файла
-        _, ext = os.path.splitext(filename)
-        ext = ext.lower() or ".jpg"
-
-        # формируем имя файла по названию пластинки
-        raw_title = getattr(instance, "title", "") or "untitled"
-        # slugify делает безопасное имя: заменяет пробелы, убирает спецсимволы
-        safe_title = slugify(raw_title)
-        if not safe_title:
-            safe_title = "untitled"
-
-        new_filename = f"{safe_title}{ext}"
-
-        return os.path.join(
-            app_label, model_name, self.field_name, str(obj_id), new_filename
-        )
+    Обёртка над utils.storage_paths.PathByInstance для совместимости
+    с существующими миграциями (сохраняем dotted-path apps.records.models.PathByInstance).
+    Новой логики здесь нет.
+    """
+    pass
 
 
 class GenreChoices(models.TextChoices):

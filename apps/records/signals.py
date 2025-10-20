@@ -1,8 +1,10 @@
 """
 Сигналы для обслуживания файловых полей моделей:
-- корректное удаление старой обложки при замене;
-- перенос обложки из временной папки '_new' в папку с pk после первого сохранения;
+- удаление старой обложки при замене;
 - уборка файлов и пустых директорий при удалении Record/Track.
+
+Важно: перенос файлов из временных путей НЕ выполняется. Вместо этого
+сохранение обложки организовано двухфазно на уровне админки (см. RecordAdmin).
 """
 from __future__ import annotations
 
@@ -10,7 +12,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from django.db.models.signals import pre_save, post_save, post_delete
+from django.db.models.signals import post_delete, pre_save
 from django.dispatch import receiver
 
 from .models import Record, Track
@@ -19,34 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_storage_delete(storage: Any, rel_path: str) -> None:
-    """
-    Удаляет файл из storage по относительному пути, не прерывая основной поток.
-
-    Args:
-        storage: backend хранилища (FileSystemStorage, S3 и т.п.).
-        rel_path: относительный путь внутри стораджа.
-
-    """
+    """Удаляет файл из storage по относительному пути; ошибки не прерывают поток."""
     if not rel_path:
         return
     try:
         storage.delete(rel_path)
-    except Exception as exc:  # --- изменено: логируем на DEBUG, не валим сигнал ---
+    except Exception as exc:
         logger.debug("Не удалось удалить файл из storage (%s): %s", rel_path, exc)
 
 
 def _safe_rmdir(storage: Any, rel_dir: str) -> None:
     """
     Пытается удалить пустую директорию (актуально для FileSystemStorage).
-    Для стораджей без .path() — молча игнорирует.
-
-    Args:
-        storage: backend хранилища.
-        rel_dir: относительная директория.
-
+    Для стораджей без .path() — игнорирует.
     """
     try:
-        abs_dir = storage.path(rel_dir)
+        abs_dir = storage.path(rel_dir)  # у FileSystemStorage есть .path()
     except Exception:
         return
 
@@ -57,65 +47,11 @@ def _safe_rmdir(storage: Any, rel_dir: str) -> None:
         logger.debug("Не удалось удалить пустую директорию (%s): %s", abs_dir, exc)
 
 
-def _move_file_to_id_folder(instance: Record, field_name: str) -> None:
-    """
-    Переносит файл из временной папки '_new' в папку с реальным pk:
-    <app>/<model>/<field>/_new/filename → <app>/<model>/<field>/<pk>/filename
-
-    Args:
-        instance: экземпляр модели Record (уже сохранён).
-        field_name: имя File/Image-поля модели.
-
-    """
-    if not instance.pk:
-        return
-
-    f = getattr(instance, field_name, None)
-    if not f or not getattr(f, "name", ""):
-        return
-
-    old_rel = str(f.name).replace("\\", "/")
-    parts = old_rel.split("/")
-    if "_new" not in parts:
-        return
-
-    storage = f.storage
-    filename = parts[-1]
-    app_label = instance._meta.app_label
-    model_name = instance._meta.model_name
-    new_rel = "/".join([app_label, model_name, field_name, str(instance.pk), filename])
-
-    if new_rel == old_rel:
-        return
-
-    try:
-        with storage.open(old_rel, "rb") as src:
-            storage.save(new_rel, src)
-
-        type(instance).objects.filter(pk=instance.pk).update(**{field_name: new_rel})
-        getattr(instance, field_name).name = new_rel
-
-        _safe_storage_delete(storage, old_rel)
-    except FileNotFoundError as exc:  # --- добавлено: узкий перехват ---
-        logger.debug("Исходный файл для переноса не найден (%s): %s", old_rel, exc)
-    except Exception as exc:
-        logger.debug("Не удалось перенести файл %s → %s: %s", old_rel, new_rel, exc)
-
-
 @receiver(pre_save, sender=Record)
 def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs: Any) -> None:
     """
-    Метод удаляет старую обложку при её замене.
-
-    Сценарии:
-      - при редактировании записи, если относительный путь cover_image изменился;
-      - работает и при фактическом перемещении файла (сравнение по .name).
-
-    Args:
-        sender: класс модели (Record).
-        instance: редактируемый объект.
-        **kwargs: дополнительные аргументы от сигналов Django.
-
+    Удаляет старую обложку при её замене (сравнение по относительному пути .name).
+    Новые записи (без pk) не затрагиваются.
     """
     if not instance.pk:
         return
@@ -125,7 +61,7 @@ def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs
     except Record.DoesNotExist:
         return
     except Exception as exc:
-        logger.debug("cleanup_old_cover_on_change: ошибка получения старой версии: %s", exc)
+        logger.debug("cleanup_old_cover_on_change: не удалось загрузить старую версию: %s", exc)
         return
 
     old_file = getattr(old, "cover_image", None)
@@ -138,30 +74,9 @@ def cleanup_old_cover_on_change(sender: type[Record], instance: Record, **kwargs
         _safe_storage_delete(getattr(old_file, "storage", None), old_name)
 
 
-@receiver(post_save, sender=Record)
-def move_cover_after_save(sender: type[Record], instance: Record, created: bool, **kwargs: Any) -> None:
-    """
-    Метод переносит обложку из '_new' в папку с pk после сохранения.
-
-    Args:
-        sender: класс модели (Record).
-        instance: сохранённый объект.
-        created: флаг «создан новый» от Django.
-        **kwargs: дополнительные аргументы.
-
-    """
-    _move_file_to_id_folder(instance, "cover_image")
-
-
 @receiver(post_delete, sender=Record)
 def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: Any) -> None:
-    """
-    Метод удаляет обложку и чистит пустые директории при удалении записи.
-
-    Структура путей:
-      records/record/cover_image/<id>/filename → чистим <id>/ и (при необходимости) cover_image/
-
-    """
+    """Удаляет файл обложки и подчищает пустые директории при удалении записи."""
     f = getattr(instance, "cover_image", None)
     if not f or not getattr(f, "name", ""):
         return
@@ -181,13 +96,7 @@ def cleanup_cover_on_delete(sender: type[Record], instance: Record, **kwargs: An
 
 @receiver(post_delete, sender=Track)
 def cleanup_audio_on_delete(sender: type[Track], instance: Track, **kwargs: Any) -> None:
-    """
-    Метод удаляет превью-аудио и чистит пустые директории при удалении трека.
-
-    Структура путей:
-      records/track/audio_preview/<id>/clip.mp3 → чистим <id>/ и (при необходимости) audio_preview/
-
-    """
+    """Удаляет файл превью-аудио и подчищает пустые директории при удалении трека."""
     f = getattr(instance, "audio_preview", None)
     if not f or not getattr(f, "name", ""):
         return

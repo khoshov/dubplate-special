@@ -137,7 +137,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return self.fieldsets
 
         source = (
-            request.POST.get("source") or request.GET.get("source") or "discogs"
+                request.POST.get("source") or request.GET.get("source") or "discogs"
         ).lower()
         if source == "redeye":
             logger.debug(
@@ -204,7 +204,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         return readonly
 
     def has_delete_permission(
-        self, request: HttpRequest, obj: Optional[Record] = None
+            self, request: HttpRequest, obj: Optional[Record] = None
     ) -> bool:
         """Запрещает удаление записей, которые есть в заказах."""
         if obj and hasattr(obj, "order_items") and obj.order_items.exists():
@@ -223,6 +223,24 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 db_field.name,
             )
         return formfield
+
+    def save_model(self, request, obj, form, change) -> None:
+        """
+        Сохраняет запись в два этапа, чтобы upload_to мог опираться на pk и не требовались переносы в сигнале:
+          1) если объект новый — сохраняем без файла (появляется pk);
+          2) если в форме загружена новая обложка — присваиваем её и делаем update только поля cover_image.
+        """
+        new_cover_file = form.files.get("cover_image")
+
+        if not obj.pk:
+            super().save_model(request, obj, form, change=False)
+
+        if new_cover_file is not None:
+            obj.cover_image = new_cover_file
+            obj.save(update_fields=["cover_image"])
+            return  # всё сохранено
+
+        super().save_model(request, obj, form, change=True)
 
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}
