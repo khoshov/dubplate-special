@@ -19,22 +19,6 @@ from .managers import (
 from sorl.thumbnail import ImageField
 
 
-# --- legacy upload_to used by old migration 0007; DO NOT REMOVE ---
-
-
-def record_upload_to(instance, filename):
-    """
-    Back-compat для миграции 0007.
-    Старый путь: records/<slug(title)>/cover.<ext>
-    Новая схема использует PathByInstance, но миграция импортирует именно эту функцию.
-    """
-    base, ext = os.path.splitext(filename or "")
-    slug = slugify(getattr(instance, "title", "") or "record")
-    return f"records/{slug}/cover{ext or '.jpg'}"
-
-
-# --- end legacy ---
-
 
 @deconstructible
 class PathByInstance:

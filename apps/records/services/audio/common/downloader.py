@@ -94,12 +94,13 @@ def http_get(
     timeout: int = AUDIO_DEFAULT_TIMEOUT,
     referer: Optional[str] = None,
     stream: bool = False,
-    allow_http: bool = False,
+    allow_http: bool = True,  # --- изменено: теперь по умолчанию True для совместимости с источниками, отдающими http ---
 ) -> requests.Response:
     """Метод выполняет GET-запрос с безопасными заголовками и (опционально) потоковой выдачей.
 
     Метод реализует:
-        - строгую проверку схемы URL (по умолчанию разрешён только **https**; http — по флагу `allow_http`);
+        - проверку схемы URL; https — предпочтителен; http допускается (по умолчанию), но будет предупреждение,
+          можно жёстко запретить через allow_http=False;
         - установку заголовка Referer (если передан);
         - мягкую ротацию User-Agent для снижения «липкости» отпечатка;
         - вызов `raise_for_status()` для отсечения 4xx/5xx.
@@ -110,20 +111,20 @@ def http_get(
         timeout: Таймаут запроса (сек).
         referer: Значение заголовка Referer.
         stream: Признак потоковой передачи тела ответа.
-        allow_http: Разрешает явные http-ссылки (по умолчанию запрещены как небезопасные).
+        allow_http: Разрешать явные http-ссылки (по умолчанию True для совместимости с провайдерами превью).
 
     Returns:
         requests.Response: Ответ с уже вызванным `raise_for_status()`.
 
     Raises:
-        ValueError: При незащищённой схеме URL (http) и `allow_http=False`.
         requests.RequestException: При сетевых/HTTP-ошибках.
     """
     scheme = urlsplit(url).scheme.lower()
     if scheme == "http" and not allow_http:
-        raise ValueError(
-            f"Небезопасная схема URL (http) для {url}. Разрешите через allow_http=True при необходимости."
-        )
+        # Раньше выбрасывали ValueError; теперь не рвём поток по умолчанию, а даём возможность жёстко запретить.
+        logger.warning("HTTP-ссылка (не https): %s — запрещено (allow_http=False).", url)
+        # Эмулируем «жёсткий» запрет явным исключением только если так просили:
+        raise ValueError(f"Небезопасная схема URL (http) для {url} при allow_http=False.")
 
     headers: Dict[str, str] = {}
     if referer:
@@ -131,10 +132,14 @@ def http_get(
     if random.random() < 0.25:
         headers["User-Agent"] = random.choice(REDEYE_USER_AGENTS)
 
+    if scheme == "http":
+        logger.warning("Используется http-ссылка (не https): %s — продолжаем по совместимости.", url)
+
     logger.debug("HTTP GET %s params=%s stream=%s", url, params, stream)
     response = SESSION.get(url, params=params, headers=headers, timeout=timeout, stream=stream)
     response.raise_for_status()
     return response
+
 
 
 def _guess_extension_from_url_or_ct(url: str, content_type: str) -> str:
