@@ -172,6 +172,71 @@ def make_audio_filename(track_title: Optional[str], url: str, content_type: str)
     return f"{base}{ext}"
 
 
+def _validate_content_type(url: str, content_type: str) -> None:
+    """Пишет предупреждение, если тип контента не из разрешённых и URL без ожидаемого расширения."""
+    if content_type and (content_type not in ALLOWED_AUDIO_CONTENT_TYPES) and not url.lower().endswith((".mp3", ".aac")):
+        logger.warning(
+            "Неожиданный Content-Type '%s' для URL %s — продолжаем осторожно.",
+            content_type,
+            url,
+        )
+
+
+def _content_length_ok(response: requests.Response, *, max_bytes: int) -> bool:
+    """Возвращает True, если Content-Length отсутствует или не превышает лимит; иначе False."""
+    try:
+        header = response.headers.get("Content-Length", "0")
+        value = int(header) if header else 0
+        if value and value > max_bytes:
+            logger.warning(
+                "Размер файла %s байт превышает лимит %s байт — скачивание отменено.",
+                value,
+                max_bytes,
+            )
+            return False
+    except (ValueError, TypeError):
+        # Некорректный заголовок — проверим ограничение во время записи потока.
+        pass
+    return True
+
+
+def _write_stream_to_temp(response: requests.Response, *, max_bytes: int) -> Optional[str]:
+    """Пишет поток ответа в временный файл с ограничением размера. Возвращает путь или None при превышении лимита."""
+    written = 0
+    with tempfile.NamedTemporaryFile("wb", delete=False) as tmp_file:
+        tmp_path = tmp_file.name
+        for chunk in response.iter_content(AUDIO_STREAM_CHUNK_SIZE):
+            if not chunk:
+                continue
+            written += len(chunk)
+            if written > max_bytes:
+                logger.warning(
+                    "Лимит размера %s байт превышен (получено %s байт) — удаляем временный файл.",
+                    max_bytes,
+                    written,
+                )
+                tmp_file.close()
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return None
+            tmp_file.write(chunk)
+    return tmp_path
+
+
+def _save_temp_to_filefield(track: TrackLike, url: str, tmp_path: str, content_type: str) -> str:
+    """Сохраняет временный файл в track.audio_preview и возвращает FieldFile.name."""
+    filename = make_audio_filename(getattr(track, "title", None), url, content_type)
+    with open(tmp_path, "rb") as fh:
+        track.audio_preview.save(filename, File(fh), save=True)
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    return getattr(track.audio_preview, "name", "")
+
+
 def download_audio_to_track(
     track: TrackLike,
     url: str,
@@ -226,55 +291,22 @@ def download_audio_to_track(
         response = http_get(url, timeout=timeout, referer=referer, stream=True, allow_http=allow_http)
         content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
 
-        if content_type and (content_type not in ALLOWED_AUDIO_CONTENT_TYPES) and not url.lower().endswith(
-            (".mp3", ".aac")
-        ):
-            logger.warning(
-                "Неожиданный Content-Type '%s' для URL %s — продолжаем осторожно.",
-                content_type,
-                url,
-            )
+        _validate_content_type(url, content_type)
+        if not _content_length_ok(response, max_bytes=max_bytes):
+            return None
 
-        try:
-            content_length_header = response.headers.get("Content-Length", "0")
-            content_length = int(content_length_header) if content_length_header else 0
-            if content_length and content_length > max_bytes:
-                logger.warning(
-                    "Размер файла %s байт превышает лимит %s байт — скачивание отменено.",
-                    content_length,
-                    max_bytes,
-                )
-                return None
-        except (ValueError, TypeError):
-            pass
+        tmp_path = _write_stream_to_temp(response, max_bytes=max_bytes)
+        if not tmp_path:
+            return None
 
-        written_bytes = 0
-        with tempfile.NamedTemporaryFile("wb", delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            for chunk_bytes in response.iter_content(AUDIO_STREAM_CHUNK_SIZE):
-                if not chunk_bytes:
-                    continue
-                written_bytes += len(chunk_bytes)
-                if written_bytes > max_bytes:
-                    logger.warning(
-                        "Лимит размера %s байт превышен (получено %s байт) — удаляем временный файл.",
-                        max_bytes,
-                        written_bytes,
-                    )
-                    raise ValueError("файл слишком большой")
-                tmp_file.write(chunk_bytes)
-
-        filename = make_audio_filename(getattr(track, "title", None), url, content_type)
-        with open(tmp_path, "rb") as fh:
-            track.audio_preview.save(filename, File(fh), save=True)
-
+        saved_name = _save_temp_to_filefield(track, url, tmp_path, content_type)
         logger.info(
             "Аудио сохранено: track=%s, file=%s (источник: %s).",
             getattr(track, "pk", None),
-            getattr(track.audio_preview, "name", ""),
+            saved_name,
             url,
         )
-        return getattr(track.audio_preview, "name", None)
+        return saved_name
 
     except requests.HTTPError as http_error:
         status = getattr(getattr(http_error, "response", None), "status_code", "?")
@@ -284,7 +316,7 @@ def download_audio_to_track(
         logger.error("Ошибка скачивания/сохранения %s: %s.", url, error, exc_info=True)
         return None
     finally:
-        if tmp_path:
+        if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:
