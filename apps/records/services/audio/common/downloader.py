@@ -5,7 +5,7 @@ import os
 import random
 import tempfile
 from typing import Dict, Optional, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, quote
 
 import requests
 from django.core.files import File
@@ -132,7 +132,11 @@ def http_get(
 
     headers: Dict[str, str] = {}
     if referer:
-        headers["Referer"] = referer
+        try:
+            headers["Referer"] = ascii_safe_url(referer)
+        except Exception:
+            # не даём заголовку уронить запрос — просто опускаем его
+            logger.debug("Невозможно нормализовать Referer: %s", referer, exc_info=True)
     if random.random() < 0.25:
         headers["User-Agent"] = random.choice(REDEYE_USER_AGENTS)
 
@@ -148,6 +152,28 @@ def http_get(
     )
     response.raise_for_status()
     return response
+
+
+def ascii_safe_url(url: str) -> str:
+    """
+    Возвращает ASCII-безопасный URL для заголовков HTTP:
+    - домен кодируется в IDNA;
+    - path/query/fragment percent-encode'ятся (не-ASCII → %HH).
+
+    Args:
+        url: Произвольный URL (может содержать не-ASCII).
+
+    Returns:
+        Строка URL, безопасная для записи в HTTP-заголовки.
+    """
+    parts = urlsplit(url)
+    # домен -> idna
+    netloc = parts.netloc.encode("idna").decode("ascii") if parts.netloc else ""
+    # путь/квери/фрагмент -> percent-encode
+    path = quote(parts.path, safe="/%._-~")
+    query = quote(parts.query, safe="=&;%+?/:@,_-~")
+    fragment = quote(parts.fragment, safe="_-~")
+    return urlunsplit((parts.scheme, netloc, path, query, fragment))
 
 
 def _guess_extension_from_url_or_ct(url: str, content_type: str) -> str:

@@ -12,6 +12,8 @@ from playwright.sync_api import (
     TimeoutError as PWTimeout,
     Error as PWError,
     sync_playwright,
+    Browser,
+    ViewportSize,
 )
 
 from records.constants import (
@@ -25,10 +27,61 @@ from records.constants import (
     CAPTURE_GLOBAL_TIMEOUT_SEC,
     CAPTURE_POST_CLICK_SETTLE_SEC,
     REDEYE_SOUNDS_BASE_URL,
+    REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC,
+    PLAYWRIGHT_CLICK_ACTION_TIMEOUT_MS,
+    PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
+    PLAYWRIGHT_ACTION_TIMEOUT_MS,
+    PLAYWRIGHT_WAIT_TICK_MS,
 )
 from records.services.providers.redeye.helpers import normalize_abs_url
 
 logger = logging.getLogger(__name__)
+
+# --- добавлено: блокировки «тяжёлых» и посторонних ресурсов ---
+_THIRDPARTY_BLOCKLIST = (
+    "googletagmanager",
+    "google-analytics",
+    "doubleclick",
+    "facebook",
+    "twitter",
+    "hotjar",
+    "segment",
+    "sentry",
+    "cloudflareinsights",
+)
+_ALLOW_DOMAIN_HINTS = ("redeyerecords.co.uk", "sounds.redeyerecords.co.uk")
+
+
+def _install_network_blocker(context) -> None:
+    """
+    Подключает роутер Playwright и блокирует «тяжёлые» и посторонние ресурсы.
+
+    Блокируются:
+      - типы image/stylesheet/font;
+      - явные домены аналитики/пикселей.
+    Оставляем document/script/xhr/fetch/media — это нужно плееру.
+    """
+
+    def _should_abort(req) -> bool:
+        rtype = (req.resource_type or "").lower()
+        if rtype in {"image", "stylesheet", "font"}:
+            return True
+        url = (req.url or "").lower()
+        if not any(h in url for h in _ALLOW_DOMAIN_HINTS):
+            if any(b in url for b in _THIRDPARTY_BLOCKLIST):
+                return True
+        return False
+
+    def _route(route, request) -> None:
+        try:
+            if _should_abort(request):
+                route.abort()
+                return
+        except Exception as err:  # noqa: BLE001 — роутер не должен ронять сценарий
+            logger.debug("Ошибка в роутере сети: %s", err, exc_info=True)
+        route.continue_()
+
+    context.route("**/*", _route)
 
 
 def _dismiss_cookie_banners(page: Page) -> None:
@@ -37,7 +90,7 @@ def _dismiss_cookie_banners(page: Page) -> None:
         try:
             locator = page.locator(selector).first
             if locator.count() and locator.is_visible():
-                logger.debug("[capture] закрытие cookie-баннера: %s", selector)
+                logger.debug("Закрытие cookie-баннера: %s", selector)
                 locator.click(timeout=1_000)
                 break
         except PWError:
@@ -79,9 +132,9 @@ def _attach_response_sniffer(page: Page) -> OrderedDictType[str, None]:
                 url = normalize_abs_url(re.sub(r"\s+", "", raw_url))
                 if url and url not in collected:
                     collected[url] = None
-                    logger.debug("[capture] обнаружен аудио-ответ: %s", url)
-        except Exception as err:
-            logger.debug("[capture] ошибка сниффера ответа: %s", err)
+                    logger.debug("Обнаружен аудио-ответ: %s", url)  # <-- с заглавной
+        except Exception as err:  # noqa: BLE001
+            logger.debug("Ошибка сниффера ответа: %s", err)
 
     page.on("response", _on_response)
     return collected
@@ -106,7 +159,7 @@ def _collect_button_letters(page: Page) -> List[str]:
         pass
 
     letters = sorted(unique_letters)
-    logger.debug("[capture] буквы плеера (отсортированы): %s", letters)
+    logger.debug("буквы плеера (отсортированы): %s", letters)
     return letters
 
 
@@ -162,7 +215,7 @@ def _extract_redeye_number_from_html(html: str) -> Optional[str]:
 
 
 def _fallback_fill_missing(
-    html: str, urls_ordered: List[str], letters: List[str]
+        html: str, urls_ordered: List[str], letters: List[str]
 ) -> List[str]:
     """Метод достраивает недостающие mp3-ссылки по буквам при нехватке.
 
@@ -204,18 +257,18 @@ def _fallback_fill_missing(
                 out.append(candidate)
                 present.add(candidate)
                 logger.info(
-                    "[capture:fallback] добавлена недостающая ссылка: %s", candidate
+                    "Добавлена недостающая ссылка: %s", candidate
                 )
         except requests.RequestException as req_err:
             logger.debug(
-                "[capture:fallback] ошибка проверки %s: %s", candidate, req_err
+                "Ошибка проверки %s: %s", candidate, req_err
             )
 
     return _map_urls_by_letters(out, letters)
 
 
 def _wait_new_urls(
-    bag: Dict[str, None], before_count: int, timeout_sec: float, page: Page
+        bag: Dict[str, None], before_count: int, timeout_sec: float, page: Page
 ) -> None:
     """Метод ожидает появления новых URL в «сниффере» после клика по кнопке."""
     deadline = time.monotonic() + timeout_sec
@@ -224,117 +277,241 @@ def _wait_new_urls(
             return
         page.wait_for_timeout(CAPTURE_WAIT_TICK_MS)
 
+from typing import Literal
 
-def collect_redeye_audio_urls(
-    page_url: str,
+WaitUntil = Literal["load", "domcontentloaded", "networkidle", "commit"]
+
+
+def _safe_goto(
+    page: Page,
+    url: str,
     *,
-    per_click_timeout_sec: int = 5,
-    debug: bool = False,
-    global_max_sec: float = CAPTURE_GLOBAL_TIMEOUT_SEC,
-) -> List[str]:
+    wait_until: WaitUntil = "domcontentloaded",
+    retries: int = 1,
+) -> bool:
     """
-    Метод собирает прямые ссылки на аудио с плеера Redeye.
+    Пытается открыть страницу с заданным числом повторных попыток при таймауте навигации.
 
-    Алгоритм:
-      1) Открывает карточку в headless-браузере.
-      2) По очереди кликает по кнопкам (a,b,c,...) и перехватывает медиа-URL.
-      3) Упорядочивает ссылки по буквам; при нехватке пытается достроить по HTML.
+    Поведение:
+      • Выполняет до (retries + 1) попыток page.goto(...).
+      • На каждой неуспешной попытке (Timeout) пишет DEBUG и пробует ещё раз.
+      • Если исчерпаны попытки — пишет WARNING и возвращает False.
+      • Любая другая ошибка Playwright логируется кратко и приводит к False.
 
     Args:
-        page_url (str): URL карточки товара Redeye.
-        per_click_timeout_sec (int): Таймаут ожидания после каждого клика по кнопке.
-        debug (bool): Включает подробный вывод сырых ссылок и сниппета HTML.
-        global_max_sec (float): Общий мягкий предел времени для сбора ссылок (сек).
+        page: Экземпляр Playwright Page.
+        url: Адрес страницы.
+        wait_until: Условие ожидания загрузки.
+        retries: Количество дополнительных попыток при таймауте (по умолчанию 1).
 
     Returns:
-        List[str]: Упорядоченный список URL аудио в порядке букв.
+        True, если навигация успешна; False при таймауте/ошибке.
     """
-    logger.info("[capture] открываем страницу: %s", page_url)
+    for attempt in range(retries + 1):
+        try:
+            page.goto(url, wait_until=wait_until)
+            return True
+        except PWTimeout:
+            if attempt < retries:
+                logger.debug(
+                    "Навигация превысила таймаут, повторная попытка %d/%d: %s",
+                    attempt + 1,
+                    retries,
+                    url,
+                )
+                continue
+            logger.warning(
+                "Навигация не уложилась в %d мс: %s — пропуск страницы.",
+                PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
+                url,
+            )
+            return False
+        except PWError as err:
+            logger.error("Ошибка навигации Playwright к %s: %s", url, err)
+            return False
+    return False  # недостижимо, но для спокойствия mypy
 
-    urls_ordered: List[str] = []
-    browser = None
+
+
+
+def _collect_with_browser(
+        *,
+        active_browser: Browser,
+        page_url: str,
+        per_click_timeout_sec: int,
+        debug: bool,
+        global_max_sec: float,
+) -> List[str]:
+    """
+    Выполняет сбор аудио-ссылок внутри уже запущенного браузера (создаёт только context/page).
+
+    Args:
+        active_browser: Экземпляр Browser (внешний или временный).
+        page_url: URL карточки Redeye.
+        per_click_timeout_sec: Таймаут ожидания ссылок после клика по кнопке плеера, сек.
+        debug: Включать ли подробные логи.
+        global_max_sec: Общий мягкий предел работы, сек.
+
+    Returns:
+        Список аудио-URL в порядке кнопок (A, B, C, ...).
+    """
     start_ts = time.monotonic()
 
+    viewport: ViewportSize = {"width": 960, "height": 800}  # --- типизировано ---
+    context = active_browser.new_context(viewport=viewport, java_script_enabled=True)
+    _install_network_blocker(context)
+
     try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--autoplay-policy=no-user-gesture-required"],
-            )
-            context = browser.new_context()
-            page = context.new_page()
-            page.set_default_timeout(3_000)
-            page.goto(page_url, wait_until="domcontentloaded")
+        page = context.new_page()
+        page.set_default_timeout(PLAYWRIGHT_ACTION_TIMEOUT_MS)
+        page.set_default_navigation_timeout(PLAYWRIGHT_NAVIGATION_TIMEOUT_MS)  # --- добавлено ---
 
-            _dismiss_cookie_banners(page)
+        # --- добавлено: одна повторная попытка навигации при редком флапе сети ---
+        if not _safe_goto(page, page_url, wait_until="domcontentloaded", retries=1):
+            return []
 
-            letters = _collect_button_letters(page)
-            total = len(letters)
-            if total == 0:
-                logger.warning(
-                    "[capture] на странице нет кнопок плеера: %s",
-                    REDEYE_PLAYER_BUTTON_SELECTOR,
-                )
-                urls_ordered = []
-            else:
-                bag = _attach_response_sniffer(page)
-                buttons = page.locator(REDEYE_PLAYER_BUTTON_SELECTOR)
+        _dismiss_cookie_banners(page)
 
-                for idx in range(total):
-                    before_count = len(bag)
-                    try:
-                        btn = buttons.nth(idx)
-                        logger.debug("[capture] клик по кнопке #%s", idx + 1)
-                        btn.scroll_into_view_if_needed()
-                        btn.click(timeout=1_500)
-                        _wait_new_urls(bag, before_count, per_click_timeout_sec, page)
-                    except PWTimeout:
-                        logger.debug(
-                            "[capture] таймаут ожидания после клика idx=%s", idx
-                        )
-                    except PWError as pw_err:
-                        logger.debug("[capture] ошибка клика idx=%s: %s", idx, pw_err)
+        letters = _collect_button_letters(page)
+        total = len(letters)
+        if total == 0:
+            logger.warning("На странице нет кнопок плеера: %s", REDEYE_PLAYER_BUTTON_SELECTOR)
+            return []
 
-                    if len(bag) >= total:
-                        break
-                    if time.monotonic() - start_ts > global_max_sec:
-                        logger.debug("[capture] достигнут общий мягкий таймаут сбора")
-                        break
+        bag = _attach_response_sniffer(page)
+        buttons = page.locator(REDEYE_PLAYER_BUTTON_SELECTOR)
 
-                end_deadline = time.monotonic() + CAPTURE_POST_CLICK_SETTLE_SEC
-                while len(bag) < total and time.monotonic() < end_deadline:
-                    page.wait_for_timeout(100)
-
-                urls_raw = list(bag.keys())
-                if debug:
-                    logger.debug("[capture] сырые ссылки: %s", urls_raw)
-
-                urls_ordered = _map_urls_by_letters(urls_raw, letters)
-
-                if len(urls_ordered) < total:
-                    html = page.content()
-                    urls_ordered = _fallback_fill_missing(html, urls_ordered, letters)
-                    if debug:
-                        logger.debug(
-                            "[capture] HTML-сниппет (первые 1800 символов): %s",
-                            html[:1800],
-                        )
-
-    except PWError as pw_exc:
-        logger.exception("[capture] ошибка Playwright: %s", pw_exc)
-        urls_ordered = []
-    except Exception as exc:
-        logger.exception("[capture] непредвиденная ошибка сбора: %s", exc)
-        urls_ordered = []
-    finally:
-        if browser:
+        for idx in range(total):
+            before_count = len(bag)
             try:
-                browser.close()
-            except PWError as close_exc:
-                logger.debug("[capture] ошибка закрытия браузера: %s", close_exc)
+                btn = buttons.nth(idx)
+                logger.debug("Клик по кнопке #%s", idx + 1)
+                btn.scroll_into_view_if_needed()
+                btn.click(timeout=PLAYWRIGHT_CLICK_ACTION_TIMEOUT_MS)
+                _wait_new_urls(bag, before_count, per_click_timeout_sec, page)
+            except PWTimeout:
+                logger.debug("Таймаут ожидания после клика idx=%s", idx)
+            except PWError as pw_err:
+                logger.debug("Ошибка клика idx=%s: %s", idx, pw_err)
 
-    logger.info("[capture] собрано ссылок: %d", len(urls_ordered))
-    return urls_ordered
+            if len(bag) >= total:
+                break
+            if time.monotonic() - start_ts > global_max_sec:
+                logger.debug("Достигнут общий мягкий таймаут сбора")
+                break
+
+        end_deadline = time.monotonic() + CAPTURE_POST_CLICK_SETTLE_SEC
+        while len(bag) < total and time.monotonic() < end_deadline:
+            page.wait_for_timeout(PLAYWRIGHT_WAIT_TICK_MS)
+
+        urls_raw = list(bag.keys())
+        if debug:
+            logger.debug("Сырые ссылки: %s", urls_raw)
+
+        urls_ordered: List[str] = _map_urls_by_letters(urls_raw, letters)
+
+        if len(urls_ordered) < total:
+            html = page.content()
+            urls_ordered = _fallback_fill_missing(html, urls_ordered, letters)
+            if debug and html:
+                logger.debug("HTML-сниппет (первые 1800 симв.): %s", html[:1800])
+
+        return urls_ordered
+
+    finally:
+        try:
+            context.close()
+        except PWError as close_exc:
+            logger.debug("Ошибка закрытия контекста: %s", close_exc)
+
+
+def collect_redeye_audio_urls(
+        page_url: str,
+        *,
+        per_click_timeout_sec: Optional[int] = None,
+        debug: bool = False,
+        global_max_sec: float = CAPTURE_GLOBAL_TIMEOUT_SEC,
+        browser: Optional[Browser] = None,
+) -> List[str]:
+    """
+    Собирает прямые ссылки на аудио с плеера Redeye.
+
+    Сценарии:
+      • Потоковый: если передан внешний `browser`, новый Chromium не запускается — создаётся только context/page.
+      • Разовый: если `browser` не передан, браузер поднимается локально на время вызова и закрывается автоматически.
+
+    Args:
+        page_url: URL карточки Redeye.
+        per_click_timeout_sec: Таймаут ожидания ссылок после клика по кнопке плеера, сек.
+        debug: Включать ли подробные логи.
+        global_max_sec: Общий мягкий предел работы, сек.
+        browser: Внешний Browser для пакетной обработки.
+
+    Returns:
+        Список аудио-URL в порядке кнопок (A, B, C, ...).
+    """
+    logger.info("Открываем страницу: %s", page_url)
+    if per_click_timeout_sec is None:
+        per_click_timeout_sec = REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC
+    try:
+        # --- если передан внешний браузер, но он «мертвый», безопасно отфолбэкаем на локальный запуск ---
+        if browser is not None:
+            try:
+                if hasattr(browser, "is_connected") and not browser.is_connected():
+                    logger.warning("Получен неактивный браузер (is_connected=False) — используем локальный экземпляр")
+                    browser = None
+            except PWError as probe_err:
+                logger.warning("Ошибка проверки состояния браузера: %s — используем локальный экземпляр", probe_err)
+                browser = None
+
+        if browser is not None:
+            urls = _collect_with_browser(
+                active_browser=browser,
+                page_url=page_url,
+                per_click_timeout_sec=per_click_timeout_sec,
+                debug=debug,
+                global_max_sec=global_max_sec,
+            )
+            logger.info("Собрано ссылок: %d", len(urls))
+            return urls
+
+        # Разовый случай — поднимаем собственный браузер
+        with sync_playwright() as pw:
+            tmp_browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--autoplay-policy=no-user-gesture-required",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                ],
+            )
+            urls = _collect_with_browser(
+                active_browser=tmp_browser,
+                page_url=page_url,
+                per_click_timeout_sec=per_click_timeout_sec,
+                debug=debug,
+                global_max_sec=global_max_sec,
+            )
+            logger.info("Собрано ссылок: %d", len(urls))
+            return urls
+
+    except PWTimeout:
+        logger.warning("Таймаут Playwright при обработке %s — страница пропущена.", page_url)
+        if debug:
+            logger.exception("Детали таймаута:")
+        return []
+    except PWError as pw_err:
+        logger.error("Ошибка Playwright при обработке %s: %s", page_url, pw_err)
+        if debug:
+            logger.exception("Детали ошибки Playwright:")
+        return []
+    except Exception as exc:  # noqa: BLE001 — предохранитель
+        logger.error("Неожиданная ошибка при обработке %s: %s", page_url, exc)
+        if debug:
+            logger.exception("Детали непредвиденной ошибки:")
+        return []
 
 
 if __name__ == "__main__":

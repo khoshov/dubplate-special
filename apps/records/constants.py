@@ -161,6 +161,14 @@ REDEYE_PLAYER_PRUNE_UNTITLED: bool = True
 PLAYWRIGHT_CLICK_ACTION_TIMEOUT_MS: int = 1_500
 """Таймаут самого действия клика по кнопке (мс), не путать с ожиданием сетевых ответов."""
 
+PLAYWRIGHT_ACTION_TIMEOUT_MS: int = 3_000
+"""Базовый таймаут (мс) для коротких действий Playwright: поиск локатора, клик и т.п."""
+
+PLAYWRIGHT_NAVIGATION_TIMEOUT_MS: int = 12_000
+"""Таймаут навигации (page.goto/page.waitForNavigation) в миллисекундах."""
+
+PLAYWRIGHT_WAIT_TICK_MS: int = 100
+"""Интервал ожидания (мс) между проверками количества ответов при догрузке аудио."""
 
 # ============================================================================
 #  ПРОЧЕЕ / СЛУЖЕБНЫЕ СПРАВОЧНИКИ

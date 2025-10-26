@@ -10,10 +10,11 @@ docker compose exec django uv run python manage.py redeye_mp3_attach `
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from typing import Iterable, Optional
-
+from playwright.sync_api import sync_playwright, Browser
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q
@@ -160,9 +161,7 @@ class Command(BaseCommand):
         time.sleep(pause)
 
     def handle(self, *args, **options) -> None:
-        logging.getLogger().setLevel(
-            logging.DEBUG if options["debug"] else logging.INFO
-        )
+        logging.getLogger().setLevel(logging.DEBUG if options["debug"] else logging.INFO)
 
         all_mode: bool = options["all"]
         catalog: Optional[str] = options["catalog"]
@@ -210,7 +209,7 @@ class Command(BaseCommand):
 
         if dry_run:
             for r in self._iter_queryset_in_order(
-                qs, order=order, offset=offset, limit=min(limit or 25, 50)
+                    qs, order=order, offset=offset, limit=min(limit or 25, 50)
             ):
                 logger.info(
                     "[DRY-RUN] id=%s catalog=%s title=%s",
@@ -231,69 +230,86 @@ class Command(BaseCommand):
         processed = 0
         blocked_hits = 0
 
-        for record in self._iter_queryset_in_order(
-            qs, order=order, offset=offset, limit=limit
-        ):
-            processed += 1
-            self._sleep_with_jitter(delay, jitter)
+        # --- добавлено: временно разрешаем синхронный ORM при активном event loop ---
+        prev_unsafe = os.environ.get("DJANGO_ALLOW_ASYNC_UNSAFE")  # --- добавлено ---
+        os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "1"  # --- добавлено ---
+        try:
+            # --- ИЗМЕНЕНО: держим Playwright ОТКРЫТЫМ на ВЕСЬ цикл обработки ---
+            with sync_playwright() as pw:  # --- изменено ---
+                browser: Browser = pw.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--autoplay-policy=no-user-gesture-required",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--disable-background-timer-throttling",
+                        "--disable-renderer-backgrounding",
+                    ],
+                )
 
-            for attempt in range(1, max_retries + 1):
-                try:
-                    # основное действие
-                    with transaction.atomic():
-                        updated = service.attach_audio_from_redeye(
-                            record=record,
-                            force=force,
-                            per_click_timeout_sec=20,
-                        )
+                for record in self._iter_queryset_in_order(  # --- перемещено внутрь with ---
+                        qs, order=order, offset=offset, limit=limit
+                ):
+                    processed += 1
+                    self._sleep_with_jitter(delay, jitter)
 
-                    logger.info(
-                        "OK  id=%s catalog=%s: обновлено треков=%s (attempt %d/%d)",
-                        record.id,
-                        record.catalog_number,
-                        updated,
-                        attempt,
-                        max_retries,
-                    )
-                    break
-
-                except Exception as exc:
-                    # эвристика «похоже на блокировку»
-                    msg = str(exc).lower()
-                    is_block = any(
-                        tok in msg
-                        for tok in (" 403", " 429", "forbidden", "too many requests")
-                    )
-                    if is_block:
-                        blocked_hits += 1
-                        logger.warning(
-                            "BLOCK id=%s catalog=%s: %s",
-                            record.id,
-                            record.catalog_number,
-                            exc,
-                        )
-                        if stop_on_block and blocked_hits >= 2:
-                            logger.error(
-                                "Повторная блокировка. Останавливаю по флагу --stop-on-block."
+                    for attempt in range(1, max_retries + 1):
+                        try:
+                            with transaction.atomic():
+                                updated = service.attach_audio_from_redeye(
+                                    record=record,
+                                    force=force,
+                                    per_click_timeout_sec=None,  # дефолт применит скрапер
+                                    browser=browser,  # единый браузер на весь прогон
+                                )
+                            logger.info(
+                                "OK  id=%s catalog=%s: обновлено=%s (attempt %d/%d)",
+                                record.id,
+                                record.catalog_number,
+                                updated,
+                                attempt,
+                                max_retries,
                             )
-                            return
-                        logger.info("Ожидание %.1f сек...", cooldown)
-                        time.sleep(cooldown)
-                        continue
+                            break
 
-                    logger.exception(
-                        "ERR id=%s catalog=%s (attempt %d/%d): %s",
-                        record.id,
-                        record.catalog_number,
-                        attempt,
-                        max_retries,
-                        exc,
-                    )
-                    if attempt >= max_retries:
-                        logger.error(
-                            "Переход к следующей записи после %d неудачных попыток.",
-                            max_retries,
-                        )
+                        except Exception as exc:
+                            msg = str(exc).lower()
+                            is_block = any(
+                                tok in msg for tok in (" 403", " 429", "forbidden", "too many requests")
+                            )
+                            if is_block:
+                                blocked_hits += 1
+                                logger.warning(
+                                    "BLOCK id=%s catalog=%s: %s",
+                                    record.id,
+                                    record.catalog_number,
+                                    exc,
+                                )
+                                if stop_on_block and blocked_hits >= 2:
+                                    logger.error("Повторная блокировка. Останавливаю по флагу --stop-on-block.")
+                                    return
+                                logger.info("Ожидание %.1f сек...", cooldown)
+                                time.sleep(cooldown)
+                                continue
+
+                            logger.exception(
+                                "ERR id=%s catalog=%s (attempt %d/%d): %s",
+                                record.id,
+                                record.catalog_number,
+                                attempt,
+                                max_retries,
+                                exc,
+                            )
+                            if attempt >= max_retries:
+                                logger.error(
+                                    "Переход к следующей записи после %d неудачных попыток.", max_retries
+                                )
+        finally:
+            # --- возвращаем переменную окружения в исходное состояние ---
+            if prev_unsafe is None:
+                os.environ.pop("DJANGO_ALLOW_ASYNC_UNSAFE", None)
+            else:
+                os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = prev_unsafe
 
         logger.info("Готово. Обработано записей: %d", processed)
 
