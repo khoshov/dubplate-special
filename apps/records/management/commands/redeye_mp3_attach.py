@@ -161,7 +161,9 @@ class Command(BaseCommand):
         time.sleep(pause)
 
     def handle(self, *args, **options) -> None:
-        logging.getLogger().setLevel(logging.DEBUG if options["debug"] else logging.INFO)
+        logging.getLogger().setLevel(
+            logging.DEBUG if options["debug"] else logging.INFO
+        )
 
         all_mode: bool = options["all"]
         catalog: Optional[str] = options["catalog"]
@@ -209,7 +211,7 @@ class Command(BaseCommand):
 
         if dry_run:
             for r in self._iter_queryset_in_order(
-                    qs, order=order, offset=offset, limit=min(limit or 25, 50)
+                qs, order=order, offset=offset, limit=min(limit or 25, 50)
             ):
                 logger.info(
                     "[DRY-RUN] id=%s catalog=%s title=%s",
@@ -247,8 +249,10 @@ class Command(BaseCommand):
                     ],
                 )
 
-                for record in self._iter_queryset_in_order(  # --- перемещено внутрь with ---
-                        qs, order=order, offset=offset, limit=limit
+                for (
+                    record
+                ) in self._iter_queryset_in_order(  # --- перемещено внутрь with ---
+                    qs, order=order, offset=offset, limit=limit
                 ):
                     processed += 1
                     self._sleep_with_jitter(delay, jitter)
@@ -275,7 +279,13 @@ class Command(BaseCommand):
                         except Exception as exc:
                             msg = str(exc).lower()
                             is_block = any(
-                                tok in msg for tok in (" 403", " 429", "forbidden", "too many requests")
+                                tok in msg
+                                for tok in (
+                                    " 403",
+                                    " 429",
+                                    "forbidden",
+                                    "too many requests",
+                                )
                             )
                             if is_block:
                                 blocked_hits += 1
@@ -286,7 +296,9 @@ class Command(BaseCommand):
                                     exc,
                                 )
                                 if stop_on_block and blocked_hits >= 2:
-                                    logger.error("Повторная блокировка. Останавливаю по флагу --stop-on-block.")
+                                    logger.error(
+                                        "Повторная блокировка. Останавливаю по флагу --stop-on-block."
+                                    )
                                     return
                                 logger.info("Ожидание %.1f сек...", cooldown)
                                 time.sleep(cooldown)
@@ -302,7 +314,8 @@ class Command(BaseCommand):
                             )
                             if attempt >= max_retries:
                                 logger.error(
-                                    "Переход к следующей записи после %d неудачных попыток.", max_retries
+                                    "Переход к следующей записи после %d неудачных попыток.",
+                                    max_retries,
                                 )
         finally:
             # --- возвращаем переменную окружения в исходное состояние ---

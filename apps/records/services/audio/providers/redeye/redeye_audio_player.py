@@ -112,7 +112,7 @@ def attach_audio_from_redeye_player(
     page_url: Optional[str] = None,
     force: bool = False,
     per_click_timeout_sec: Optional[int] = None,
-    browser: Optional[Browser] = None
+    browser: Optional[Browser] = None,
 ) -> int:
     """
     Метод прикрепляет аудио-превью к трекам записи из источника Redeye.
@@ -141,9 +141,7 @@ def attach_audio_from_redeye_player(
     # URL карточки
     page_url = _resolve_product_page_url(record, page_url)
     if not page_url:
-        logger.info(
-            "у записи %s отсутствует URL карточки — пропуск.", record.pk
-        )
+        logger.info("у записи %s отсутствует URL карточки — пропуск.", record.pk)
         return 0
 
     # Треки в порядке привязки
@@ -154,13 +152,14 @@ def attach_audio_from_redeye_player(
 
     # Сбор ссылок плеера
     urls = collect_redeye_audio_urls(
-        page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False, browser=browser,
+        page_url,
+        per_click_timeout_sec=per_click_timeout_sec,
+        debug=False,
+        browser=browser,
     )
     logger.debug("ссылок получено=%d: %s", len(urls), urls)
     if not urls:
-        logger.info(
-            "не удалось получить медиа-ссылки для %s.", page_url
-        )
+        logger.info("не удалось получить медиа-ссылки для %s.", page_url)
         return 0
 
     # Сопоставление и скачивание

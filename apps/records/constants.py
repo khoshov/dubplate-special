@@ -53,7 +53,7 @@ REDEYE_URLS = [
 
 REDEYE_BASE_URL: str = "https://www.redeyerecords.co.uk"
 
-REDEYE_HTTP_TIMEOUT: int = 20           # сек
+REDEYE_HTTP_TIMEOUT: int = 20  # сек
 REDEYE_HTTP_DELAY_SEC: float = 0.6
 REDEYE_HTTP_JITTER_SEC: float = 0.5
 REDEYE_HTTP_MAX_RETRIES: int = 4

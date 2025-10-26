@@ -273,7 +273,7 @@ class RecordService:
         *,
         force: bool = False,
         per_click_timeout_sec: Optional[int] = None,
-        browser: Optional[Browser] = None
+        browser: Optional[Browser] = None,
     ) -> int:
         """
         Метод прикрепляет аудио-превью для записи через Redeye.

@@ -6,7 +6,9 @@ from typing import Optional
 from playwright.sync_api import Browser
 
 from records.models import Record, Track
-from records.services.audio.common.downloader import download_audio_to_track as _download_audio_to_track
+from records.services.audio.common.downloader import (
+    download_audio_to_track as _download_audio_to_track,
+)
 from records.services.audio.providers.redeye.redeye_audio_player import (
     attach_audio_from_redeye_player,
 )
@@ -30,12 +32,12 @@ class AudioService:
 
     @staticmethod
     def attach_audio_from_redeye(
-            record: Record,
-            *,
-            force: bool = False,
-            per_click_timeout_sec: Optional[int] = None,
-            page_url: Optional[str] = None,
-            browser: Optional[Browser] = None,
+        record: Record,
+        *,
+        force: bool = False,
+        per_click_timeout_sec: Optional[int] = None,
+        page_url: Optional[str] = None,
+        browser: Optional[Browser] = None,
     ) -> int:
         """
         Метод прикрепляет аудио-превью к трекам записи из источника Redeye.
@@ -82,13 +84,13 @@ class AudioService:
 
     @staticmethod
     def download_audio_to_track(
-            track: Track,
-            url: str,
-            *,
-            overwrite: bool = False,
-            referer: Optional[str] = None,
-            timeout: int = AUDIO_DEFAULT_TIMEOUT,
-            max_bytes: int = AUDIO_DEFAULT_MAX_BYTES,
+        track: Track,
+        url: str,
+        *,
+        overwrite: bool = False,
+        referer: Optional[str] = None,
+        timeout: int = AUDIO_DEFAULT_TIMEOUT,
+        max_bytes: int = AUDIO_DEFAULT_MAX_BYTES,
     ) -> Optional[str]:
         """
         Метод выполняет потоковую загрузку аудио по прямому URL и сохраняет файл
