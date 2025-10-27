@@ -88,11 +88,11 @@ def _batch_update(
     )
 
 
-@admin.action(description="Опубликовать в VK (пост на стене группы)")
+@admin.action(description="Опубликовать в VK с аудио (пост на стене группы)")
 def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
     """
-    Публикует выбранные записи в сообщество ВКонтакте.
-    Требует, чтобы admin_obj имел атрибут vk_service с методом post_record(record).
+    Публикует выбранные записи в сообщество ВКонтакте со ВСЕМИ аудио-треками.
+    Требует, чтобы admin_obj имел атрибут vk_service с методом post_record_with_audio(record).
     """
     vk_service = getattr(admin_obj, "vk_service", None)
     if vk_service is None:
@@ -131,9 +131,9 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
         # if not vk_service.health_check():  # <- раскомментируйте для быстрой диагностики
         #     logger.warning("VK: health-check не пройден. Продолжаю попытку публикации (возможно, только текст).")
 
-        post_id = vk_service.post_record(r)
+        post_id = vk_service.post_record_with_audio(r)
         logger.info(
-            "Опубликовано в VK: record_id=%s, post_id=%s, title=%s",
+            "Опубликовано в VK с аудио: record_id=%s, post_id=%s, title=%s",
             getattr(r, "pk", None),
             post_id,
             Truncator(title).chars(80),
