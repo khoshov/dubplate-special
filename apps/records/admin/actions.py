@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 from django.contrib import admin, messages
 from django.http import HttpRequest
-
+from django.utils.text import Truncator
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +85,78 @@ def _batch_update(
         total,
         time.perf_counter() - start_ts,
         username,
+    )
+
+
+@admin.action(description="Опубликовать в VK (пост на стене группы)")
+def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
+    """
+    Публикует выбранные записи в сообщество ВКонтакте.
+    Требует, чтобы admin_obj имел атрибут vk_service с методом post_record(record).
+    """
+    vk_service = getattr(admin_obj, "vk_service", None)
+    if vk_service is None:
+        admin_obj.message_user(
+            request,
+            "Сервис VK не сконфигурирован. Обратитесь к администратору.",
+            level=messages.ERROR,
+        )
+        logger.error("VK: сервис не инициализирован в RecordAdmin.__init__ (vk_service отсутствует).")
+        return
+
+    # --- добавлено: явный старт батча ---
+    logger.info(
+        "Публикация записей в VK (записей: %d, пользователь: %s).",
+        queryset.count(),
+        getattr(request.user, "username", "?"),
+    )
+
+    def _get_id(r) -> str | None:
+        return str(getattr(r, "pk", None))
+
+    def _do_post(r):
+        # --- добавлено: диагностические логи перед публикацией ---
+        title = getattr(r, "title", "")
+        cover = getattr(r, "cover_image", None)
+        cover_path = getattr(cover, "path", None) if cover else None
+        logger.debug(
+            "Попытка публикации: record_id=%s, title='%s', есть_обложка=%s, cover_path=%s",
+            getattr(r, "pk", None),
+            Truncator(title).chars(80),
+            bool(cover_path),
+            cover_path,
+        )
+
+        # Можно один раз по кнопке проверить конфигурацию:
+        # if not vk_service.health_check():  # <- раскомментируйте для быстрой диагностики
+        #     logger.warning("VK: health-check не пройден. Продолжаю попытку публикации (возможно, только текст).")
+
+        post_id = vk_service.post_record(r)
+        logger.info(
+            "Опубликовано в VK: record_id=%s, post_id=%s, title=%s",
+            getattr(r, "pk", None),
+            post_id,
+            Truncator(title).chars(80),
+        )
+        return post_id
+
+    # используем ваш общий батч-хелпер
+    from .actions import _batch_update as _batch_update_helper  # если хелпер в этом же файле — уберите импорт
+
+    _batch_update_helper(
+        admin_obj,
+        request,
+        queryset,
+        start_log="Публикация записей в VK",
+        empty_msg="Выберите записи для публикации в VK.",
+        ok_msg="Опубликовано в VK: {ok} из {total}.",
+        skip_msg="Пропущено (не выбрано): {n}.",
+        skip_header="Пропущено:",
+        fail_msg="С ошибками публикации: {n}.",
+        fail_header="Ошибки:",
+        id_label="record_id",
+        get_id=_get_id,
+        do_update=_do_post,
     )
 
 

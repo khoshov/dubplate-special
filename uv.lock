@@ -222,6 +222,7 @@ dependencies = [
     { name = "python3-discogs-client" },
     { name = "requests" },
     { name = "sorl-thumbnail" },
+    { name = "vk-api" },
 ]
 
 [package.dev-dependencies]
@@ -252,6 +253,7 @@ requires-dist = [
     { name = "python3-discogs-client", specifier = ">=2.8" },
     { name = "requests", specifier = ">=2.31.0,<3" },
     { name = "sorl-thumbnail", specifier = "==12.11.0" },
+    { name = "vk-api", specifier = ">=11.10.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -719,4 +721,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/8a/78/16493d9c386d8e60e442a35feac5e00f0913c0f4b7c217c11e8ec2ff53e0/urllib3-2.4.0.tar.gz", hash = "sha256:414bc6535b787febd7567804cc015fee39daab8ad86268f1310a9250697de466", size = 390672, upload-time = "2025-04-10T15:23:39.232Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6b/11/cc635220681e93a0183390e26485430ca2c7b5f9d33b15c74c2861cb8091/urllib3-2.4.0-py3-none-any.whl", hash = "sha256:4e16665048960a0900c702d4a66415956a584919c03361cac9f1df5c5dd7e813", size = 128680, upload-time = "2025-04-10T15:23:37.377Z" },
+]
+
+[[package]]
+name = "vk-api"
+version = "11.10.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/19/1c2733571bb38f8846d6048eb6c756b7651960c73561741ccdb41f6c31bf/vk_api-11.10.0.tar.gz", hash = "sha256:a63fbd7d7a9d39348638d3eade49f964e8ebeba0898a070b03a7f082dbf5d112", size = 46642, upload-time = "2025-07-18T17:08:00.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/92/ac/4d14b592c62a18c0d5441105f284db4211f39904d65509ce98df7981a872/vk_api-11.10.0-py3-none-any.whl", hash = "sha256:2032127a64433c307559a0f8d2501eea1415dcfd5408fc398b1e837b6fcfbfe1", size = 53994, upload-time = "2025-07-18T17:07:59.146Z" },
 ]

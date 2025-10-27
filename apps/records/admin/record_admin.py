@@ -11,7 +11,8 @@ from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
-from .actions import update_from_discogs, update_from_redeye
+from records.services.social.vk_service import VKService
+from .actions import update_from_discogs, update_from_redeye, post_to_vk
 from .inlines import TrackInline
 from .mixins import RedeyeAudioRefreshMixin
 
@@ -30,7 +31,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     form = RecordForm
     autocomplete_fields = ("artists",)
     inlines = [TrackInline]
-    actions = [update_from_discogs, update_from_redeye]
+    actions = [update_from_discogs, update_from_redeye, post_to_vk]
 
     fieldsets = (
         (
@@ -110,6 +111,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             image_service=ImageService(),
             audio_service=AudioService(),
         )
+        self.vk_service = VKService.from_settings()
 
     def get_artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
