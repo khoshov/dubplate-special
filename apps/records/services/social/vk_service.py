@@ -136,8 +136,6 @@ class VKService:
         )
         return cls(config)
 
-
-
     @property
     def _owner_id(self) -> int:
         """Возвращает отрицательный owner_id сообщества (требование API)."""
@@ -172,9 +170,7 @@ class VKService:
                     "Используйте токен пользователя или система автоматически переключится на альтернативный метод."
                 )
             else:
-                hint = (
-                    "Проверьте права токена: нужны 'photos', 'groups', 'wall'."
-                )
+                hint = "Проверьте права токена: нужны 'photos', 'groups', 'wall'."
         elif "audio.getUploadServer" in where or "audio.save" in where:
             if code == 270:
                 hint = (
@@ -204,7 +200,13 @@ class VKService:
                 "и токен действительно принадлежит этому сообществу."
             )
 
-        logger.error("VK API: ошибка на этапе «%s»: код=%s, сообщение=%s. %s", where, code, msg, hint)
+        logger.error(
+            "VK API: ошибка на этапе «%s»: код=%s, сообщение=%s. %s",
+            where,
+            code,
+            msg,
+            hint,
+        )
 
     def _get_wall_upload_url(self) -> str:
         """
@@ -313,7 +315,8 @@ class VKService:
                 "photos.save",
                 {
                     "group_id": abs(self._config.group_id),
-                    "photos_list": upload_resp.get("photos_list") or upload_resp.get("photo"),
+                    "photos_list": upload_resp.get("photos_list")
+                    or upload_resp.get("photo"),
                     "server": upload_resp["server"],
                     "hash": upload_resp["hash"],
                 },
@@ -393,14 +396,16 @@ class VKService:
             )
             logger.info(
                 "VK: аудио будет прикреплено к посту от имени пользователя (owner_id=%s)",
-                saved.get("owner_id")
+                saved.get("owner_id"),
             )
             return saved
         except ApiError as err:
             self._log_api_error("audio.save", err)
             raise
 
-    def _upload_audio(self, audio_path: str | Path, artist: str, title: str) -> Optional[str]:
+    def _upload_audio(
+        self, audio_path: str | Path, artist: str, title: str
+    ) -> Optional[str]:
         """
         Загружает аудио-файл на VK и возвращает строку вложения.
 
@@ -414,7 +419,9 @@ class VKService:
         """
         path = Path(audio_path)
         if not path.exists():
-            logger.warning("VK: аудио-файл не найден (%s). Пропускаю загрузку аудио.", path)
+            logger.warning(
+                "VK: аудио-файл не найден (%s). Пропускаю загрузку аудио.", path
+            )
             return None
 
         logger.info("VK: загружаю аудио-файл: %s", path)
@@ -464,7 +471,7 @@ class VKService:
             attachment = f"audio{saved['owner_id']}_{saved['id']}"
             logger.debug("VK: аудио-вложение подготовлено: %s", attachment)
             return attachment
-        except ApiError as err:
+        except ApiError:
             logger.warning(
                 "VK: ошибка при сохранении аудио (audio.save). "
                 "Аудио не будет прикреплено к посту."
@@ -537,19 +544,27 @@ class VKService:
         # Пробуем прямую загрузку на стену
         try:
             self._get_wall_upload_url()
-            logger.debug("VK: photos.getWallUploadServer — ок (токен пользователя с полными правами).")
+            logger.debug(
+                "VK: photos.getWallUploadServer — ок (токен пользователя с полными правами)."
+            )
         except ApiError as err:
             err_code = getattr(err, "code", None)
             # Если код 15 или 27 — пробуем альтернативный метод
             if err_code in (15, 27):
                 if err_code == 15:
-                    logger.info("VK: photos.getWallUploadServer недоступен (код 15: недостаточно прав/scope).")
+                    logger.info(
+                        "VK: photos.getWallUploadServer недоступен (код 15: недостаточно прав/scope)."
+                    )
                 else:
-                    logger.info("VK: photos.getWallUploadServer недоступен (код 27: нужен токен пользователя).")
+                    logger.info(
+                        "VK: photos.getWallUploadServer недоступен (код 27: нужен токен пользователя)."
+                    )
                 logger.info("VK: проверяю альтернативный метод через альбом...")
                 try:
                     self._get_album_upload_url()
-                    logger.debug("VK: photos.getUploadServer — ок (альтернативный метод работает).")
+                    logger.debug(
+                        "VK: photos.getUploadServer — ок (альтернативный метод работает)."
+                    )
                 except ApiError:
                     ok = False
                     logger.error("VK: оба метода загрузки фото недоступны.")
@@ -706,11 +721,17 @@ class VKService:
         # 1) Настройки сообщества
         try:
             # groups.getSettings требует ключ сообщества с правом управления
-            settings_info = self._vk.method("groups.getSettings", {"group_id": abs(self._config.group_id)})
+            settings_info = self._vk.method(
+                "groups.getSettings", {"group_id": abs(self._config.group_id)}
+            )
             enabled_sections = settings_info.get("sections", {})
             # В старых версиях API структура может отличаться — подстрахуемся
-            photos_enabled = bool(enabled_sections.get("photos", 0)) or (settings_info.get("photos") == 1)
-            wall_setting = settings_info.get("wall")  # 0/1/2/3 (см. доку), 1/2 — включено
+            photos_enabled = bool(enabled_sections.get("photos", 0)) or (
+                settings_info.get("photos") == 1
+            )
+            wall_setting = settings_info.get(
+                "wall"
+            )  # 0/1/2/3 (см. доку), 1/2 — включено
             wall_enabled = wall_setting in (1, 2)
 
             logger.info(
@@ -754,7 +775,10 @@ class VKService:
                 # 3) Проба альтернативного метода через альбом
                 try:
                     album_url = self._get_album_upload_url()
-                    logger.info("VK: photos.getUploadServer (альбом) — адрес получен: %s", album_url)
+                    logger.info(
+                        "VK: photos.getUploadServer (альбом) — адрес получен: %s",
+                        album_url,
+                    )
                     logger.info(
                         "VK: альтернативный метод доступен. "
                         "Фото будут загружаться в альбом сообщества, затем прикрепляться к постам."
@@ -770,8 +794,9 @@ class VKService:
                     "Если раздел «Фотографии» выключен — включите и повторите диагностику."
                 )
 
-
-    def post_record(self, record: Any, *, message_template: Optional[str] = None) -> int:
+    def post_record(
+        self, record: Any, *, message_template: Optional[str] = None
+    ) -> int:
         """
         Публикует запись доменной модели `Record` на стену сообщества.
 
@@ -793,7 +818,10 @@ class VKService:
         title: str = getattr(record, "title", "Без названия")
         artists_qs = getattr(record, "artists", None)
         if artists_qs is not None and hasattr(artists_qs, "all"):
-            artists_str = ", ".join(a.name for a in artists_qs.all()[:3]) or "Неизвестный исполнитель"
+            artists_str = (
+                ", ".join(a.name for a in artists_qs.all()[:3])
+                or "Неизвестный исполнитель"
+            )
         else:
             artists_str = "Неизвестный исполнитель"
 
@@ -844,7 +872,9 @@ class VKService:
 
         return self.post_text(message)
 
-    def post_record_with_audio(self, record: Any, *, message_template: Optional[str] = None) -> int:
+    def post_record_with_audio(
+        self, record: Any, *, message_template: Optional[str] = None
+    ) -> int:
         """
         Публикует запись доменной модели `Record` со ВСЕМИ аудио-треками на стену сообщества.
 
@@ -867,7 +897,10 @@ class VKService:
         title: str = getattr(record, "title", "Без названия")
         artists_qs = getattr(record, "artists", None)
         if artists_qs is not None and hasattr(artists_qs, "all"):
-            artists_str = ", ".join(a.name for a in artists_qs.all()[:3]) or "Неизвестный исполнитель"
+            artists_str = (
+                ", ".join(a.name for a in artists_qs.all()[:3])
+                or "Неизвестный исполнитель"
+            )
         else:
             artists_str = "Неизвестный исполнитель"
 
@@ -964,7 +997,7 @@ class VKService:
         tracks = getattr(record, "tracks", None)
         if tracks is not None and hasattr(tracks, "all"):
             # Получаем треки с аудио, отсортированные по position_index
-            audio_tracks = tracks.exclude(audio_preview='').order_by('position_index')
+            audio_tracks = tracks.exclude(audio_preview="").order_by("position_index")
             audio_count = audio_tracks.count()
 
             logger.info("VK: найдено треков с аудио: %d", audio_count)
@@ -975,7 +1008,9 @@ class VKService:
 
                 for idx, track in enumerate(audio_tracks[:max_audio], start=1):
                     audio_preview = getattr(track, "audio_preview", None)
-                    audio_path = getattr(audio_preview, "path", None) if audio_preview else None
+                    audio_path = (
+                        getattr(audio_preview, "path", None) if audio_preview else None
+                    )
 
                     if audio_path:
                         track_title = getattr(track, "title", "Без названия")
@@ -984,13 +1019,17 @@ class VKService:
                             idx,
                             min(audio_count, max_audio),
                             track_title,
-                            audio_path
+                            audio_path,
                         )
 
-                        audio_attachment = self._upload_audio(audio_path, artists_str, track_title)
+                        audio_attachment = self._upload_audio(
+                            audio_path, artists_str, track_title
+                        )
                         if audio_attachment:
                             attachments.append(audio_attachment)
-                            logger.info("VK: аудио %d загружено: %s", idx, audio_attachment)
+                            logger.info(
+                                "VK: аудио %d загружено: %s", idx, audio_attachment
+                            )
                         else:
                             logger.warning("VK: аудио %d НЕ загружено", idx)
 
@@ -998,7 +1037,7 @@ class VKService:
                     logger.warning(
                         "VK: релиз содержит %d аудио, но можно загрузить только %d (лимит VK)",
                         audio_count,
-                        max_audio
+                        max_audio,
                     )
         else:
             logger.info("VK: у релиза нет треков с аудио")
@@ -1048,7 +1087,10 @@ class VKService:
             record_title: str = getattr(record, "title", "")
             artists_qs = getattr(record, "artists", None)
             if artists_qs is not None and hasattr(artists_qs, "all"):
-                artists_str = ", ".join(a.name for a in artists_qs.all()[:3]) or "Неизвестный исполнитель"
+                artists_str = (
+                    ", ".join(a.name for a in artists_qs.all()[:3])
+                    or "Неизвестный исполнитель"
+                )
             else:
                 artists_str = "Неизвестный исполнитель"
 
@@ -1065,17 +1107,19 @@ class VKService:
             cover_path = None
 
         # Путь к аудио-превью
-        audio_path: Optional[str] = getattr(audio_preview, "path", None) if audio_preview else None
+        audio_path: Optional[str] = (
+            getattr(audio_preview, "path", None) if audio_preview else None
+        )
 
-        logger.debug("="*80)
+        logger.debug("=" * 80)
         logger.debug(audio_path)
-        logger.debug("="*80)
+        logger.debug("=" * 80)
 
         # Логируем информацию об аудио
         logger.debug(
             "VK: audio_preview=%s, audio_path=%s",
             bool(audio_preview),
-            audio_path if audio_path else "None"
+            audio_path if audio_path else "None",
         )
 
         # Формируем текст поста
@@ -1159,9 +1203,13 @@ class VKService:
                 if use_album_method:
                     try:
                         upload_url = self._get_album_upload_url()
-                        logger.debug("VK: использую метод загрузки в альбом сообщества.")
+                        logger.debug(
+                            "VK: использую метод загрузки в альбом сообщества."
+                        )
                     except ApiError:
-                        logger.warning("VK: альтернативный метод загрузки также недоступен.")
+                        logger.warning(
+                            "VK: альтернативный метод загрузки также недоступен."
+                        )
                         upload_url = None
 
                 if upload_url:
@@ -1182,21 +1230,25 @@ class VKService:
 
                         photo_attachment = f"photo{saved['owner_id']}_{saved['id']}"
                         attachments.append(photo_attachment)
-                        logger.debug("VK: фото-вложение добавлено: %s", photo_attachment)
+                        logger.debug(
+                            "VK: фото-вложение добавлено: %s", photo_attachment
+                        )
                     except Exception as e:
                         logger.warning("VK: ошибка при загрузке обложки: %s", e)
 
         # 2. Аудио-превью
-        logger.debug("="*80)
+        logger.debug("=" * 80)
         logger.debug(audio_path)
-        logger.debug("="*80)
+        logger.debug("=" * 80)
 
         if audio_path:
             logger.info("VK: обнаружено аудио-превью, загружаю: %s", audio_path)
             audio_attachment = self._upload_audio(audio_path, artists_str, track_title)
             if audio_attachment:
                 attachments.append(audio_attachment)
-                logger.info("VK: аудио-вложение успешно добавлено: %s", audio_attachment)
+                logger.info(
+                    "VK: аудио-вложение успешно добавлено: %s", audio_attachment
+                )
             else:
                 logger.warning(
                     "VK: аудио-вложение НЕ добавлено. "

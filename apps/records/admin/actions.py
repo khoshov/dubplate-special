@@ -6,6 +6,7 @@ from typing import Any, Callable
 from django.contrib import admin, messages
 from django.http import HttpRequest
 from django.utils.text import Truncator
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,7 +102,9 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
             "Сервис VK не сконфигурирован. Обратитесь к администратору.",
             level=messages.ERROR,
         )
-        logger.error("VK: сервис не инициализирован в RecordAdmin.__init__ (vk_service отсутствует).")
+        logger.error(
+            "VK: сервис не инициализирован в RecordAdmin.__init__ (vk_service отсутствует)."
+        )
         return
 
     # --- добавлено: явный старт батча ---
@@ -141,7 +144,9 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
         return post_id
 
     # используем ваш общий батч-хелпер
-    from .actions import _batch_update as _batch_update_helper  # если хелпер в этом же файле — уберите импорт
+    from .actions import (
+        _batch_update as _batch_update_helper,
+    )  # если хелпер в этом же файле — уберите импорт
 
     _batch_update_helper(
         admin_obj,

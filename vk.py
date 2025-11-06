@@ -1,7 +1,5 @@
 import vk_api
 import requests
-from datetime import datetime
-import time
 
 
 class VKAutoPoster:
@@ -13,11 +11,10 @@ class VKAutoPoster:
     def post_text(self, message):
         """Публикация текстового поста"""
         try:
-            response = self.vk.method('wall.post', {
-                'owner_id': self.group_id,
-                'message': message,
-                'from_group': 1
-            })
+            response = self.vk.method(
+                "wall.post",
+                {"owner_id": self.group_id, "message": message, "from_group": 1},
+            )
             print(f"Пост опубликован! ID: {response['post_id']}")
             return response
         except Exception as e:
@@ -27,31 +24,37 @@ class VKAutoPoster:
         """Публикация поста с фотографией"""
         try:
             # Загружаем фото на сервер ВК
-            upload_url = self.vk.method('photos.getWallUploadServer', {
-                'group_id': abs(self.group_id)
-            })['upload_url']
+            upload_url = self.vk.method(
+                "photos.getWallUploadServer", {"group_id": abs(self.group_id)}
+            )["upload_url"]
 
             # Загружаем файл
             photo_data = requests.get(photo_url).content
-            files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
+            files = {"photo": ("photo.jpg", photo_data, "image/jpeg")}
             upload_response = requests.post(upload_url, files=files).json()
 
             # Сохраняем фото
-            save_response = self.vk.method('photos.saveWallPhoto', {
-                'group_id': abs(self.group_id),
-                'photo': upload_response['photo'],
-                'server': upload_response['server'],
-                'hash': upload_response['hash']
-            })[0]
+            save_response = self.vk.method(
+                "photos.saveWallPhoto",
+                {
+                    "group_id": abs(self.group_id),
+                    "photo": upload_response["photo"],
+                    "server": upload_response["server"],
+                    "hash": upload_response["hash"],
+                },
+            )[0]
 
             # Публикуем пост
             attachment = f"photo{save_response['owner_id']}_{save_response['id']}"
-            response = self.vk.method('wall.post', {
-                'owner_id': self.group_id,
-                'message': message,
-                'attachment': attachment,
-                'from_group': 1
-            })
+            response = self.vk.method(
+                "wall.post",
+                {
+                    "owner_id": self.group_id,
+                    "message": message,
+                    "attachment": attachment,
+                    "from_group": 1,
+                },
+            )
             print(f"Пост с фото опубликован! ID: {response['post_id']}")
             return response
 
@@ -64,12 +67,15 @@ class VKAutoPoster:
             # Convert datetime to timestamp
             timestamp = int(publish_date.timestamp())
 
-            response = self.vk.method('wall.post', {
-                'owner_id': self.group_id,
-                'message': message,
-                'publish_date': timestamp,
-                'from_group': 1
-            })
+            response = self.vk.method(
+                "wall.post",
+                {
+                    "owner_id": self.group_id,
+                    "message": message,
+                    "publish_date": timestamp,
+                    "from_group": 1,
+                },
+            )
             print(f"Отложенный пост создан! ID: {response['post_id']}")
             return response
         except Exception as e:

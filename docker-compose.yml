@@ -13,6 +13,7 @@ services:
       - ./media:/app/media
       - ./manage.py:/app/manage.py
       - ./pytest.ini:/app/pytest.ini
+      - ./tests:/app/tests
     depends_on:
       postgres:
         condition: service_healthy
