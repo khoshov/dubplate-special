@@ -23,7 +23,7 @@ env = environ.Env()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Take environment variables from .env file
-environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
+# environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 
 # Allows to keep applications in apps directory
 sys.path.insert(0, os.path.join(BASE_DIR, "apps"))
@@ -425,7 +425,22 @@ LOGGING = {
 }
 
 
-# VK интеграция
+# =================
+# VK INTEGRATION
+# =================
+# Конфигурация интеграции с ВКонтакте
 
-VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "0"))   # пример: -225812294
-VK_ACCESS_TOKEN = os.getenv("VK_ACCESS_TOKEN", "")
+VK_CLIENT_ID = env("VK_CLIENT_ID", default="")
+VK_CLIENT_SECRET = env("VK_CLIENT_SECRET", default="")
+VK_GROUP_ID = env.int("VK_GROUP_ID", default=0)
+
+# Токены пользователя (user-token + refresh-token)
+VK_USER_ACCESS_TOKEN = env("VK_USER_ACCESS_TOKEN", default="")
+VK_USER_REFRESH_TOKEN = env("VK_USER_REFRESH_TOKEN", default="")
+VK_DEVICE_ID=env("VK_DEVICE_ID", default="")
+
+# Community token (ключ сообщества, если используется)
+VK_COMMUNITY_TOKEN = env("VK_COMMUNITY_TOKEN", default="")
+
+# Версия API (для единообразия)
+VK_API_VERSION = env("VK_API_VERSION", default="5.199")

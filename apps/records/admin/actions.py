@@ -88,7 +88,7 @@ def _batch_update(
     )
 
 
-@admin.action(description="Опубликовать в VK (пост на стене группы)")
+@admin.action(description="Опубликовать в VK")
 def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
     """
     Публикует выбранные записи в сообщество ВКонтакте.
@@ -127,11 +127,10 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
             cover_path,
         )
 
-        # Можно один раз по кнопке проверить конфигурацию:
-        # if not vk_service.health_check():  # <- раскомментируйте для быстрой диагностики
-        #     logger.warning("VK: health-check не пройден. Продолжаю попытку публикации (возможно, только текст).")
-
-        post_id = vk_service.post_record(r)
+        post_id = vk_service.post_with_image(
+            message=f"{r.artists} — {r.title}\n{r.label} / {r.catalog_number}",
+            image_path=r.cover_image.path if r.cover_image else None,
+        )
         logger.info(
             "Опубликовано в VK: record_id=%s, post_id=%s, title=%s",
             getattr(r, "pk", None),
@@ -140,10 +139,8 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
         )
         return post_id
 
-    # используем ваш общий батч-хелпер
-    from .actions import _batch_update as _batch_update_helper  # если хелпер в этом же файле — уберите импорт
 
-    _batch_update_helper(
+    _batch_update(
         admin_obj,
         request,
         queryset,
