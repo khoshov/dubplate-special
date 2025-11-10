@@ -201,7 +201,7 @@ def compose_record_text(record: Any) -> str:
     """
     Собирает текст поста строго как в требовании:
 
-    В НАЛИЧИИ
+    ПРЕДЗАКАЗ
     <Artists> — <Title>
     Label: <Label> – <Catalog>
     Format: <Format>            # если нет данных — оставляем пусто после двоеточия
@@ -227,7 +227,7 @@ def compose_record_text(record: Any) -> str:
     release = _format_release_date(record) or ""
 
     # первая строка — всегда фиксированная
-    lines: List[str] = ["В НАЛИЧИИ"]
+    lines: List[str] = ["ПРЕДЗАКАЗ"]
 
     # вторая — артист — тайтл
     lines.append(f"{artists} — {title}")
