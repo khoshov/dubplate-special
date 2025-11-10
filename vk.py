@@ -1,7 +1,5 @@
 import vk_api
 import requests
-from datetime import datetime
-import time
 
 
 class VKAutoPoster:
