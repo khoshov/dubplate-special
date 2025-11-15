@@ -2,33 +2,65 @@
 name = "dubplate-special"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "django-ckeditor-5==0.2.17",
-    "django-cors-headers>=4.7.0",
+    "django-ckeditor-5==0.2.18",
+    "django-cors-headers>=4.9.0",
     "django-environ>=0.12.0",
     "django-extensions>=4.1",
-    "django-filter>=25.1",
+    "django-filter>=25.2",
     "django-solo>=2.4.0",
-    "django==5.1.7",
-    "djangorestframework>=3.16.0",
-    "drf-spectacular>=0.28.0",
+    "django==5.2.8",
+    "djangorestframework>=3.16.1",
+    "drf-spectacular>=0.29.0",
     "gunicorn>=23.0.0",
-    "psycopg2-binary>=2.9.10",
+    "psycopg2-binary>=2.9.11",
     "python3-discogs-client>=2.8",
     "sorl-thumbnail==12.11.0",
     "beautifulsoup4>=4.12.0",
-    "requests>=2.31.0,<3",
-    "playwright>=1.55.0",
+    "requests>=2.32.5,<3",
+    "playwright>=1.56.0",
     "vk-api>=11.10.0",
 ]
 
 [dependency-groups]
 dev = [
-    "django-silk>=5.4.0",
-    "faker>=37.4.0",
+    "django-silk>=5.4.3",
+    "faker>=38.0.0",
     "model-bakery>=1.20.5",
-    "pytest>=8.4.0",
+    "pytest>=9.0.1",
     "pytest-django>=4.11.1",
-    "pytest-mock>=3.14.1",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.7.0",
+    "mypy>=1.18.2",
 ]
+
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_return_any = false
+disallow_untyped_defs = false
+no_implicit_optional = false
+pretty = true
+
+# путь матчатся по regex-строке для файловых путей
+exclude = [
+    "apps/.*/migrations", # все миграции в apps/*/migrations
+    "pgdata", # данные postgres
+    "media", # медиа-файлы
+]
+
+# Строгий режим для основного кода проекта
+[[tool.mypy.overrides]]
+module = [
+    "config.*",
+    "apps.accounts.*",
+    "apps.core.*",
+    "apps.orders.*",
+    "apps.records.*",
+]
+disallow_untyped_defs = true
+no_implicit_optional = true
+check_untyped_defs = true
