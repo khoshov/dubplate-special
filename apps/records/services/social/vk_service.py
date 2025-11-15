@@ -5,12 +5,14 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Sequence
 
 import requests
 import vk_api
 from django.conf import settings
 from vk_api.exceptions import ApiError
+
+from records.models import Record
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ class VKConfig:
     enable_audio: bool = True
 
     @staticmethod
-    def from_settings() -> "VKConfig":
+    def from_settings() -> VKConfig:
         """
         Создаёт конфигурацию из Django settings.
 
@@ -75,9 +77,9 @@ def _slugify_hashtag(text: str) -> str:
     return s
 
 
-def _format_release_date(record: Any) -> Optional[str]:
+def _format_release_date(record: Any) -> str | None:
     """
-    Возвращает дату релиза в формате 'Mon d, YYYY' (Jan–Dec).
+    Возвращает дату релиза в формате 'Mon release_date, YYYY' (Jan–Dec).
     Источник: record.get_release_date() или части года/месяца/дня.
     Если данных нет — возвращает None.
     """
@@ -98,19 +100,23 @@ def _format_release_date(record: Any) -> Optional[str]:
 
     # 1) готовая дата из модели (если метод есть)
     get_date = getattr(record, "get_release_date", None)
+    release_date: date | None = None
+
     if callable(get_date):
         try:
-            d: Optional[date] = get_date()
+            result = get_date()
         except (ValueError, TypeError) as exc:
             logger.debug("VK: get_release_date() вернуло неверные данные: %s", exc)
-            d = None
-        except Exception as exc:  # крайний случай — логируем, не роняем
+        except Exception as exc:
             logger.warning("VK: ошибка в get_release_date(): %s", exc)
-            d = None
-        if d:
-            mon = month_en.get(d.month)
-            if mon:
-                return f"{mon} {d.day}, {d.year}"
+        else:
+            if isinstance(result, date):
+                release_date = result
+
+    if release_date:
+        mon = month_en.get(release_date.month)
+        if mon:
+            return f"{mon} {release_date.day}, {release_date.year}"
 
     # 2) части даты
     y = getattr(record, "release_year", None)
@@ -126,20 +132,20 @@ def _format_release_date(record: Any) -> Optional[str]:
             return f"{int(y)}"
     except (TypeError, ValueError):
         logger.debug(
-            "VK: части даты релиза заданы некорректно: y=%r, m=%r, d=%r", y, m, dd
+            "VK: части даты релиза заданы некорректно: y=%r, m=%r, release_date=%r", y, m, dd
         )
         return None
 
     return None
 
 
-def _format_record_format(record: Any) -> Optional[str]:
+def _format_record_format(record: Any) -> str | None:
     """
     Формирует строку «Format» по record.formats:
       • если встречается 7"/10"/12" — '<size> Vinyl';
       • иначе берём первые 1–2 уникальных названия, склеенных « / ».
     """
-    names: List[str] = []
+    names: list[str] = []
     fm = getattr(record, "formats", None)
 
     if fm is not None:
@@ -157,7 +163,7 @@ def _format_record_format(record: Any) -> Optional[str]:
     if size:
         return f"{size} Vinyl"
     if names:
-        uniq: List[str] = []
+        uniq: list[str] = []
         for n in names:
             if n not in uniq:
                 uniq.append(n)
@@ -176,10 +182,10 @@ def _build_hashtags(record: Any) -> str:
     def names(qs_name: str) -> Iterable[str]:
         qs = getattr(record, qs_name, None)
         if qs is not None and hasattr(qs, "values_list"):
-            for n in qs.values_list("name", flat=True):
-                yield str(n)
+            for name in qs.values_list("name", flat=True):
+                yield str(name)
 
-    raw: List[str] = []
+    raw: list[str] = []
     for n in names("genres") or []:
         s = _slugify_hashtag(n)
         if s:
@@ -189,7 +195,8 @@ def _build_hashtags(record: Any) -> str:
         if s:
             raw.extend((f"ds_{s}", s))
 
-    out, seen = [], set()
+    out: list = []
+    seen: set= set()
     for t in raw:
         if t not in seen:
             out.append("#" + t)
@@ -227,13 +234,13 @@ def compose_record_text(record: Any) -> str:
     release = _format_release_date(record) or ""
 
     # первая строка — всегда фиксированная
-    lines: List[str] = ["ПРЕДЗАКАЗ"]
+    lines: list[str] = ["ПРЕДЗАКАЗ"]
 
     # вторая — артист — тайтл
     lines.append(f"{artists} — {title}")
 
     # третья — Label: <лейбл> – <каталожник>, если чего-то нет — просто Label:
-    label_parts: List[str] = []
+    label_parts: list[str] = []
     if label_name:
         label_parts.append(label_name)
     if catalog_number:
@@ -272,7 +279,7 @@ class VKService:
     """
     Сервис публикации в сообщество ВКонтакте.
 
-    — Авторизация по пользовательскому токену.
+    — Авторизация по-пользовательскому токену.
     — Публикация текста/фото/опц. аудио.
     — Компоновка текста постов для Record/Track.
     """
@@ -301,12 +308,12 @@ class VKService:
 
     def _get_wall_upload_url(self) -> str:
         """Возвращает upload_url для загрузки фото на стену сообщества."""
-        data: Dict[str, Any] = self._vk.method(
+        data: dict[str, Any] = self._vk.method(
             "photos.getWallUploadServer", {"group_id": abs(self._config.group_id)}
         )
         return str(data["upload_url"])
 
-    def _save_wall_photo(self, upload_resp: Dict[str, Any]) -> Dict[str, Any]:
+    def _save_wall_photo(self, upload_resp: dict[str, Any]) -> dict[str, Any]:
         """Сохраняет фотографию, загруженную через upload_url стены."""
         saved_list = self._vk.method(
             "photos.saveWallPhoto",
@@ -319,7 +326,7 @@ class VKService:
         )
         return saved_list[0]
 
-    def _upload_photo(self, image_path: Path) -> Optional[str]:
+    def _upload_photo(self, image_path: Path) -> str | None:
         """
         Загружает фото на стену и возвращает строку вложения 'photo<owner_id>_<id>'.
         При ошибке возвращает None.
@@ -350,12 +357,12 @@ class VKService:
 
     def _get_audio_upload_url(self) -> str:
         """Возвращает upload_url для загрузки аудио (если аудио разрешено в конфигурации)."""
-        data: Dict[str, Any] = self._vk.method("audio.getUploadServer", {})
+        data: dict[str, Any] = self._vk.method("audio.getUploadServer", {})
         return str(data["upload_url"])
 
     def _save_audio(
-        self, upload_resp: Dict[str, Any], artist: str, title: str
-    ) -> Dict[str, Any]:
+            self, upload_resp: dict[str, Any], artist: str, title: str
+    ) -> dict[str, Any]:
         """Сохраняет аудио, загруженное через upload_url."""
         return self._vk.method(
             "audio.save",
@@ -368,7 +375,7 @@ class VKService:
             },
         )
 
-    def _upload_audio(self, audio_path: Path, artist: str, title: str) -> Optional[str]:
+    def _upload_audio(self, audio_path: Path, artist: str, title: str) -> str | None:
         """
         Загружает MP3 и возвращает 'audio<owner_id>_<id>' или None, если Audio API недоступен.
         """
@@ -408,19 +415,47 @@ class VKService:
             logger.warning("VK: ошибка audio.save, аудио пропущено: %s", e)
             return None
 
-    def _wall_post(self, message: str, attachments: Optional[List[str]] = None) -> int:
-        """Вызывает wall.post и возвращает post_id."""
-        attach = ",".join(attachments) if attachments else None
+    def _wall_post(
+            self,
+            message: str,
+            attachments: Sequence[str] | None = None,
+    ) -> int:
+        """
+        Вызов VK API wall.post и получение post_id опубликованной записи.
+        attachments — список attachment-строк вида "photo{owner_id}_{media_id}" и т.п.
+        """
+
+        # Собираем строку для параметра attachment: "att1,att2,att3" или None
+        attach_param: str | None
+        if attachments:
+            # Заодно отфильтруем пустые строки, если вдруг они проскочили
+            attach_param = ",".join(att for att in attachments if att)
+        else:
+            attach_param = None
+
         resp: Dict[str, Any] = self._vk.method(
             "wall.post",
             {
                 "owner_id": self.owner_id,
                 "message": message,
-                "attachment": attach,
+                "attachment": attach_param,
                 "from_group": 1,
             },
         )
-        post_id = int(resp.get("post_id"))
+
+        # post_id обязателен по контракту VK, но статическому анализатору это неизвестно
+        post_id_raw = resp.get("post_id")
+
+        if not isinstance(post_id_raw, int):
+            # Можно логировать и бросать своё исключение доменного уровня
+            logger.error(
+                "VK: wall.post вернул неожиданный post_id: %r, ответ: %r",
+                post_id_raw,
+                resp,
+            )
+            raise ValueError(f"VK: wall.post вернул некорректный post_id: {post_id_raw!r}")
+
+        post_id: int = post_id_raw
         logger.info("VK: запись опубликована, post_id=%s.", post_id)
         return post_id
 
@@ -474,7 +509,7 @@ class VKService:
     # ------------------------------ доменная логика ------------------------------
 
     def post_record(
-        self, record: Any, *, message_template: Optional[str] = None
+            self, record: Record, *, message_template: str | None = None
     ) -> int:
         """
         Публикует «релиз» (Record). Текст — по шаблону или compose_record_text().
@@ -509,7 +544,7 @@ class VKService:
         )
 
     def post_record_with_audio(
-        self, record: Any, *, message_template: Optional[str] = None
+            self, record: Record, message_template: str | None = None
     ) -> int:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
@@ -542,7 +577,7 @@ class VKService:
         else:
             message = compose_record_text(record)
 
-        attachments: List[str] = []
+        attachments: list[str] = []
 
         # 2) Фото (обложка)
         cover = getattr(record, "cover_image", None)
@@ -564,7 +599,7 @@ class VKService:
             )
 
         # 3) Аудио (если получится)
-        audio_attachments: List[str] = []
+        audio_attachments: list[str] = []
         tracks = getattr(record, "tracks", None)
         if tracks is not None and hasattr(tracks, "all"):
             artists_qs = getattr(record, "artists", None)
@@ -636,7 +671,7 @@ class VKService:
         )
         return self._wall_post(message=message, attachments=all_attachments or None)
 
-    def post_track(self, track: Any, *, message_template: Optional[str] = None) -> int:
+    def post_track(self, track: Any, *, message_template: str | None = None) -> int:
         """
         Публикует отдельный трек. Прикрепляет обложку записи и, по возможности, превью-аудио.
         Если фото нет — аудио не прикрепляется (требование VK).
@@ -670,7 +705,7 @@ class VKService:
                 if artists_qs and hasattr(artists_qs, "all")
                 else "Неизвестный исполнитель"
             )
-            parts: List[str] = []
+            parts: list[str] = []
             header = f"{artists} — {getattr(track, 'title', 'Без названия')}"
             pos = getattr(track, "position", "")
             dur = getattr(track, "duration", "")
@@ -687,9 +722,9 @@ class VKService:
                     [
                         p
                         for p in (
-                            f"🏷 {label}" if label != "-" else "",
-                            f"📋 {cat}" if cat != "-" else "",
-                        )
+                        f"🏷 {label}" if label != "-" else "",
+                        f"📋 {cat}" if cat != "-" else "",
+                    )
                         if p
                     ]
                 )
@@ -700,7 +735,7 @@ class VKService:
                 parts.append(f"\n🎧 Превью: {yt}")
             message = "\n".join(parts)
 
-        attachments: List[str] = []
+        attachments: list[str] = []
 
         # обложка
         record = getattr(track, "record", None)
@@ -721,7 +756,7 @@ class VKService:
             )
 
         # аудио
-        audio_attachments: List[str] = []
+        audio_attachments: list[str] = []
         preview = getattr(track, "audio_preview", None)
         p = Path(getattr(preview, "path", "")) if preview else None
         if p and p.exists():

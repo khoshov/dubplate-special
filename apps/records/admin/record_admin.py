@@ -32,7 +32,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     autocomplete_fields = ("artists",)
     inlines = [TrackInline]
     actions = [update_from_discogs, update_from_redeye, post_to_vk]
-
+    vk_service: VKService
     fieldsets = (
         (
             "Основная информация",

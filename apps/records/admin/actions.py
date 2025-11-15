@@ -1,30 +1,37 @@
 from __future__ import annotations
+
 import logging
 import time
-from typing import Any, Callable
+from typing import Callable, TYPE_CHECKING
 
 from django.contrib import admin, messages
+from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils.text import Truncator
+
+from records.models import Record
+
+if TYPE_CHECKING:
+    from .record_admin import RecordAdmin
 
 logger = logging.getLogger(__name__)
 
 
 def _batch_update(
-    admin_obj: Any,
-    request: HttpRequest,
-    queryset,
-    *,
-    start_log: str,
-    empty_msg: str,
-    ok_msg: str,
-    skip_msg: str,
-    skip_header: str,
-    fail_msg: str,
-    fail_header: str,
-    id_label: str,
-    get_id: Callable[[Any], str | None],
-    do_update: Callable[[Any], object],
+        admin_obj: RecordAdmin,
+        request: HttpRequest,
+        queryset: QuerySet[Record],
+        *,
+        start_log: str,
+        empty_msg: str,
+        ok_msg: str,
+        skip_msg: str,
+        skip_header: str,
+        fail_msg: str,
+        fail_header: str,
+        id_label: str,
+        get_id: Callable[[Record], str | None],
+        do_update: Callable[[Record], object],
 ) -> None:
     """Универсальный исполнитель массового обновления."""
     start_ts = time.perf_counter()
@@ -89,11 +96,10 @@ def _batch_update(
     )
 
 
-@admin.action(description="Опубликовать в VK с аудио (пост на стене группы)")
-def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
+@admin.action(description="Опубликовать в VK")
+def post_to_vk(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
     """
-    Публикует выбранные записи в сообщество ВКонтакте со ВСЕМИ аудио-треками.
-    Требует, чтобы admin_obj имел атрибут vk_service с методом post_record_with_audio(record).
+    Публикует выбранные записи в сообщество ВКонтакте со всеми аудио-треками.
     """
     vk_service = getattr(admin_obj, "vk_service", None)
     if vk_service is None:
@@ -107,48 +113,37 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
         )
         return
 
-    # --- добавлено: явный старт батча ---
     logger.info(
         "Публикация записей в VK (записей: %d, пользователь: %s).",
         queryset.count(),
         getattr(request.user, "username", "?"),
     )
 
-    def _get_id(r) -> str | None:
-        return str(getattr(r, "pk", None))
+    def _get_id(record: Record) -> str | None:
+        return str(getattr(record, "pk", None))
 
-    def _do_post(r):
-        # --- добавлено: диагностические логи перед публикацией ---
-        title = getattr(r, "title", "")
-        cover = getattr(r, "cover_image", None)
+    def _do_post(record: Record) -> int:
+        title = getattr(record, "title", "")
+        cover = getattr(record, "cover_image", None)
         cover_path = getattr(cover, "path", None) if cover else None
         logger.debug(
             "Попытка публикации: record_id=%s, title='%s', есть_обложка=%s, cover_path=%s",
-            getattr(r, "pk", None),
+            getattr(record, "pk", None),
             Truncator(title).chars(80),
             bool(cover_path),
             cover_path,
         )
 
-        # Можно один раз по кнопке проверить конфигурацию:
-        # if not vk_service.health_check():  # <- раскомментируйте для быстрой диагностики
-        #     logger.warning("VK: health-check не пройден. Продолжаю попытку публикации (возможно, только текст).")
-
-        post_id = vk_service.post_record_with_audio(r)
+        post_id = vk_service.post_record_with_audio(record=record)
         logger.info(
             "Опубликовано в VK с аудио: record_id=%s, post_id=%s, title=%s",
-            getattr(r, "pk", None),
+            getattr(record, "pk", None),
             post_id,
             Truncator(title).chars(80),
         )
         return post_id
 
-    # используем ваш общий батч-хелпер
-    from .actions import (
-        _batch_update as _batch_update_helper,
-    )  # если хелпер в этом же файле — уберите импорт
-
-    _batch_update_helper(
+    _batch_update(
         admin_obj,
         request,
         queryset,
@@ -166,7 +161,7 @@ def post_to_vk(admin_obj: Any, request: HttpRequest, queryset) -> None:
 
 
 @admin.action(description="Обновить из Discogs")
-def update_from_discogs(admin_obj: Any, request: HttpRequest, queryset) -> None:
+def update_from_discogs(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -180,13 +175,13 @@ def update_from_discogs(admin_obj: Any, request: HttpRequest, queryset) -> None:
         fail_msg="С ошибками: {n}.",
         fail_header="Ошибки:",
         id_label="Discogs ID",
-        get_id=lambda record: getattr(record, "discogs_id", None),
-        do_update=lambda record: record_service.update_from_discogs(record),
+        get_id=lambda record: record.discogs_id,
+        do_update=lambda record: record_service.update_from_discogs(record=record),
     )
 
 
 @admin.action(description="Обновить из Redeye")
-def update_from_redeye(admin_obj: Any, request: HttpRequest, queryset) -> None:
+def update_from_redeye(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -200,10 +195,6 @@ def update_from_redeye(admin_obj: Any, request: HttpRequest, queryset) -> None:
         fail_msg="С ошибками: {n}.",
         fail_header="Ошибки:",
         id_label="каталожный номер",
-        get_id=lambda record: getattr(record, "catalog_number", None),
-        do_update=lambda record: record_service.import_from_redeye(
-            catalog_number=record.catalog_number,
-            save_image_decision=True,
-            download_audio_decision=True,
-        ),
+        get_id=lambda record: record.catalog_number,
+        do_update=lambda record: record_service.import_from_redeye(catalog_number=record.catalog_number),
     )
