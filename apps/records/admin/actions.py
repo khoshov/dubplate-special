@@ -18,20 +18,20 @@ logger = logging.getLogger(__name__)
 
 
 def _batch_update(
-        admin_obj: RecordAdmin,
-        request: HttpRequest,
-        queryset: QuerySet[Record],
-        *,
-        start_log: str,
-        empty_msg: str,
-        ok_msg: str,
-        skip_msg: str,
-        skip_header: str,
-        fail_msg: str,
-        fail_header: str,
-        id_label: str,
-        get_id: Callable[[Record], str | None],
-        do_update: Callable[[Record], object],
+    admin_obj: RecordAdmin,
+    request: HttpRequest,
+    queryset: QuerySet[Record],
+    *,
+    start_log: str,
+    empty_msg: str,
+    ok_msg: str,
+    skip_msg: str,
+    skip_header: str,
+    fail_msg: str,
+    fail_header: str,
+    id_label: str,
+    get_id: Callable[[Record], str | None],
+    do_update: Callable[[Record], object],
 ) -> None:
     """Универсальный исполнитель массового обновления."""
     start_ts = time.perf_counter()
@@ -49,21 +49,21 @@ def _batch_update(
     skipped, failed = [], []
 
     for record in queryset:
-        record_label = f"#{record.pk} «{record}»"
+        log_record_name = f"#{record.pk} «{record}»"
         extract_id = get_id(record)
         if not extract_id:
             skip += 1
-            skipped.append(f"{record_label}: нет {id_label}")
+            skipped.append(f"{log_record_name}: нет {id_label}")
             continue
         try:
             do_update(record)
             ok += 1
         except Exception as e:
             fail += 1
-            failed.append(f"{record_label}: {e!s}")
+            failed.append(f"{log_record_name}: {e!s}")
             logger.exception(
                 "Ошибка при обновлении %s (%s=%s): %s",
-                record_label,
+                log_record_name,
                 id_label,
                 extract_id,
                 e,
@@ -97,7 +97,9 @@ def _batch_update(
 
 
 @admin.action(description="Опубликовать в VK")
-def post_to_vk(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
+def post_to_vk(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
     """
     Публикует выбранные записи в сообщество ВКонтакте со всеми аудио-треками.
     """
@@ -161,7 +163,9 @@ def post_to_vk(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[
 
 
 @admin.action(description="Обновить из Discogs")
-def update_from_discogs(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
+def update_from_discogs(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -181,7 +185,9 @@ def update_from_discogs(admin_obj: RecordAdmin, request: HttpRequest, queryset: 
 
 
 @admin.action(description="Обновить из Redeye")
-def update_from_redeye(admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]) -> None:
+def update_from_redeye(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -196,5 +202,7 @@ def update_from_redeye(admin_obj: RecordAdmin, request: HttpRequest, queryset: Q
         fail_header="Ошибки:",
         id_label="каталожный номер",
         get_id=lambda record: record.catalog_number,
-        do_update=lambda record: record_service.import_from_redeye(catalog_number=record.catalog_number),
+        do_update=lambda record: record_service.import_from_redeye(
+            catalog_number=record.catalog_number
+        ),
     )

@@ -132,7 +132,10 @@ def _format_release_date(record: Any) -> str | None:
             return f"{int(y)}"
     except (TypeError, ValueError):
         logger.debug(
-            "VK: части даты релиза заданы некорректно: y=%r, m=%r, release_date=%r", y, m, dd
+            "VK: части даты релиза заданы некорректно: y=%r, m=%r, release_date=%r",
+            y,
+            m,
+            dd,
         )
         return None
 
@@ -196,7 +199,7 @@ def _build_hashtags(record: Any) -> str:
             raw.extend((f"ds_{s}", s))
 
     out: list = []
-    seen: set= set()
+    seen: set = set()
     for t in raw:
         if t not in seen:
             out.append("#" + t)
@@ -361,7 +364,7 @@ class VKService:
         return str(data["upload_url"])
 
     def _save_audio(
-            self, upload_resp: dict[str, Any], artist: str, title: str
+        self, upload_resp: dict[str, Any], artist: str, title: str
     ) -> dict[str, Any]:
         """Сохраняет аудио, загруженное через upload_url."""
         return self._vk.method(
@@ -416,9 +419,9 @@ class VKService:
             return None
 
     def _wall_post(
-            self,
-            message: str,
-            attachments: Sequence[str] | None = None,
+        self,
+        message: str,
+        attachments: Sequence[str] | None = None,
     ) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
@@ -453,7 +456,9 @@ class VKService:
                 post_id_raw,
                 resp,
             )
-            raise ValueError(f"VK: wall.post вернул некорректный post_id: {post_id_raw!r}")
+            raise ValueError(
+                f"VK: wall.post вернул некорректный post_id: {post_id_raw!r}"
+            )
 
         post_id: int = post_id_raw
         logger.info("VK: запись опубликована, post_id=%s.", post_id)
@@ -509,7 +514,7 @@ class VKService:
     # ------------------------------ доменная логика ------------------------------
 
     def post_record(
-            self, record: Record, *, message_template: str | None = None
+        self, record: Record, *, message_template: str | None = None
     ) -> int:
         """
         Публикует «релиз» (Record). Текст — по шаблону или compose_record_text().
@@ -544,7 +549,7 @@ class VKService:
         )
 
     def post_record_with_audio(
-            self, record: Record, message_template: str | None = None
+        self, record: Record, message_template: str | None = None
     ) -> int:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
@@ -722,9 +727,9 @@ class VKService:
                     [
                         p
                         for p in (
-                        f"🏷 {label}" if label != "-" else "",
-                        f"📋 {cat}" if cat != "-" else "",
-                    )
+                            f"🏷 {label}" if label != "-" else "",
+                            f"📋 {cat}" if cat != "-" else "",
+                        )
                         if p
                     ]
                 )

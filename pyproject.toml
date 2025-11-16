@@ -49,6 +49,7 @@ pretty = true
 
 # путь матчатся по regex-строке для файловых путей
 exclude = [
+    "tests/.*",
     "apps/.*/migrations", # все миграции в apps/*/migrations
     "pgdata", # данные postgres
     "media", # медиа-файлы
