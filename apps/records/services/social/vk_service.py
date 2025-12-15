@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from calendar import month_abbr
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -22,48 +23,35 @@ class VKConfig:
     """
     Конфигурация доступа к API ВКонтакте.
 
-    Используется ТОЛЬКО пользовательский токен standalone-приложения и id группы.
-
     Атрибуты:
-        access_token: Пользовательский access token (scopes: wall, photos, groups, offline; аудио — при наличии).
-        group_id:     Положительный ID сообщества (без минуса).
-        enable_audio: Разрешать ли попытку загрузки MP3 через Audio API (по умолчанию True).
-                      Если у приложения аудио отключено — загрузка будет молча пропущена с предупреждением в логе.
+        access_token: Пользовательский access token.
+        group_id:     ID сообщества .
+
+    raise: RuntimeError - при отсутствии пользовательского токена в настройках.
+           ValueError - если ID группы не целое число
     """
 
     access_token: str
     group_id: int
-    enable_audio: bool = True
 
     @staticmethod
     def from_settings() -> VKConfig:
-        """
-        Создаёт конфигурацию из Django settings.
+        """Создаёт конфигурацию из Django settings."""
 
-        Требуемые настройки:
-            VK_ACCESS_TOKEN: str — пользовательский токен standalone.
-            VK_GROUP_ID:     int — положительный ID сообщества.
-            VK_ENABLE_AUDIO: bool (опц.) — включать ли загрузку MP3 (по умолчанию True).
-
-        Raises:
-            RuntimeError | ValueError: при некорректных значениях.
-        """
         token = getattr(settings, "VK_ACCESS_TOKEN", "")
         if not token:
             raise RuntimeError(
-                "VK: отсутствует VK_ACCESS_TOKEN (ожидается пользовательский токен)."
+                "VK: отсутствует пользовательский токен(VK_ACCESS_TOKEN)."
             )
 
         group_id_raw = getattr(settings, "VK_GROUP_ID", 0)
+
         try:
             group_id = abs(int(group_id_raw))
         except (TypeError, ValueError) as exc:
             raise ValueError("VK: VK_GROUP_ID должен быть целым числом.") from exc
 
-        enable_audio = bool(getattr(settings, "VK_ENABLE_AUDIO", True))
-        return VKConfig(
-            access_token=token, group_id=group_id, enable_audio=enable_audio
-        )
+        return VKConfig(access_token=token, group_id=group_id)
 
 
 def _slugify_hashtag(text: str) -> str:
@@ -77,69 +65,32 @@ def _slugify_hashtag(text: str) -> str:
     return s
 
 
-def _format_release_date(record: Any) -> str | None:
-    """
-    Возвращает дату релиза в формате 'Mon release_date, YYYY' (Jan–Dec).
-    Источник: record.get_release_date() или части года/месяца/дня.
-    Если данных нет — возвращает None.
-    """
-    month_en = {
-        1: "Jan",
-        2: "Feb",
-        3: "Mar",
-        4: "Apr",
-        5: "May",
-        6: "Jun",
-        7: "Jul",
-        8: "Aug",
-        9: "Sep",
-        10: "Oct",
-        11: "Nov",
-        12: "Dec",
-    }
-
-    # 1) готовая дата из модели (если метод есть)
-    get_date = getattr(record, "get_release_date", None)
-    release_date: date | None = None
-
-    if callable(get_date):
-        try:
-            result = get_date()
-        except (ValueError, TypeError) as exc:
-            logger.debug("VK: get_release_date() вернуло неверные данные: %s", exc)
-        except Exception as exc:
-            logger.warning("VK: ошибка в get_release_date(): %s", exc)
-        else:
-            if isinstance(result, date):
-                release_date = result
-
-    if release_date:
-        mon = month_en.get(release_date.month)
-        if mon:
-            return f"{mon} {release_date.day}, {release_date.year}"
-
-    # 2) части даты
-    y = getattr(record, "release_year", None)
-    m = getattr(record, "release_month", None)
-    dd = getattr(record, "release_day", None)
-
+def _get_release_date(record: Any) -> date | None:
+    """Безопасно извлекает дату релиза из record."""
     try:
-        if y and m and dd and int(m) in month_en:
-            return f"{month_en[int(m)]} {int(dd)}, {int(y)}"
-        if y and m and int(m) in month_en:
-            return f"{month_en[int(m)]}, {int(y)}"
-        if y:
-            return f"{int(y)}"
-    except (TypeError, ValueError):
-        logger.debug(
-            "VK: части даты релиза заданы некорректно: y=%r, m=%r, release_date=%r",
-            y,
-            m,
-            dd,
-        )
+        value = record.get_release_date()
+    except AttributeError:
+        logger.warning("VK: record не имеет get_release_date()")
+        return None
+    except (TypeError, ValueError) as exc:
+        logger.debug("VK: get_release_date() вернуло неверные данные: %s", exc)
         return None
 
-    return None
+    if not isinstance(value, date):
+        logger.debug("VK: get_release_date() вернуло не date: %r", value)
+        return None
+
+    return value
+
+
+def _format_release_date(record: Any) -> str | None:
+    """"Форматирует дату релиза для вывода."""
+    release_date = _get_release_date(record)
+    if release_date is None:
+        return None
+
+    en_month = month_abbr[release_date.month]
+    return f"{en_month} {release_date.day}, {release_date.year}"
 
 
 def _format_record_format(record: Any) -> str | None:
@@ -238,7 +189,7 @@ def compose_record_text(record: Any) -> str:
 
     # первая строка — всегда фиксированная
     lines: list[str] = ["ПРЕДЗАКАЗ"]
-
+    lines.append("")
     # вторая — артист — тайтл
     lines.append(f"{artists} — {title}")
 
@@ -267,6 +218,7 @@ def compose_record_text(record: Any) -> str:
     # хэштеги (если есть) — после пустой строки
     hashtags = _build_hashtags(record)
     if hashtags:
+        lines.append("")
         lines.append("")
         lines.append(hashtags)
 
@@ -364,7 +316,7 @@ class VKService:
         return str(data["upload_url"])
 
     def _save_audio(
-        self, upload_resp: dict[str, Any], artist: str, title: str
+            self, upload_resp: dict[str, Any], artist: str, title: str
     ) -> dict[str, Any]:
         """Сохраняет аудио, загруженное через upload_url."""
         return self._vk.method(
@@ -382,11 +334,6 @@ class VKService:
         """
         Загружает MP3 и возвращает 'audio<owner_id>_<id>' или None, если Audio API недоступен.
         """
-        if not self._config.enable_audio:
-            logger.info(
-                "VK: загрузка аудио отключена настройкой VK_ENABLE_AUDIO=False."
-            )
-            return None
 
         try:
             url = self._get_audio_upload_url()
@@ -419,9 +366,9 @@ class VKService:
             return None
 
     def _wall_post(
-        self,
-        message: str,
-        attachments: Sequence[str] | None = None,
+            self,
+            message: str,
+            attachments: Sequence[str] | None = None,
     ) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
@@ -514,7 +461,7 @@ class VKService:
     # ------------------------------ доменная логика ------------------------------
 
     def post_record(
-        self, record: Record, *, message_template: str | None = None
+            self, record: Record, *, message_template: str | None = None
     ) -> int:
         """
         Публикует «релиз» (Record). Текст — по шаблону или compose_record_text().
@@ -549,7 +496,7 @@ class VKService:
         )
 
     def post_record_with_audio(
-        self, record: Record, message_template: str | None = None
+            self, record: Record, message_template: str | None = None
     ) -> int:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
@@ -727,9 +674,9 @@ class VKService:
                     [
                         p
                         for p in (
-                            f"🏷 {label}" if label != "-" else "",
-                            f"📋 {cat}" if cat != "-" else "",
-                        )
+                        f"🏷 {label}" if label != "-" else "",
+                        f"📋 {cat}" if cat != "-" else "",
+                    )
                         if p
                     ]
                 )

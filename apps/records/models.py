@@ -31,7 +31,26 @@ class PathByInstance(_PathByInstance):
 
 class GenreChoices(models.TextChoices):
     NOT_SPECIFIED = "Not specified", _("Not specified")
-    ELECTRO = "Electronic", _("Electronic")
+
+    JUNGLE = "Jungle", _("Jungle")
+    DRUM_AND_BASS = "Drum and Bass", _("Drum and Bass")
+    HARDCORE_BREAKBEAT = "Hardcore Breakbeat", _("Hardcore Breakbeat")
+    BREAKBEAT = "Breakbeat", _("Breakbeat")
+    UK_GARAGE = "UK Garage", _("UK Garage")
+    ELECTRO = "Electro", _("Electro")
+    DUBSTEP = "Dubstep", _("Dubstep")
+    GRIME = "Grime", _("Grime")
+    BASS = "Bass", _("Bass")
+    FUNK = "Funk", _("Funk")
+    DISCO = "Disco", _("Disco")
+    HOUSE = "House", _("House")
+    REGGAE = "Reggae", _("Reggae")
+    DANCEHALL = "Dancehall", _("Dancehall")
+    DUB = "Dub", _("Dub")
+    DUB_TECHNO = "Dub Techno", _("Dub Techno")
+    TECHNO = "Techno", _("Techno")
+    TRANCE = "Trance", _("Trance")
+    AMBIENT = "Ambient", _("Ambient")
 
 
 class StyleChoices(models.TextChoices):
@@ -58,6 +77,7 @@ class FormatChoices(models.TextChoices):
 class RecordConditions:
     """Константы состояния пластинок."""
 
+    NEW = "НОВАЯ"
     M = "M"
     NM = "NM"
     VGP = "VG+"
@@ -68,6 +88,7 @@ class RecordConditions:
     P = "P"
 
     CONDITION_CHOICES = (
+        (NEW, "НОВАЯ"),
         (M, "Mint (M)"),
         (NM, "Near Mint (NM)"),
         (VGP, "Very Good Plus (VG+)"),
@@ -150,12 +171,7 @@ class Style(TimeStampedModel):
 class Format(TimeStampedModel):
     """Модель формата."""
 
-    name = models.CharField(
-        max_length=100,
-        unique=True,
-        choices=FormatChoices.choices,
-        verbose_name=_("Name"),
-    )
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = FormatManager()
 
@@ -171,9 +187,9 @@ class Format(TimeStampedModel):
 class Record(TimeStampedModel):
     """Модель записи (пластинки)."""
 
-    title = models.CharField(max_length=255, verbose_name=_("Record title"))
+    title = models.CharField(max_length=255, verbose_name=_("Название"))
     artists = models.ManyToManyField(
-        Artist, related_name="records", verbose_name=_("Artists")
+        Artist, related_name="records", verbose_name=_("Исполнитель")
     )
     label = models.ForeignKey(
         Label,
@@ -246,13 +262,13 @@ class Record(TimeStampedModel):
     )
 
     genres = models.ManyToManyField(
-        Genre, related_name="records", verbose_name=_("Genres")
+        Genre, related_name="records", verbose_name=_("Жанры")
     )
     formats = models.ManyToManyField(
-        Format, related_name="records", verbose_name=_("Formats")
+        Format, related_name="records", verbose_name=_("Форматы")
     )
     styles = models.ManyToManyField(
-        Style, related_name="records", verbose_name=_("Styles")
+        Style, related_name="records", verbose_name=_("Стили")
     )
     discogs_id = models.IntegerField(
         unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
@@ -261,7 +277,7 @@ class Record(TimeStampedModel):
         upload_to=PathByInstance("cover_image"),
         null=True,
         blank=True,
-        verbose_name=_("Record image"),
+        verbose_name=_("Обложка"),
     )
     notes = CKEditor5Field(null=True, blank=True, verbose_name=_("Notes"))
     stock = models.PositiveIntegerField(
@@ -269,10 +285,10 @@ class Record(TimeStampedModel):
         verbose_name=_("Storage on hand"),
     )
     condition = models.CharField(
-        max_length=3,
+        max_length=10,
         choices=RecordConditions.CONDITION_CHOICES,
         default=RecordConditions.M,
-        verbose_name=_("Condition"),
+        verbose_name=_("Состояние"),
     )
     catalog_number = models.CharField(
         max_length=50,

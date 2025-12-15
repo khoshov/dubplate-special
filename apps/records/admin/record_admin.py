@@ -5,7 +5,7 @@ from django.contrib import admin
 from django.http import HttpRequest
 
 from records.forms import RecordForm
-from records.models import Record, Artist
+from records.models import Record, Artist, Format, Genre, Style
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
@@ -49,7 +49,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
-        ("Детали", {"fields": ("genres", "styles", "formats", "country", "condition")}),
+        ("Детали", {"fields": ("genres", "styles", "formats", "condition")}),
         ("Склад и цены", {"fields": ("stock", "price")}),
         (
             "Дополнительно",
@@ -139,7 +139,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return self.fieldsets
 
         source = (
-            request.POST.get("source") or request.GET.get("source") or "discogs"
+                request.POST.get("source") or request.GET.get("source") or "discogs"
         ).lower()
         if source == "redeye":
             logger.debug(
@@ -206,7 +206,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         return readonly
 
     def has_delete_permission(
-        self, request: HttpRequest, obj: Optional[Record] = None
+            self, request: HttpRequest, obj: Optional[Record] = None
     ) -> bool:
         """Запрещает удаление записей, которые есть в заказах."""
         if obj and hasattr(obj, "order_items") and obj.order_items.exists():
@@ -256,6 +256,48 @@ class ArtistAdmin(admin.ModelAdmin):
     """
 
     search_fields = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Format)
+class FormatAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Genre)
+class GenreAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Style)
+class StyleAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
 
     def get_model_perms(self, request: HttpRequest):
         """

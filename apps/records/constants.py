@@ -36,13 +36,13 @@ REDEYE_URLS = [
         "code": "bass-preorders",
         "url": "https://www.redeyerecords.co.uk/bass-music/pre-orders",
         "style": "Bass Music",
-        "genre": "Electronic",
+        "genre": "Electro",
     },
     {
         "code": "dnb-preorders",
         "url": "https://www.redeyerecords.co.uk/drum-and-bass/pre-orders",
         "style": "Drum n Bass",
-        "genre": "Electronic",
+        "genre": "Electro",
     },
 ]
 
