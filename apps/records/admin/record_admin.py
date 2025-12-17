@@ -139,7 +139,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return self.fieldsets
 
         source = (
-                request.POST.get("source") or request.GET.get("source") or "discogs"
+            request.POST.get("source") or request.GET.get("source") or "discogs"
         ).lower()
         if source == "redeye":
             logger.debug(
@@ -206,7 +206,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         return readonly
 
     def has_delete_permission(
-            self, request: HttpRequest, obj: Optional[Record] = None
+        self, request: HttpRequest, obj: Optional[Record] = None
     ) -> bool:
         """Запрещает удаление записей, которые есть в заказах."""
         if obj and hasattr(obj, "order_items") and obj.order_items.exists():

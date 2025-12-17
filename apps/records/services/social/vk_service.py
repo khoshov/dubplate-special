@@ -84,7 +84,7 @@ def _get_release_date(record: Any) -> date | None:
 
 
 def _format_release_date(record: Any) -> str | None:
-    """"Форматирует дату релиза для вывода."""
+    """ "Форматирует дату релиза для вывода."""
     release_date = _get_release_date(record)
     if release_date is None:
         return None
@@ -316,7 +316,7 @@ class VKService:
         return str(data["upload_url"])
 
     def _save_audio(
-            self, upload_resp: dict[str, Any], artist: str, title: str
+        self, upload_resp: dict[str, Any], artist: str, title: str
     ) -> dict[str, Any]:
         """Сохраняет аудио, загруженное через upload_url."""
         return self._vk.method(
@@ -366,9 +366,9 @@ class VKService:
             return None
 
     def _wall_post(
-            self,
-            message: str,
-            attachments: Sequence[str] | None = None,
+        self,
+        message: str,
+        attachments: Sequence[str] | None = None,
     ) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
@@ -461,7 +461,7 @@ class VKService:
     # ------------------------------ доменная логика ------------------------------
 
     def post_record(
-            self, record: Record, *, message_template: str | None = None
+        self, record: Record, *, message_template: str | None = None
     ) -> int:
         """
         Публикует «релиз» (Record). Текст — по шаблону или compose_record_text().
@@ -496,7 +496,7 @@ class VKService:
         )
 
     def post_record_with_audio(
-            self, record: Record, message_template: str | None = None
+        self, record: Record, message_template: str | None = None
     ) -> int:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
@@ -674,9 +674,9 @@ class VKService:
                     [
                         p
                         for p in (
-                        f"🏷 {label}" if label != "-" else "",
-                        f"📋 {cat}" if cat != "-" else "",
-                    )
+                            f"🏷 {label}" if label != "-" else "",
+                            f"📋 {cat}" if cat != "-" else "",
+                        )
                         if p
                     ]
                 )
