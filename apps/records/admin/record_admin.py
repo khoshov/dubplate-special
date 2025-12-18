@@ -50,7 +50,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             },
         ),
         ("Детали", {"fields": ("genres", "styles", "formats", "condition")}),
-        ("Склад и цены", {"fields": ("stock", "price")}),
+        ("Склад и цены", {"fields": ("stock", "availability_status", "price")}),
         (
             "Дополнительно",
             {
@@ -74,6 +74,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "release_month",
         "release_day",
         "is_expected",
+        "availability_status",
     )
     list_filter = (
         "condition",
@@ -82,6 +83,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "created",
         "modified",
         "is_expected",
+        "availability_status",
     )
     search_fields = (
         "title",
@@ -90,6 +92,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "discogs_id",
         "artists__name",
         "label__name",
+        "availability_status",
     )
     ordering = (
         "is_expected",

@@ -187,9 +187,26 @@ def compose_record_text(record: Any) -> str:
     fmt = _format_record_format(record) or ""
     release = _format_release_date(record) or ""
 
-    # первая строка — всегда фиксированная
-    lines: list[str] = ["ПРЕДЗАКАЗ"]
+    # =========================
+    # CHANGED: первая строка
+    # =========================
+    price = getattr(record, "price", "")
+    condition = getattr(record, "condition", "")
+    availability = getattr(record, "availability_status", "")
+
+    if hasattr(record, "get_condition_display"):
+        condition = record.get_condition_display()
+
+    if hasattr(record, "get_availability_status_display"):
+        availability = record.get_availability_status_display()
+
+    header_parts = [str(word) for word in (price, condition, availability) if word]
+    first_line = " ".join(header_parts)
+    # =========================
+
+    lines: list[str] = [first_line]
     lines.append("")
+
     # вторая — артист — тайтл
     lines.append(f"{artists} — {title}")
 
