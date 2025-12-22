@@ -118,8 +118,29 @@ WSGI_APPLICATION = "config.wsgi.application"
 # DATABASE
 # =============
 # Uses django-environ to automatically parse DB_* variables or DATABASE_URL
+# DATABASES = {
+#     "default": env.db(),
+# }
+RUN_ENV = os.getenv("RUN_ENV", "local")
+POSTGRES_NAME = env("POSTGRES_DB")
+POSTGRES_USER = env("POSTGRES_USER")
+POSTGRES_PASSWORD = env("POSTGRES_PASSWORD")
+POSTGRES_PORT = env("POSTGRES_PORT")
+
+if RUN_ENV == "docker":
+    POSTGRES_HOST = env("POSTGRES_HOST")
+else:
+    POSTGRES_HOST = "127.0.0.1"
+
 DATABASES = {
-    "default": env.db(),
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "USER": POSTGRES_USER,
+        "PASSWORD": POSTGRES_PASSWORD,
+        "NAME": POSTGRES_NAME,
+        "HOST": POSTGRES_HOST,
+        "PORT": POSTGRES_PORT,
+    }
 }
 
 # ======================
@@ -376,7 +397,6 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
 ]
 
-
 DJANGO_LOG_LEVEL = os.getenv("DJANGO_LOG_LEVEL", "INFO")  # можно переключать через env
 
 LOGGING = {
@@ -423,3 +443,8 @@ LOGGING = {
         },
     },
 }
+
+# VK интеграция
+
+VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "0"))  # пример: -225812294
+VK_ACCESS_TOKEN = os.getenv("VK_ACCESS_TOKEN", "")

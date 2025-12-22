@@ -3,10 +3,18 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from playwright.sync_api import Browser
+
 from records.models import Record, Track
-from records.services.audio.common.downloader import download_audio_to_track
+from records.services.audio.common.downloader import (
+    download_audio_to_track as _download_audio_to_track,
+)
 from records.services.audio.providers.redeye.redeye_audio_player import (
     attach_audio_from_redeye_player,
+)
+from records.constants import (
+    AUDIO_DEFAULT_TIMEOUT,
+    AUDIO_DEFAULT_MAX_BYTES,
 )
 
 logger = logging.getLogger(__name__)
@@ -14,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 class AudioService:
     """
-    Сервис предоставляет операции по работе с аудио треков.
+    Сервис выполняет операции с аудио-файлами треков.
 
     Задачи:
-      - Выполняет загрузку и прикрепление аудио к трекам записи с учётом провайдера.
-      - Делегирует провайдер-специфичную логику в соответствующие модули.
-      - Предоставляет низкоуровневую загрузку файла в конкретный Track по URL.
+      • Прикрепляет аудио к трекам записи из конкретных источников (Redeye и др.).
+      • Делегирует провайдер-специфичную логику соответствующим модулям.
+      • Выполняет потоковую загрузку аудио-файла для отдельного трека по-прямому URL.
     """
 
     @staticmethod
@@ -27,32 +35,50 @@ class AudioService:
         record: Record,
         *,
         force: bool = False,
-        per_click_timeout_sec: int = 20,
+        per_click_timeout_sec: Optional[int] = None,
         page_url: Optional[str] = None,
+        browser: Optional[Browser] = None,
     ) -> int:
         """
-        Метод выполняет прикрепление аудио к трекам записи из источника Redeye.
+        Метод прикрепляет аудио-превью к трекам записи из источника Redeye.
+
+        Логика:
+          1) Определяет эффективный таймаут клика по плееру:
+             если `per_click_timeout_sec` не задан, берётся константа
+             `REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC`.
+          2) Вызывает модуль для получения URL и привязки аудио.
 
         Args:
-            record (Record): Запись, треки которой нужно заполнить аудио.
-            force (bool): Признак перезаписи уже существующих файлов у треков.
-            per_click_timeout_sec (int): Таймаут между кликами плеера при сборе URL.
-            page_url (Optional[str]): Явный URL карточки Redeye (если не указан — берётся из RecordSource).
+            • record: Запись, треки которой нужно заполнить аудио.
+            • force: Принудительно перезаписывать уже существующие файлы у треков.
+            • per_click_timeout_sec: Таймаут ожидания появления URL после клика по кнопке плеера (сек).
+            • page_url: Явный URL карточки Redeye (если не указан — будет определён ниже).
+            • browser: Внешний экземпляр Playwright Browser для массовой обработки.
+              Если передан — будет использован без запуска/остановки нового браузера.
 
         Returns:
-            int: Количество треков, у которых аудио появилось или обновилось.
+            Количество треков, у которых аудио появилось или обновилось.
         """
+
         logger.info(
-            "[audio] старт прикрепления аудио из Redeye для записи %s.", record.pk
+            "Старт прикрепления аудио из Redeye: record=%s, force=%s, click_timeout=%s",
+            record.pk,
+            force,
+            per_click_timeout_sec,
         )
+
         updated = attach_audio_from_redeye_player(
-            record,
+            record=record,
             page_url=page_url,
             force=force,
             per_click_timeout_sec=per_click_timeout_sec,
+            browser=browser,
         )
+
         logger.info(
-            "[audio] завершено прикрепление аудио из Redeye: обновлено %d.", updated
+            "Завершено прикрепление аудио из Redeye: record=%s, обновлено=%d",
+            record.pk,
+            updated,
         )
         return updated
 
@@ -63,24 +89,27 @@ class AudioService:
         *,
         overwrite: bool = False,
         referer: Optional[str] = None,
-        timeout: int = 30,
-        max_bytes: int = 15 * 1024 * 1024,
+        timeout: int = AUDIO_DEFAULT_TIMEOUT,
+        max_bytes: int = AUDIO_DEFAULT_MAX_BYTES,
     ) -> Optional[str]:
         """
-        Метод выполняет потоковую загрузку аудио по прямому URL и сохраняет файл в `track.audio_preview`.
+        Метод выполняет потоковую загрузку аудио по прямому URL и сохраняет файл
+        в поле `track.audio_preview`.
 
         Args:
-            track (Track): Трек, к которому нужно прикрепить файл.
-            url (str): Прямой URL на аудио (mp3/aac/...).
-            overwrite (bool): Перезаписывать ли существующий файл.
-            referer (Optional[str]): Заголовок Referer (например, URL карточки).
-            timeout (int): Таймаут сетевого запроса в секундах.
-            max_bytes (int): Лимит размера файла в байтах.
+            • track: Трек, к которому нужно прикрепить файл.
+            • url: Прямой URL на аудио (mp3/aac/...).
+            • overwrite: Перезаписывать ли существующий файл (если он уже прикреплён).
+            • referer: Значение заголовка Referer (например, URL карточки товара).
+            • timeout: Таймаут сетевого запроса в секундах. По умолчанию —
+              `AUDIO_DEFAULT_TIMEOUT`.
+            • max_bytes: Максимально допустимый размер скачиваемого файла в байтах.
+              По умолчанию — `AUDIO_DEFAULT_MAX_BYTES`.
 
         Returns:
-            Optional[str]: Относительный путь к файлу (`FieldFile.name`) или `None` при неуспехе.
+            Относительный путь к файлу (`FieldFile.name`) при успехе, либо `None` при неуспехе.
         """
-        return download_audio_to_track(
+        return _download_audio_to_track(
             track,
             url,
             timeout=timeout,

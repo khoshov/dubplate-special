@@ -20,6 +20,7 @@ import logging
 from typing import Optional, Tuple
 
 from django.db import transaction
+from playwright.sync_api import Browser
 
 from records.models import (
     Record,
@@ -271,7 +272,8 @@ class RecordService:
         record: "Record",
         *,
         force: bool = False,
-        per_click_timeout_sec: int = 20,
+        per_click_timeout_sec: Optional[int] = None,
+        browser: Optional[Browser] = None,
     ) -> int:
         """
         Метод прикрепляет аудио-превью для записи через Redeye.
@@ -279,7 +281,14 @@ class RecordService:
         Предполагается, что URL карточки уже сохранён в RecordSource (роль PRODUCT_PAGE).
         Здесь нет парсинга/резолва — только вызов AudioService.
 
-        Возврат: количество обновлённых треков.
+        Args:
+            record: Целевая запись.
+            force: Перезаписывать существующие файлы превью.
+            per_click_timeout_sec: Таймаут ожидания ссылок после клика (сек). Если None — используется дефолт скрапера.
+            browser: Внешний экземпляр Playwright Browser (для потоковой обработки одной инстанцией).
+
+        Returns:
+            Количество обновлённых треков.
         """
         from records.models import RecordSource
 
@@ -297,6 +306,7 @@ class RecordService:
             page_url=page_url,
             force=force,
             per_click_timeout_sec=per_click_timeout_sec,
+            browser=browser,
         )
         logger.info(
             "Завершено прикрепление аудио из Redeye: обновлено %d треков (record=%s)",

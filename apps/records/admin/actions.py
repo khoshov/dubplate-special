@@ -1,18 +1,26 @@
 from __future__ import annotations
+
 import logging
 import time
-from typing import Any, Callable
+from typing import Callable, TYPE_CHECKING
 
 from django.contrib import admin, messages
+from django.db.models import QuerySet
 from django.http import HttpRequest
+from django.utils.text import Truncator
+
+from records.models import Record
+
+if TYPE_CHECKING:
+    from .record_admin import RecordAdmin
 
 logger = logging.getLogger(__name__)
 
 
 def _batch_update(
-    admin_obj: Any,
+    admin_obj: RecordAdmin,
     request: HttpRequest,
-    queryset,
+    queryset: QuerySet[Record],
     *,
     start_log: str,
     empty_msg: str,
@@ -22,8 +30,8 @@ def _batch_update(
     fail_msg: str,
     fail_header: str,
     id_label: str,
-    get_id: Callable[[Any], str | None],
-    do_update: Callable[[Any], object],
+    get_id: Callable[[Record], str | None],
+    do_update: Callable[[Record], object],
 ) -> None:
     """Универсальный исполнитель массового обновления."""
     start_ts = time.perf_counter()
@@ -41,21 +49,21 @@ def _batch_update(
     skipped, failed = [], []
 
     for record in queryset:
-        record_label = f"#{record.pk} «{record}»"
+        log_record_name = f"#{record.pk} «{record}»"
         extract_id = get_id(record)
         if not extract_id:
             skip += 1
-            skipped.append(f"{record_label}: нет {id_label}")
+            skipped.append(f"{log_record_name}: нет {id_label}")
             continue
         try:
             do_update(record)
             ok += 1
         except Exception as e:
             fail += 1
-            failed.append(f"{record_label}: {e!s}")
+            failed.append(f"{log_record_name}: {e!s}")
             logger.exception(
                 "Ошибка при обновлении %s (%s=%s): %s",
-                record_label,
+                log_record_name,
                 id_label,
                 extract_id,
                 e,
@@ -88,8 +96,76 @@ def _batch_update(
     )
 
 
+@admin.action(description="Опубликовать в VK")
+def post_to_vk(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
+    """
+    Публикует выбранные записи в сообщество ВКонтакте со всеми аудио-треками.
+    """
+    vk_service = getattr(admin_obj, "vk_service", None)
+    if vk_service is None:
+        admin_obj.message_user(
+            request,
+            "Сервис VK не сконфигурирован. Обратитесь к администратору.",
+            level=messages.ERROR,
+        )
+        logger.error(
+            "VK: сервис не инициализирован в RecordAdmin.__init__ (vk_service отсутствует)."
+        )
+        return
+
+    logger.info(
+        "Публикация записей в VK (записей: %d, пользователь: %s).",
+        queryset.count(),
+        getattr(request.user, "username", "?"),
+    )
+
+    def _get_id(record: Record) -> str | None:
+        return str(getattr(record, "pk", None))
+
+    def _do_post(record: Record) -> int:
+        title = getattr(record, "title", "")
+        cover = getattr(record, "cover_image", None)
+        cover_path = getattr(cover, "path", None) if cover else None
+        logger.debug(
+            "Попытка публикации: record_id=%s, title='%s', есть_обложка=%s, cover_path=%s",
+            getattr(record, "pk", None),
+            Truncator(title).chars(80),
+            bool(cover_path),
+            cover_path,
+        )
+
+        post_id = vk_service.post_record_with_audio(record=record)
+        logger.info(
+            "Опубликовано в VK с аудио: record_id=%s, post_id=%s, title=%s",
+            getattr(record, "pk", None),
+            post_id,
+            Truncator(title).chars(80),
+        )
+        return post_id
+
+    _batch_update(
+        admin_obj,
+        request,
+        queryset,
+        start_log="Публикация записей в VK",
+        empty_msg="Выберите записи для публикации в VK.",
+        ok_msg="Опубликовано в VK: {ok} из {total}.",
+        skip_msg="Пропущено (не выбрано): {n}.",
+        skip_header="Пропущено:",
+        fail_msg="С ошибками публикации: {n}.",
+        fail_header="Ошибки:",
+        id_label="record_id",
+        get_id=_get_id,
+        do_update=_do_post,
+    )
+
+
 @admin.action(description="Обновить из Discogs")
-def update_from_discogs(admin_obj: Any, request: HttpRequest, queryset) -> None:
+def update_from_discogs(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -103,13 +179,15 @@ def update_from_discogs(admin_obj: Any, request: HttpRequest, queryset) -> None:
         fail_msg="С ошибками: {n}.",
         fail_header="Ошибки:",
         id_label="Discogs ID",
-        get_id=lambda record: getattr(record, "discogs_id", None),
-        do_update=lambda record: record_service.update_from_discogs(record),
+        get_id=lambda record: record.discogs_id,
+        do_update=lambda record: record_service.update_from_discogs(record=record),
     )
 
 
 @admin.action(description="Обновить из Redeye")
-def update_from_redeye(admin_obj: Any, request: HttpRequest, queryset) -> None:
+def update_from_redeye(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
     record_service = admin_obj.record_service
     _batch_update(
         admin_obj,
@@ -123,10 +201,8 @@ def update_from_redeye(admin_obj: Any, request: HttpRequest, queryset) -> None:
         fail_msg="С ошибками: {n}.",
         fail_header="Ошибки:",
         id_label="каталожный номер",
-        get_id=lambda record: getattr(record, "catalog_number", None),
+        get_id=lambda record: record.catalog_number,
         do_update=lambda record: record_service.import_from_redeye(
-            catalog_number=record.catalog_number,
-            save_image_decision=True,
-            download_audio_decision=True,
+            catalog_number=record.catalog_number
         ),
     )

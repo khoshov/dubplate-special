@@ -4,11 +4,8 @@ import logging
 from typing import List, Optional, Tuple
 
 from django.db.models import Q
-
-from records.constants import (
-    REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC,
-    REDEYE_PLAYER_PRUNE_UNTITLED,
-)
+from playwright.sync_api import Browser
+from records.constants import REDEYE_PLAYER_PRUNE_UNTITLED
 from records.models import Record, Track, RecordSource
 from records.services.audio.common.downloader import download_audio_to_track
 from .redeye_audio_scraper import collect_redeye_audio_urls
@@ -34,7 +31,7 @@ def _resolve_product_page_url(
         Валидный URL карточки либо None, если источник не найден.
     """
     if explicit_url:
-        logger.debug("[redeye_player] явный URL карточки: %s", explicit_url)
+        logger.debug("явный URL карточки: %s", explicit_url)
         return explicit_url
 
     try:
@@ -48,14 +45,14 @@ def _resolve_product_page_url(
             .first()
         )
         if src:
-            logger.debug("[redeye_player] URL из RecordSource: %s", src)
+            logger.debug("URL из RecordSource: %s", src)
             return src
     except Exception as exc:
-        logger.debug("[redeye_player] не удалось получить URL из RecordSource: %s", exc)
+        logger.debug("не удалось получить URL из RecordSource: %s", exc)
 
     legacy_url = getattr(record, "source_url", None)
     if legacy_url:
-        logger.debug("[redeye_player] legacy record.source_url: %s", legacy_url)
+        logger.debug("legacy record.source_url: %s", legacy_url)
     return legacy_url
 
 
@@ -84,7 +81,7 @@ def _ordered_tracks(record: Record) -> List[Track]:
 
     if without_idx:
         logger.warning(
-            "[redeye_player] у %d трек(ов) записи %s нет position_index — они будут привязаны в конце по порядку.",
+            "у %d трек(ов) записи %s нет position_index — они будут привязаны в конце по порядку.",
             len(without_idx),
             record.pk,
         )
@@ -106,7 +103,7 @@ def _prune_empty_untitled_placeholders(record: Record) -> None:
     deleted = qs.filter(
         Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
     ).delete()
-    logger.info("[audio] удалено плейсхолдеров без аудио: %s.", deleted[0])
+    logger.info("удалено плейсхолдеров без аудио: %s.", deleted[0])
 
 
 def attach_audio_from_redeye_player(
@@ -114,27 +111,29 @@ def attach_audio_from_redeye_player(
     *,
     page_url: Optional[str] = None,
     force: bool = False,
-    per_click_timeout_sec: int = REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC,
+    per_click_timeout_sec: Optional[int] = None,
+    browser: Optional[Browser] = None,
 ) -> int:
-    """Метод прикрепляет аудио к трекам записи, используя плеер Redeye.
+    """
+    Метод прикрепляет аудио-превью к трекам записи из источника Redeye.
 
-    Метод реализует:
-        - разрешение URL карточки (если не передан явно),
-        - опциональную зачистку плейсхолдеров «Untitled...» без аудио,
-        - сбор аудио-URL с карточки (клики по кнопкам плеера),
-        - сопоставление ссылок с треками по их порядку,
-        - скачивание и сохранение аудио-файлов в `Track.audio_preview`.
+    Архитектура:
+      • Сервис не подменяет значения и не считает дефолты — параметры пробрасываются вниз.
+      • Значения по умолчанию применяются в скраперe (нижний уровень).
 
     Args:
-        record: Запись, чьи треки требуется заполнить аудио.
-        page_url: Валидный URL карточки Redeye; если не указан — берётся из `RecordSource`.
-        force: Перезаписывать ли уже существующие файлы у треков.
-        per_click_timeout_sec: Таймаут ожидания после клика по кнопке плеера.
+        record: Запись, треки которой нужно заполнить аудио.
+        force: Принудительно перезаписывать уже существующие файлы у треков.
+        per_click_timeout_sec: Таймаут ожидания появления URL после клика (сек).
+            Если None — дефолт будет применён скрапером.
+        page_url: Явный URL карточки Redeye (если не указан — будет определён ниже).
+        browser: Внешний экземпляр Playwright Browser для массовой обработки.
+            Если передан — используется как есть (без запуска/остановки нового браузера).
 
     Returns:
-        Количество треков, у которых появилось или обновилось аудио.
+        Количество треков, у которых аудио появилось или обновилось.
     """
-    logger.info("[redeye_player] запуск для записи %s.", record.pk)
+    logger.info("запуск для записи %s.", record.pk)
 
     if REDEYE_PLAYER_PRUNE_UNTITLED:
         _prune_empty_untitled_placeholders(record)
@@ -142,26 +141,25 @@ def attach_audio_from_redeye_player(
     # URL карточки
     page_url = _resolve_product_page_url(record, page_url)
     if not page_url:
-        logger.info(
-            "[redeye_player] у записи %s отсутствует URL карточки — пропуск.", record.pk
-        )
+        logger.info("у записи %s отсутствует URL карточки — пропуск.", record.pk)
         return 0
 
     # Треки в порядке привязки
     tracks: List[Track] = _ordered_tracks(record)
     if not tracks:
-        logger.info("[redeye_player] у записи %s нет треков.", record.pk)
+        logger.info("у записи %s нет треков.", record.pk)
         return 0
 
     # Сбор ссылок плеера
     urls = collect_redeye_audio_urls(
-        page_url, per_click_timeout_sec=per_click_timeout_sec, debug=False
+        page_url,
+        per_click_timeout_sec=per_click_timeout_sec,
+        debug=False,
+        browser=browser,
     )
-    logger.debug("[redeye_player] ссылок получено=%d: %s", len(urls), urls)
+    logger.debug("ссылок получено=%d: %s", len(urls), urls)
     if not urls:
-        logger.info(
-            "[redeye_player] не удалось получить медиа-ссылки для %s.", page_url
-        )
+        logger.info("не удалось получить медиа-ссылки для %s.", page_url)
         return 0
 
     # Сопоставление и скачивание
@@ -174,7 +172,7 @@ def attach_audio_from_redeye_player(
             updated += 1
 
     logger.info(
-        "[redeye_player] запись=%s, обновлено аудио: %d (urls=%d, tracks=%d).",
+        "запись=%s, обновлено аудио: %d (urls=%d, tracks=%d).",
         record.pk,
         updated,
         len(urls),

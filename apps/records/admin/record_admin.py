@@ -5,13 +5,14 @@ from django.contrib import admin
 from django.http import HttpRequest
 
 from records.forms import RecordForm
-from records.models import Record, Artist
+from records.models import Record, Artist, Format, Genre, Style
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
-from .actions import update_from_discogs, update_from_redeye
+from records.services.social.vk_service import VKService
+from .actions import update_from_discogs, update_from_redeye, post_to_vk
 from .inlines import TrackInline
 from .mixins import RedeyeAudioRefreshMixin
 
@@ -30,8 +31,8 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     form = RecordForm
     autocomplete_fields = ("artists",)
     inlines = [TrackInline]
-    actions = [update_from_discogs, update_from_redeye]
-
+    actions = [update_from_discogs, update_from_redeye, post_to_vk]
+    vk_service: VKService
     fieldsets = (
         (
             "Основная информация",
@@ -48,8 +49,8 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
-        ("Детали", {"fields": ("genres", "styles", "formats", "country", "condition")}),
-        ("Склад и цены", {"fields": ("stock", "price")}),
+        ("Детали", {"fields": ("genres", "styles", "formats", "condition")}),
+        ("Склад и цены", {"fields": ("stock", "availability_status", "price")}),
         (
             "Дополнительно",
             {
@@ -73,6 +74,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "release_month",
         "release_day",
         "is_expected",
+        "availability_status",
     )
     list_filter = (
         "condition",
@@ -81,6 +83,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "created",
         "modified",
         "is_expected",
+        "availability_status",
     )
     search_fields = (
         "title",
@@ -89,6 +92,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "discogs_id",
         "artists__name",
         "label__name",
+        "availability_status",
     )
     ordering = (
         "is_expected",
@@ -110,6 +114,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             image_service=ImageService(),
             audio_service=AudioService(),
         )
+        self.vk_service = VKService.from_settings()
 
     def get_artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
@@ -254,6 +259,48 @@ class ArtistAdmin(admin.ModelAdmin):
     """
 
     search_fields = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Format)
+class FormatAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Genre)
+class GenreAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    def get_model_perms(self, request: HttpRequest):
+        """
+        Скрывает модель в боковом меню и индексе админки,
+        но остаётся доступной для функции автозаполнения.
+        """
+        return {}
+
+
+@admin.register(Style)
+class StyleAdmin(admin.ModelAdmin):
+    list_display = ("name",)
+    search_fields = ("name",)
+    ordering = ("name",)
 
     def get_model_perms(self, request: HttpRequest):
         """

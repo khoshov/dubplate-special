@@ -31,7 +31,26 @@ class PathByInstance(_PathByInstance):
 
 class GenreChoices(models.TextChoices):
     NOT_SPECIFIED = "Not specified", _("Not specified")
-    ELECTRO = "Electronic", _("Electronic")
+
+    JUNGLE = "Jungle", _("Jungle")
+    DRUM_AND_BASS = "Drum and Bass", _("Drum and Bass")
+    HARDCORE_BREAKBEAT = "Hardcore Breakbeat", _("Hardcore Breakbeat")
+    BREAKBEAT = "Breakbeat", _("Breakbeat")
+    UK_GARAGE = "UK Garage", _("UK Garage")
+    ELECTRO = "Electro", _("Electro")
+    DUBSTEP = "Dubstep", _("Dubstep")
+    GRIME = "Grime", _("Grime")
+    BASS = "Bass", _("Bass")
+    FUNK = "Funk", _("Funk")
+    DISCO = "Disco", _("Disco")
+    HOUSE = "House", _("House")
+    REGGAE = "Reggae", _("Reggae")
+    DANCEHALL = "Dancehall", _("Dancehall")
+    DUB = "Dub", _("Dub")
+    DUB_TECHNO = "Dub Techno", _("Dub Techno")
+    TECHNO = "Techno", _("Techno")
+    TRANCE = "Trance", _("Trance")
+    AMBIENT = "Ambient", _("Ambient")
 
 
 class StyleChoices(models.TextChoices):
@@ -58,6 +77,7 @@ class FormatChoices(models.TextChoices):
 class RecordConditions:
     """Константы состояния пластинок."""
 
+    NEW = "НОВАЯ"
     M = "M"
     NM = "NM"
     VGP = "VG+"
@@ -68,6 +88,7 @@ class RecordConditions:
     P = "P"
 
     CONDITION_CHOICES = (
+        (NEW, "НОВАЯ"),
         (M, "Mint (M)"),
         (NM, "Near Mint (NM)"),
         (VGP, "Very Good Plus (VG+)"),
@@ -79,8 +100,15 @@ class RecordConditions:
     )
 
 
+class AvailableChoices(models.TextChoices):
+    """Варианты наличия товара"""
+
+    IN_STOCK = "IN_STOCK", _("В НАЛИЧИИ")
+    PREORDER = "PREORDER", _("ПРЕДЗАКАЗ")
+
+
 class Artist(TimeStampedModel):
-    """Модель артиста."""
+    """Модель исполнителя."""
 
     name = models.CharField(max_length=255, verbose_name=_("Name"))
     discogs_id = models.IntegerField(unique=True, null=True, blank=True)
@@ -150,12 +178,7 @@ class Style(TimeStampedModel):
 class Format(TimeStampedModel):
     """Модель формата."""
 
-    name = models.CharField(
-        max_length=100,
-        unique=True,
-        choices=FormatChoices.choices,
-        verbose_name=_("Name"),
-    )
+    name = models.CharField(max_length=100, unique=True, verbose_name=_("Name"))
 
     objects = FormatManager()
 
@@ -170,19 +193,6 @@ class Format(TimeStampedModel):
 
 class Record(TimeStampedModel):
     """Модель записи (пластинки)."""
-
-    title = models.CharField(max_length=255, verbose_name=_("Record title"))
-    artists = models.ManyToManyField(
-        Artist, related_name="records", verbose_name=_("Artists")
-    )
-    label = models.ForeignKey(
-        Label,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="records",
-        verbose_name=_("Label"),
-    )
 
     @property
     def release_date_effective(self) -> str:
@@ -206,14 +216,12 @@ class Record(TimeStampedModel):
 
         if self.release_month:
             month = int(self.release_month)
-            # если указан день — используем его, иначе берём последний день месяца
             if self.release_day:
                 day = int(self.release_day)
             else:
                 day = calendar.monthrange(year, month)[1]
             return date(year, month, day)
 
-        # только год — считаем «до конца года»
         return date(year, 12, 31)
 
     def refresh_expected_flag(self) -> None:
@@ -230,6 +238,19 @@ class Record(TimeStampedModel):
         self.refresh_expected_flag()
         super().save(*args, **kwargs)
 
+    title = models.CharField(max_length=255, verbose_name=_("Название"))
+    artists = models.ManyToManyField(
+        Artist, related_name="records", verbose_name=_("Исполнитель")
+    )
+    label = models.ForeignKey(
+        Label,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="records",
+        verbose_name=_("Label"),
+    )
+
     release_year = models.PositiveSmallIntegerField(
         null=True, blank=True, verbose_name="Год релиза"
     )
@@ -240,60 +261,73 @@ class Record(TimeStampedModel):
         null=True, blank=True, verbose_name="День релиза"
     )
 
-    # ФЛАГ для быстрого фильтра и сортировок
     is_expected = models.BooleanField(
-        default=False, db_index=True, verbose_name="Предзаказ (ожидается)"
+        default=False, db_index=True, verbose_name=_("Ожидается")
     )
 
     genres = models.ManyToManyField(
-        Genre, related_name="records", verbose_name=_("Genres")
+        Genre, related_name="records", verbose_name=_("Жанры")
     )
     formats = models.ManyToManyField(
-        Format, related_name="records", verbose_name=_("Formats")
+        Format, related_name="records", verbose_name=_("Форматы")
     )
     styles = models.ManyToManyField(
-        Style, related_name="records", verbose_name=_("Styles")
+        Style, related_name="records", verbose_name=_("Стили")
     )
-    discogs_id = models.IntegerField(
-        unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
-    )
+
     cover_image = ImageField(
         upload_to=PathByInstance("cover_image"),
         null=True,
         blank=True,
-        verbose_name=_("Record image"),
+        verbose_name=_("Обложка"),
     )
-    notes = CKEditor5Field(null=True, blank=True, verbose_name=_("Notes"))
+
     stock = models.PositiveIntegerField(
         default=1,
         verbose_name=_("Storage on hand"),
     )
-    condition = models.CharField(
-        max_length=3,
-        choices=RecordConditions.CONDITION_CHOICES,
-        default=RecordConditions.M,
-        verbose_name=_("Condition"),
+
+    availability_status = models.CharField(
+        max_length=16,
+        choices=AvailableChoices.choices,
+        default=AvailableChoices.PREORDER,
+        db_index=True,
+        verbose_name=_("Наличие"),
     )
+
+    condition = models.CharField(
+        max_length=10,
+        choices=RecordConditions.CONDITION_CHOICES,
+        default=RecordConditions.NEW,
+        verbose_name=_("Состояние"),
+    )
+    discogs_id = models.IntegerField(
+        unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
+    )
+
     catalog_number = models.CharField(
         max_length=50,
         unique=True,
         null=True,
         blank=True,
-        verbose_name=_("Catalog number"),
+        verbose_name=_("Каталожный номер"),
     )
     barcode = models.CharField(
         max_length=20, unique=True, null=True, blank=True, verbose_name=_("Barcode")
     )
-    country = models.CharField(
-        null=True, blank=True, verbose_name=_("Country"), max_length=50
-    )
+
     price = models.DecimalField(
         max_digits=10,
-        decimal_places=2,
+        decimal_places=0,
         null=True,
         blank=True,
-        help_text=_("Manual price in Russian Rubles"),
-        verbose_name=_("Price"),
+        help_text=_("Например: 5000"),
+        verbose_name=_("Цена"),
+    )
+
+    notes = CKEditor5Field(null=True, blank=True, verbose_name=_("Заметки"))
+    country = models.CharField(
+        null=True, blank=True, verbose_name=_("Страна"), max_length=50
     )
 
     objects = RecordManager()
@@ -307,7 +341,6 @@ class Record(TimeStampedModel):
         ordering = ("title",)
 
 
-# --- добавлено: вспомогательная модель ссылок на внешние источники записи ---
 class RecordSource(models.Model):
     """
     Нормализованные ссылки на внешние источники конкретной записи (Record).
@@ -399,9 +432,6 @@ class RecordSource(models.Model):
 
     def __str__(self) -> str:  # type: ignore[override]
         return f"{self.get_provider_display()}:{self.get_role_display()} → {self.url}"
-
-
-# --- конец добавления ---
 
 
 class Track(TimeStampedModel):
