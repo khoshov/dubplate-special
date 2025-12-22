@@ -392,6 +392,11 @@ class VKService:
         attachments — список attachment-строк вида "photo{owner_id}_{media_id}" и т.п.
         """
 
+        import time
+
+        # Фиксированная задержка: пост всегда уходит в "Отложенные записи"
+        publish_date = int(time.time()) + 15 * 60  # 15 минут
+
         # Собираем строку для параметра attachment: "att1,att2,att3" или None
         attach_param: str | None
         if attachments:
@@ -407,6 +412,7 @@ class VKService:
                 "message": message,
                 "attachment": attach_param,
                 "from_group": 1,
+                "publish_date": publish_date,
             },
         )
 
@@ -430,30 +436,30 @@ class VKService:
 
     # ------------------------------ публичные методы ------------------------------
 
-    def health_check(self) -> bool:
-        """
-        Базовая проверка: доступ к группе и возможность получить upload_url для стены.
-        """
-        ok = True
-        try:
-            self._vk.method("groups.getById", {"group_id": abs(self._config.group_id)})
-            logger.debug("VK: groups.getById — ОК.")
-        except ApiError as e:
-            ok = False
-            logger.error("VK: groups.getById — ошибка: %s", e)
-
-        if ok:
-            try:
-                self._get_wall_upload_url()
-                logger.debug(
-                    "VK: photos.getWallUploadServer — ОК (пользовательский токен)."
-                )
-            except ApiError as e:
-                ok = False
-                logger.error("VK: photos.getWallUploadServer — ошибка: %s", e)
-
-        logger.info("VK: health-check %s.", "успешен" if ok else "с ошибками")
-        return ok
+    # def health_check(self) -> bool:
+    #     """
+    #     Базовая проверка: доступ к группе и возможность получить upload_url для стены.
+    #     """
+    #     ok = True
+    #     try:
+    #         self._vk.method("groups.getById", {"group_id": abs(self._config.group_id)})
+    #         logger.debug("VK: groups.getById — ОК.")
+    #     except ApiError as e:
+    #         ok = False
+    #         logger.error("VK: groups.getById — ошибка: %s", e)
+    #
+    #     if ok:
+    #         try:
+    #             self._get_wall_upload_url()
+    #             logger.debug(
+    #                 "VK: photos.getWallUploadServer — ОК (пользовательский токен)."
+    #             )
+    #         except ApiError as e:
+    #             ok = False
+    #             logger.error("VK: photos.getWallUploadServer — ошибка: %s", e)
+    #
+    #     logger.info("VK: health-check %s.", "успешен" if ok else "с ошибками")
+    #     return ok
 
     def post_text(self, message: str) -> int:
         """Публикует текстовую запись (без вложений)."""
