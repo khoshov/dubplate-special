@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from calendar import month_abbr
 from dataclasses import dataclass
 from datetime import date
@@ -17,6 +18,14 @@ from records.models import Record
 
 logger = logging.getLogger(__name__)
 
+# Фиксированная задержка для отложенной публикации (в секундах)
+POSTPONE_DELAY_SECONDS = 15 * 60
+
+
+# =============================================================================
+# Config
+# =============================================================================
+
 
 @dataclass(frozen=True)
 class VKConfig:
@@ -25,19 +34,19 @@ class VKConfig:
 
     Атрибуты:
         access_token: Пользовательский access token.
-        group_id:     ID сообщества .
+        group_id:     ID сообщества.
 
-    raise: RuntimeError - при отсутствии пользовательского токена в настройках.
-           ValueError - если ID группы не целое число
+    raise:
+        RuntimeError - при отсутствии пользовательского токена в настройках.
+        ValueError - если ID группы не целое число.
     """
 
     access_token: str
     group_id: int
 
     @staticmethod
-    def from_settings() -> VKConfig:
+    def from_settings() -> "VKConfig":
         """Создаёт конфигурацию из Django settings."""
-
         token = getattr(settings, "VK_ACCESS_TOKEN", "")
         if not token:
             raise RuntimeError(
@@ -45,13 +54,17 @@ class VKConfig:
             )
 
         group_id_raw = getattr(settings, "VK_GROUP_ID", 0)
-
         try:
             group_id = abs(int(group_id_raw))
         except (TypeError, ValueError) as exc:
             raise ValueError("VK: VK_GROUP_ID должен быть целым числом.") from exc
 
         return VKConfig(access_token=token, group_id=group_id)
+
+
+# =============================================================================
+# Pure helpers (no VK API)
+# =============================================================================
 
 
 def _slugify_hashtag(text: str) -> str:
@@ -63,6 +76,22 @@ def _slugify_hashtag(text: str) -> str:
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"[^a-z0-9_]+", "", s)
     return s
+
+
+def _record_artists(record: Any) -> str:
+    artists_qs = getattr(record, "artists", None)
+    if artists_qs and hasattr(artists_qs, "all"):
+        return ", ".join(a.name for a in artists_qs.all())
+    return "Неизвестный исполнитель"
+
+
+def _record_cover_path(record: Any) -> Path | None:
+    cover = getattr(record, "cover_image", None)
+    raw = getattr(cover, "path", None) if cover else None
+    if not raw:
+        return None
+    p = Path(raw)
+    return p if p.exists() else None
 
 
 def _get_release_date(record: Any) -> date | None:
@@ -84,7 +113,7 @@ def _get_release_date(record: Any) -> date | None:
 
 
 def _format_release_date(record: Any) -> str | None:
-    """ "Форматирует дату релиза для вывода."""
+    """Форматирует дату релиза для вывода."""
     release_date = _get_release_date(record)
     if release_date is None:
         return None
@@ -129,8 +158,11 @@ def _build_hashtags(record: Any) -> str:
     """
     Формирует строку хэштегов из record.genres и record.styles.
 
-    Для каждого значения добавляет `#ds_<slug>` и `#<slug>`. Возвращает строку
-    с пробелами между тегами или пустую строку.
+    Для каждого значения добавляет:
+      - #ds_<slug_without_ds_prefix>
+      - #<slug_without_ds_prefix>
+
+    То есть у второй метки префикса ds_ нет, но хэштег (#) остаётся.
     """
 
     def names(qs_name: str) -> Iterable[str]:
@@ -140,21 +172,28 @@ def _build_hashtags(record: Any) -> str:
                 yield str(name)
 
     raw: list[str] = []
-    for n in names("genres") or []:
-        s = _slugify_hashtag(n)
-        if s:
-            raw.extend((f"ds_{s}", s))
-    for n in names("styles") or []:
-        s = _slugify_hashtag(n)
-        if s:
-            raw.extend((f"ds_{s}", s))
 
-    out: list = []
-    seen: set = set()
+    for n in names("genres"):
+        s = _slugify_hashtag(n)
+        if not s:
+            continue
+        plain = s[3:] if s.startswith("ds_") else s
+        raw.extend((f"ds_{plain}", plain))
+
+    for n in names("styles"):
+        s = _slugify_hashtag(n)
+        if not s:
+            continue
+        plain = s[3:] if s.startswith("ds_") else s
+        raw.extend((f"ds_{plain}", plain))
+
+    out: list[str] = []
+    seen: set[str] = set()
     for t in raw:
         if t not in seen:
             out.append("#" + t)
             seen.add(t)
+
     return " ".join(out)
 
 
@@ -162,7 +201,7 @@ def compose_record_text(record: Any) -> str:
     """
     Собирает текст поста строго как в требовании:
 
-    ПРЕДЗАКАЗ
+    <price condition availability>
     <Artists> — <Title>
     Label: <Label> – <Catalog>
     Format: <Format>            # если нет данных — оставляем пусто после двоеточия
@@ -172,24 +211,15 @@ def compose_record_text(record: Any) -> str:
     <хэштеги>
     """
     title: str = getattr(record, "title", "Без названия")
-    artists_qs = getattr(record, "artists", None)
-    artists = (
-        ", ".join(a.name for a in artists_qs.all())
-        if artists_qs and hasattr(artists_qs, "all")
-        else "Неизвестный исполнитель"
-    )
+    artists = _record_artists(record)
 
     label_obj = getattr(record, "label", None)
     label_name = getattr(label_obj, "name", "") if label_obj else ""
     catalog_number = getattr(record, "catalog_number", "") or ""
 
-    # формат и дата — можем не знать, но строки обязаны быть
     fmt = _format_record_format(record) or ""
     release = _format_release_date(record) or ""
 
-    # =========================
-    # CHANGED: первая строка
-    # =========================
     price = getattr(record, "price", "")
     condition = getattr(record, "condition", "")
     availability = getattr(record, "availability_status", "")
@@ -202,20 +232,13 @@ def compose_record_text(record: Any) -> str:
 
     header_parts = [str(word) for word in (price, condition, availability) if word]
     first_line = " ".join(header_parts)
-    # =========================
 
     lines: list[str] = [first_line]
     lines.append("")
 
-    # вторая — артист — тайтл
     lines.append(f"{artists} — {title}")
 
-    # третья — Label: <лейбл> – <каталожник>, если чего-то нет — просто Label:
-    label_parts: list[str] = []
-    if label_name:
-        label_parts.append(label_name)
     if catalog_number:
-        # en dash, как в образце
         sep = " – "
         label_line = (
             f"Label: {sep.join([label_name, catalog_number])}"
@@ -226,13 +249,9 @@ def compose_record_text(record: Any) -> str:
         label_line = f"Label: {label_name}" if label_name else "Label:"
     lines.append(label_line)
 
-    # четвёртая — Format: (всегда печатаем ключ)
     lines.append(f"Format: {fmt}")
-
-    # пятая — Release Date: (всегда печатаем ключ)
     lines.append(f"Release Date: {release}")
 
-    # хэштеги (если есть) — после пустой строки
     hashtags = _build_hashtags(record)
     if hashtags:
         lines.append("")
@@ -242,33 +261,42 @@ def compose_record_text(record: Any) -> str:
     return "\n".join(lines)
 
 
-# ======================================================================================
-# Сервис VK
-# ======================================================================================
+def _render_record_message(record: Record, message_template: str | None) -> str:
+    if not message_template:
+        return compose_record_text(record)
+
+    artists = _record_artists(record)
+    label_name = getattr(getattr(record, "label", None), "name", "-")
+    return message_template.format(
+        title=getattr(record, "title", ""),
+        artists=artists,
+        label=label_name,
+        catalog_number=getattr(record, "catalog_number", ""),
+        price=getattr(record, "price", None),
+        stock=getattr(record, "stock", None),
+    )
+
+
+# =============================================================================
+# VK service
+# =============================================================================
 
 
 class VKService:
     """
     Сервис публикации в сообщество ВКонтакте.
 
-    — Авторизация по-пользовательскому токену.
+    — Авторизация по пользовательскому токену.
     — Публикация текста/фото/опц. аудио.
-    — Компоновка текста постов для Record/Track.
+    — Компоновка текста постов для Record.
     """
 
     def __init__(self, config: VKConfig):
-        """
-        Инициализирует сервис.
-
-        Args:
-            config: Конфигурация доступа.
-        """
         self._config = config
         self._vk = vk_api.VkApi(token=config.access_token)
 
     @classmethod
     def from_settings(cls) -> "VKService":
-        """Создаёт сервис, считывая настройки из Django settings."""
         return cls(VKConfig.from_settings())
 
     @property
@@ -276,7 +304,295 @@ class VKService:
         """Отрицательный owner_id сообщества (требование VK API)."""
         return -abs(self._config.group_id)
 
-    # -------------------------- низкоуровневые вызовы --------------------------
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+
+    def post_record_with_audio(
+        self, record: Record, message_template: str | None = None
+    ) -> int:
+        """
+        Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
+        """
+        message = _render_record_message(record, message_template)
+        all_attachments = self._collect_release_attachments(record, with_audio=True)
+
+        logger.info(
+            "VK: публикую релиз (record_id=%s) с %d вложениями: %s",
+            getattr(record, "pk", None),
+            len(all_attachments),
+            ",".join(all_attachments) if all_attachments else "—",
+        )
+        return self._wall_post(message=message, attachments=all_attachments or None)
+
+    def post_record_with_playlist(
+        self, record: Record, message_template: str | None = None
+    ) -> int:
+        """
+        Публикует релиз, но вместо списка аудио прикрепляет плейлист.
+        Алгоритм:
+          - загрузить обложку (photo)
+          - загрузить mp3-превью треков (audio)
+          - создать плейлист у текущего пользователя
+          - добавить аудио в плейлист
+          - запостить на стену: [photo, audio_playlist...]
+        Если плейлист создать/наполнить не удалось — фоллбэк на post_record_with_audio().
+        """
+        message = _render_record_message(record, message_template)
+
+        # 1) Обложка (желательно иметь, т.к. VK часто требует фото для аудио-вложений)
+        photo_attachment: str | None = None
+        cover_path = _record_cover_path(record)
+        if cover_path:
+            photo_attachment = self._upload_photo(cover_path)
+
+        # 2) Загружаем аудио (превью треков)
+        audio_attachments: list[str] = []
+        tracks = getattr(record, "tracks", None)
+
+        if tracks is not None and hasattr(tracks, "all"):
+            artists = _record_artists(record)
+            audio_qs = (
+                tracks.filter(audio_preview__isnull=False)
+                .exclude(audio_preview="")
+                .order_by("position_index")
+            )
+
+            # Для плейлиста можно больше, чем 10, но чтобы не менять поведение/нагрузку резко — ограничим.
+            # При необходимости потом увеличим/снимем лимит.
+            max_upload = 30
+
+            for track in audio_qs[:max_upload]:
+                preview = getattr(track, "audio_preview", None)
+                p = Path(getattr(preview, "path", "")) if preview else None
+                if p and p.exists():
+                    att = self._upload_audio(p, artists, getattr(track, "title", ""))
+                    if att:
+                        audio_attachments.append(att)
+                else:
+                    logger.warning(
+                        "VK: нет mp3 на диске для трека #%s релиза #%s — трек пропущен.",
+                        getattr(track, "pk", None),
+                        getattr(record, "pk", None),
+                    )
+
+        # Если аудио вообще нет — плейлист не из чего делать
+        if not audio_attachments:
+            logger.warning(
+                "VK: для релиза #%s не удалось загрузить ни одного аудио-превью — публикую обычным методом.",
+                getattr(record, "pk", None),
+            )
+            return self.post_record_with_audio(
+                record, message_template=message_template
+            )
+
+        # 3) Создаём плейлист + добавляем туда аудио
+        try:
+            playlist_owner_id = self._get_current_user_id()
+
+            playlist_title = (
+                f"{_record_artists(record)} — {getattr(record, 'title', '')}".strip(
+                    " —"
+                )
+            )
+            playlist_id, playlist_access_key = self._create_playlist(
+                owner_id=playlist_owner_id,
+                title=playlist_title or "New playlist",
+            )
+
+            audio_ids = [self._audio_attachment_to_id(a) for a in audio_attachments]
+            audio_ids = [x for x in audio_ids if x]
+
+            self._add_audios_to_playlist(
+                owner_id=playlist_owner_id,
+                playlist_id=playlist_id,
+                audio_ids=audio_ids,
+            )
+
+            playlist_attachment = f"audio_playlist{playlist_owner_id}_{playlist_id}"
+            if playlist_access_key:
+                playlist_attachment += f"_{playlist_access_key}"
+
+        except ApiError as e:
+            logger.warning(
+                "VK: не удалось создать/наполнить плейлист (ApiError). Фоллбэк на обычный пост: %s",
+                e,
+            )
+            return self.post_record_with_audio(
+                record, message_template=message_template
+            )
+        except Exception as e:
+            logger.exception(
+                "VK: не удалось создать/наполнить плейлист. Фоллбэк на обычный пост: %s",
+                e,
+            )
+            return self.post_record_with_audio(
+                record, message_template=message_template
+            )
+
+        # 4) Постим: обложка (если есть) + плейлист
+        attachments_for_post: list[str] = []
+        if photo_attachment:
+            attachments_for_post.append(photo_attachment)
+        else:
+            logger.warning(
+                "VK: релиз #%s публикуется с плейлистом без обложки. "
+                "Если VK откажет — добавь/проверь cover_image.",
+                getattr(record, "pk", None),
+            )
+
+        attachments_for_post.append(playlist_attachment)
+
+        logger.info(
+            "VK: публикую релиз (record_id=%s) плейлистом. attachments=%s",
+            getattr(record, "pk", None),
+            ",".join(attachments_for_post),
+        )
+        return self._wall_post(message=message, attachments=attachments_for_post)
+
+    def _get_current_user_id(self) -> int:
+        """
+        Возвращает id пользователя, от имени которого работает токен.
+        Кэширует значение в инстансе.
+        """
+        cached = getattr(self, "_current_user_id", None)
+        if isinstance(cached, int) and cached > 0:
+            return cached
+
+        data = self._vk.method("users.get", {})
+        user_id = int(data[0]["id"])
+        setattr(self, "_current_user_id", user_id)
+        return user_id
+
+    @staticmethod
+    def _audio_attachment_to_id(attachment: str) -> str | None:
+        """
+        'audio123_456' -> '123_456'
+        """
+        if not attachment.startswith("audio"):
+            return None
+        return attachment[len("audio") :]
+
+    def _create_playlist(self, owner_id: int, title: str) -> tuple[int, str | None]:
+        """
+        Создаёт плейлист. Возвращает (playlist_id, access_key|None).
+        """
+        resp: Dict[str, Any] = self._vk.method(
+            "audio.createPlaylist",
+            {"owner_id": owner_id, "title": title},
+        )
+
+        playlist: Dict[str, Any] = resp.get("playlist", resp)
+        playlist_id = (
+            playlist.get("id")
+            or playlist.get("playlist_id")
+            or playlist.get("album_id")
+        )
+        if not playlist_id:
+            raise ValueError(
+                f"VK: audio.createPlaylist вернул неожиданный ответ: {resp!r}"
+            )
+
+        access_key = playlist.get("access_key")
+        return int(playlist_id), str(access_key) if access_key else None
+
+    def _add_audios_to_playlist(
+        self, owner_id: int, playlist_id: int, audio_ids: list[str]
+    ) -> None:
+        """
+        Добавляет аудио в плейлист. Шлём чанками, чтобы не упереться в лимит длины параметра.
+        """
+        if not audio_ids:
+            return
+
+        chunk_size = 50
+        for i in range(0, len(audio_ids), chunk_size):
+            chunk = audio_ids[i : i + chunk_size]
+            self._vk.method(
+                "audio.addToPlaylist",
+                {
+                    "owner_id": owner_id,
+                    "playlist_id": playlist_id,
+                    "audios": ",".join(chunk),
+                },
+            )
+
+    # -------------------------------------------------------------------------
+    # High-level internal helpers
+    # -------------------------------------------------------------------------
+
+    def _collect_release_attachments(
+        self, record: Record, *, with_audio: bool
+    ) -> list[str]:
+        """
+        Собирает вложения релиза:
+        - пытается прикрепить обложку (photo)
+        - при with_audio=True пытается прикрепить превью треков (audio) с лимитом VK
+        - если аудио есть, но фото нет — удаляет аудио (требование VK)
+        """
+        attachments: list[str] = []
+
+        # 1) фото
+        cover_path = _record_cover_path(record)
+        if cover_path:
+            photo = self._upload_photo(cover_path)
+            if photo:
+                attachments.append(photo)
+        else:
+            logger.warning(
+                "VK: для записи #%s обложка недоступна (файл отсутствует). "
+                "Если будут аудио-вложения, они будут удалены из-за требований VK.",
+                getattr(record, "pk", None),
+            )
+
+        if not with_audio:
+            return attachments
+
+        # 2) аудио
+        audio_attachments: list[str] = []
+        tracks = getattr(record, "tracks", None)
+
+        if tracks is not None and hasattr(tracks, "all"):
+            artists = _record_artists(record)
+
+            audio_qs = (
+                tracks.filter(audio_preview__isnull=False)
+                .exclude(audio_preview="")
+                .order_by("position_index")
+            )
+
+            # лимит VK: 10 вложений; если фото есть — оставляем 1 под фото
+            limit = 10 - (1 if attachments else 0)
+
+            for track in audio_qs[: max(0, limit)]:
+                preview = getattr(track, "audio_preview", None)
+                p = Path(getattr(preview, "path", "")) if preview else None
+
+                if p and p.exists():
+                    att = self._upload_audio(p, artists, getattr(track, "title", ""))
+                    if att:
+                        audio_attachments.append(att)
+                else:
+                    logger.warning(
+                        "VK: у записи #%s отсутствует mp3-файл на диске для трека #%s — трек пропущен.",
+                        getattr(record, "pk", None),
+                        getattr(track, "pk", None),
+                    )
+
+        # 3) требование VK: если есть аудио — обязано быть фото
+        if audio_attachments and not attachments:
+            logger.warning(
+                "VK: у записи #%s есть аудио-вложения, но нет фото — аудио будут удалены из публикации "
+                "(требование VK: нужна хотя бы одна фотография для аудио).",
+                getattr(record, "pk", None),
+            )
+            audio_attachments.clear()
+
+        return attachments + audio_attachments
+
+    # -------------------------------------------------------------------------
+    # VK API low-level (photos / audio / wall)
+    # -------------------------------------------------------------------------
 
     def _get_wall_upload_url(self) -> str:
         """Возвращает upload_url для загрузки фото на стену сообщества."""
@@ -351,7 +667,6 @@ class VKService:
         """
         Загружает MP3 и возвращает 'audio<owner_id>_<id>' или None, если Audio API недоступен.
         """
-
         try:
             url = self._get_audio_upload_url()
         except ApiError as e:
@@ -382,20 +697,15 @@ class VKService:
             logger.warning("VK: ошибка audio.save, аудио пропущено: %s", e)
             return None
 
-    def _wall_post(
-        self,
-        message: str,
-        attachments: Sequence[str] | None = None,
-    ) -> int:
+    def _wall_post(self, message: str, attachments: Sequence[str] | None = None) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
         attachments — список attachment-строк вида "photo{owner_id}_{media_id}" и т.п.
         """
+        publish_date = int(time.time()) + POSTPONE_DELAY_SECONDS
 
-        # Собираем строку для параметра attachment: "att1,att2,att3" или None
         attach_param: str | None
         if attachments:
-            # Заодно отфильтруем пустые строки, если вдруг они проскочили
             attach_param = ",".join(att for att in attachments if att)
         else:
             attach_param = None
@@ -405,16 +715,14 @@ class VKService:
             {
                 "owner_id": self.owner_id,
                 "message": message,
-                "attachment": attach_param,
+                "attachments": attach_param,
                 "from_group": 1,
+                "publish_date": publish_date,
             },
         )
 
-        # post_id обязателен по контракту VK, но статическому анализатору это неизвестно
         post_id_raw = resp.get("post_id")
-
         if not isinstance(post_id_raw, int):
-            # Можно логировать и бросать своё исключение доменного уровня
             logger.error(
                 "VK: wall.post вернул неожиданный post_id: %r, ответ: %r",
                 post_id_raw,
@@ -424,338 +732,5 @@ class VKService:
                 f"VK: wall.post вернул некорректный post_id: {post_id_raw!r}"
             )
 
-        post_id: int = post_id_raw
-        logger.info("VK: запись опубликована, post_id=%s.", post_id)
-        return post_id
-
-    # ------------------------------ публичные методы ------------------------------
-
-    def health_check(self) -> bool:
-        """
-        Базовая проверка: доступ к группе и возможность получить upload_url для стены.
-        """
-        ok = True
-        try:
-            self._vk.method("groups.getById", {"group_id": abs(self._config.group_id)})
-            logger.debug("VK: groups.getById — ОК.")
-        except ApiError as e:
-            ok = False
-            logger.error("VK: groups.getById — ошибка: %s", e)
-
-        if ok:
-            try:
-                self._get_wall_upload_url()
-                logger.debug(
-                    "VK: photos.getWallUploadServer — ОК (пользовательский токен)."
-                )
-            except ApiError as e:
-                ok = False
-                logger.error("VK: photos.getWallUploadServer — ошибка: %s", e)
-
-        logger.info("VK: health-check %s.", "успешен" if ok else "с ошибками")
-        return ok
-
-    def post_text(self, message: str) -> int:
-        """Публикует текстовую запись (без вложений)."""
-        logger.info("VK: публикую текстовую запись.")
-        return self._wall_post(message=message)
-
-    def post_with_image(self, message: str, image_path: str | Path) -> int:
-        """
-        Публикует запись с одним изображением (обложка).
-        При отсутствии файла — публикует только текст.
-        """
-        path = Path(image_path)
-        if not path.exists():
-            logger.warning(
-                "VK: изображение не найдено (%s). Публикую только текст.", path
-            )
-            return self.post_text(message)
-
-        photo = self._upload_photo(path)
-        return self._wall_post(message=message, attachments=[photo] if photo else None)
-
-    # ------------------------------ доменная логика ------------------------------
-
-    def post_record(
-        self, record: Record, *, message_template: str | None = None
-    ) -> int:
-        """
-        Публикует «релиз» (Record). Текст — по шаблону или compose_record_text().
-        При наличии локальной обложки — прикрепляет её.
-        """
-        if message_template:
-            # минимальный набор плейсхолдеров для совместимости
-            artists_qs = getattr(record, "artists", None)
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            label_name = getattr(getattr(record, "label", None), "name", "-")
-            message = message_template.format(
-                title=getattr(record, "title", ""),
-                artists=artists,
-                label=label_name,
-                catalog_number=getattr(record, "catalog_number", ""),
-                price=getattr(record, "price", None),
-                stock=getattr(record, "stock", None),
-            )
-        else:
-            message = compose_record_text(record)
-
-        cover = getattr(record, "cover_image", None)
-        cover_path = getattr(cover, "path", None) if cover else None
-        return (
-            self.post_with_image(message, cover_path)
-            if cover_path
-            else self.post_text(message)
-        )
-
-    def post_record_with_audio(
-        self, record: Record, message_template: str | None = None
-    ) -> int:
-        """
-        Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
-        ВАЖНО: ВК требует наличие хотя бы одного photo-вложения, если есть аудио.
-        Если обложки нет на диске/не загрузилась — публикуем БЕЗ аудио (только текст/картинка).
-        Лимит ВК: до 10 вложений (оставляем 1 под фото, до 9 — под аудио).
-
-        Args:
-            record: Запись (Record) для публикации.
-            message_template: Необязательный шаблон текста (`{title}`, `{artists}`, `{label}`, `{catalog_number}`).
-
-        Returns:
-            int: post_id созданной записи ВК.
-        """
-        # 1) Текст поста
-        if message_template:
-            artists_qs = getattr(record, "artists", None)
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            label_name = getattr(getattr(record, "label", None), "name", "")
-            message = message_template.format(
-                title=getattr(record, "title", ""),
-                artists=artists,
-                label=label_name,
-                catalog_number=getattr(record, "catalog_number", ""),
-            )
-        else:
-            message = compose_record_text(record)
-
-        attachments: list[str] = []
-
-        # 2) Фото (обложка)
-        cover = getattr(record, "cover_image", None)
-        cover_path = (
-            Path(getattr(cover, "path", ""))
-            if cover and getattr(cover, "path", "")
-            else None
-        )
-        if cover_path and cover_path.exists():
-            photo = self._upload_photo(cover_path)
-            if photo:
-                attachments.append(photo)
-        else:
-            # Чёткий лог, чтобы было понятно, почему аудио может быть отброшено.
-            logger.warning(
-                "VK: для записи #%s обложка недоступна (файл отсутствует). "
-                "Если будут аудио-вложения, они будут удалены из-за требований VK.",
-                getattr(record, "pk", None),
-            )
-
-        # 3) Аудио (если получится)
-        audio_attachments: list[str] = []
-        tracks = getattr(record, "tracks", None)
-        if tracks is not None and hasattr(tracks, "all"):
-            artists_qs = getattr(record, "artists", None)
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            audio_qs = (
-                tracks.filter(audio_preview__isnull=False)
-                .exclude(audio_preview="")
-                .order_by("position_index")
-            )
-            limit = 10 - (1 if attachments else 0)
-            for track in audio_qs[: max(0, limit)]:
-                preview = getattr(track, "audio_preview", None)
-                p = Path(getattr(preview, "path", "")) if preview else None
-                if p and p.exists():
-                    try:
-                        size = p.stat().st_size
-                    except OSError:
-                        size = -1
-                    logger.debug(
-                        "VK: пытаюсь загрузить аудио (record=%s, track=%s «%s», file=%s, size=%s)",
-                        getattr(record, "pk", None),
-                        getattr(track, "pk", None),
-                        getattr(track, "title", ""),
-                        p,
-                        size,
-                    )
-                    att = self._upload_audio(p, artists, getattr(track, "title", ""))
-                    if att:
-                        logger.info(
-                            "VK: аудио загружено (track=%s «%s») -> %s",
-                            getattr(track, "pk", None),
-                            getattr(track, "title", ""),
-                            att,
-                        )
-                        audio_attachments.append(att)
-                    else:
-                        logger.warning(
-                            "VK: аудио не прикреплено после загрузки (track=%s «%s»).",
-                            getattr(track, "pk", None),
-                            getattr(track, "title", ""),
-                        )
-                else:
-                    logger.warning(
-                        "VK: у записи #%s отсутствует mp3-файл на диске для трека #%s — трек пропущен.",
-                        getattr(record, "pk", None),
-                        getattr(track, "pk", None),
-                    )
-
-        # 4) Обеспечиваем валидную комбинацию для VK (если аудио есть, фото обязательно)
-        if audio_attachments and not attachments:
-            logger.warning(
-                "VK: у записи #%s есть аудио-вложения, но нет фото — аудио будут удалены из публикации "
-                "(требование VK: нужна хотя бы одна фотография для аудио).",
-                getattr(record, "pk", None),
-            )
-            audio_attachments.clear()
-
-        # 5) Публикация
-        all_attachments = attachments + audio_attachments
-        logger.info(
-            "VK: публикую релиз (record_id=%s) с %d вложениями: %s",
-            getattr(record, "pk", None),
-            len(all_attachments),
-            ",".join(all_attachments) if all_attachments else "—",
-        )
-        return self._wall_post(message=message, attachments=all_attachments or None)
-
-    def post_track(self, track: Any, *, message_template: str | None = None) -> int:
-        """
-        Публикует отдельный трек. Прикрепляет обложку записи и, по возможности, превью-аудио.
-        Если фото нет — аудио не прикрепляется (требование VK).
-        """
-        # текст
-        if message_template:
-            record = getattr(track, "record", None)
-            artists_qs = getattr(record, "artists", None) if record else None
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            label_name = (
-                getattr(getattr(record, "label", None), "name", "-") if record else "-"
-            )
-            message = message_template.format(
-                track_title=getattr(track, "title", ""),
-                track_position=getattr(track, "position", ""),
-                track_duration=getattr(track, "duration", ""),
-                record_title=getattr(record, "title", "") if record else "",
-                artists=artists,
-                label=label_name,
-                catalog_number=getattr(record, "catalog_number", "") if record else "",
-            )
-        else:
-            record = getattr(track, "record", None)
-            artists_qs = getattr(record, "artists", None) if record else None
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            parts: list[str] = []
-            header = f"{artists} — {getattr(track, 'title', 'Без названия')}"
-            pos = getattr(track, "position", "")
-            dur = getattr(track, "duration", "")
-            if pos:
-                header = f"[{pos}] {header}"
-            if dur:
-                header = f"{header} ({dur})"
-            parts.append(header)
-            if record:
-                parts.append(f"💿 {getattr(record, 'title', '')}")
-                label = getattr(getattr(record, "label", None), "name", "-")
-                cat = getattr(record, "catalog_number", "-") or "-"
-                meta = " • ".join(
-                    [
-                        p
-                        for p in (
-                            f"🏷 {label}" if label != "-" else "",
-                            f"📋 {cat}" if cat != "-" else "",
-                        )
-                        if p
-                    ]
-                )
-                if meta:
-                    parts.append(meta)
-            yt = getattr(track, "youtube_url", None)
-            if yt:
-                parts.append(f"\n🎧 Превью: {yt}")
-            message = "\n".join(parts)
-
-        attachments: list[str] = []
-
-        # обложка
-        record = getattr(track, "record", None)
-        cover = getattr(record, "cover_image", None) if record else None
-        cover_path = (
-            Path(getattr(cover, "path", ""))
-            if cover and getattr(cover, "path", "")
-            else None
-        )
-        if cover_path and cover_path.exists():
-            photo = self._upload_photo(cover_path)
-            if photo:
-                attachments.append(photo)
-        else:
-            logger.warning(
-                "VK: у трека #%s нет доступной обложки записи — аудио будет удалено из вложений.",
-                getattr(track, "pk", None),
-            )
-
-        # аудио
-        audio_attachments: list[str] = []
-        preview = getattr(track, "audio_preview", None)
-        p = Path(getattr(preview, "path", "")) if preview else None
-        if p and p.exists():
-            artists_qs = getattr(record, "artists", None) if record else None
-            artists = (
-                ", ".join(a.name for a in artists_qs.all())
-                if artists_qs and hasattr(artists_qs, "all")
-                else "Неизвестный исполнитель"
-            )
-            att = self._upload_audio(p, artists, getattr(track, "title", ""))
-            if att:
-                audio_attachments.append(att)
-        elif preview:
-            logger.warning(
-                "VK: для трека #%s в БД указан mp3-файл, но физически его нет — аудио пропущено.",
-                getattr(track, "pk", None),
-            )
-
-        if audio_attachments and not attachments:
-            logger.warning(
-                "VK: у трека #%s есть аудио-вложения, но нет фото — аудио удалены (требование VK).",
-                getattr(track, "pk", None),
-            )
-            audio_attachments.clear()
-
-        all_attachments = attachments + audio_attachments
-        logger.info(
-            "VK: публикую трек #%s с %d вложениями: %s",
-            getattr(track, "pk", None),
-            len(all_attachments),
-            ",".join(all_attachments) if all_attachments else "—",
-        )
-        return self._wall_post(message=message, attachments=all_attachments or None)
+        logger.info("VK: запись опубликована, post_id=%s.", post_id_raw)
+        return post_id_raw
