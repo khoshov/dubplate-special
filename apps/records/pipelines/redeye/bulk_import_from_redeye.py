@@ -43,19 +43,7 @@ class RedeyeBulkImporter:
 
     def __init__(
         self,
-        *,
-        delay_sec: float = 0.6,
-        jitter_sec: float = 0.5,
-        max_retries: int = 4,
-        cooldown_sec: int = 90,
-        stop_on_block: bool = False,
     ) -> None:
-        self.delay_sec = delay_sec
-        self.jitter_sec = jitter_sec
-        self.max_retries = max_retries
-        self.cooldown_sec = cooldown_sec
-        self.stop_on_block = stop_on_block
-
         self.svc = RecordService(
             discogs_service=DiscogsService(),
             redeye_service=RedeyeService(),
@@ -72,7 +60,6 @@ class RedeyeBulkImporter:
         attach_style: Optional[str] = None,
         limit: Optional[int] = None,
         save: bool = False,
-        debug: bool = False,
     ) -> Iterator["BulkResult"]:
         """
         Обходит список категории Redeye, парсит карточки и (опционально) сохраняет их через RecordService.
@@ -84,19 +71,12 @@ class RedeyeBulkImporter:
             attach_style: (опц.) добавить стиль к записи.
             limit: максимум карточек к обработке.
             save: при True — сохраняем запись; аудио НЕ качаем.
-            debug: при True — логируем traceback.
         """
         from records.scrapers.redeye_listing import RedeyeListingScraper
 
         logger.info("[%s] %s", category_name, listing_url)
 
-        scraper = RedeyeListingScraper(
-            delay_sec=self.delay_sec,
-            jitter_sec=self.jitter_sec,
-            max_retries=self.max_retries,
-            cooldown_sec=self.cooldown_sec,
-            stop_on_block=self.stop_on_block,
-        )
+        scraper = RedeyeListingScraper()
 
         processed = 0
 
@@ -161,10 +141,7 @@ class RedeyeBulkImporter:
                 )
 
             except Exception as e:
-                if debug:
-                    logger.exception("Failed to import %s :: %s", product_url, e)
-                else:
-                    logger.error("Failed to import %s :: %s", product_url, e)
+                logger.error("Failed to import %s :: %s", product_url, e)
                 processed += 1
                 yield BulkResult(url=product_url, ok=False, error=str(e))
 
