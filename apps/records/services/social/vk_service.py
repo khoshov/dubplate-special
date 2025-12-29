@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from calendar import month_abbr
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Sequence
 
@@ -17,10 +16,6 @@ from vk_api.exceptions import ApiError
 from records.models import Record
 
 logger = logging.getLogger(__name__)
-
-# Фиксированная задержка для отложенной публикации (в секундах)
-POSTPONE_DELAY_SECONDS = 15 * 60
-
 
 # =============================================================================
 # Config
@@ -286,7 +281,7 @@ class VKService:
     """
     Сервис публикации в сообщество ВКонтакте.
 
-    — Авторизация по пользовательскому токену.
+    — Авторизация по-пользовательскому токену.
     — Публикация текста/фото/опц. аудио.
     — Компоновка текста постов для Record.
     """
@@ -309,7 +304,11 @@ class VKService:
     # -------------------------------------------------------------------------
 
     def post_record_with_audio(
-        self, record: Record, message_template: str | None = None
+        self,
+        record: Record,
+        message_template: str | None = None,
+        *,
+        publish_at: datetime | None = None,
     ) -> int:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
@@ -323,132 +322,12 @@ class VKService:
             len(all_attachments),
             ",".join(all_attachments) if all_attachments else "—",
         )
-        return self._wall_post(message=message, attachments=all_attachments or None)
-
-    def post_record_with_playlist(
-        self, record: Record, message_template: str | None = None
-    ) -> int:
-        """
-        Публикует релиз, но вместо списка аудио прикрепляет плейлист.
-        Алгоритм:
-          - загрузить обложку (photo)
-          - загрузить mp3-превью треков (audio)
-          - создать плейлист у текущего пользователя
-          - добавить аудио в плейлист
-          - запостить на стену: [photo, audio_playlist...]
-        Если плейлист создать/наполнить не удалось — фоллбэк на post_record_with_audio().
-        """
-        message = _render_record_message(record, message_template)
-
-        # 1) Обложка (желательно иметь, т.к. VK часто требует фото для аудио-вложений)
-        photo_attachment: str | None = None
-        cover_path = _record_cover_path(record)
-        if cover_path:
-            photo_attachment = self._upload_photo(cover_path)
-
-        # 2) Загружаем аудио (превью треков)
-        audio_attachments: list[str] = []
-        tracks = getattr(record, "tracks", None)
-
-        if tracks is not None and hasattr(tracks, "all"):
-            artists = _record_artists(record)
-            audio_qs = (
-                tracks.filter(audio_preview__isnull=False)
-                .exclude(audio_preview="")
-                .order_by("position_index")
-            )
-
-            # Для плейлиста можно больше, чем 10, но чтобы не менять поведение/нагрузку резко — ограничим.
-            # При необходимости потом увеличим/снимем лимит.
-            max_upload = 30
-
-            for track in audio_qs[:max_upload]:
-                preview = getattr(track, "audio_preview", None)
-                p = Path(getattr(preview, "path", "")) if preview else None
-                if p and p.exists():
-                    att = self._upload_audio(p, artists, getattr(track, "title", ""))
-                    if att:
-                        audio_attachments.append(att)
-                else:
-                    logger.warning(
-                        "VK: нет mp3 на диске для трека #%s релиза #%s — трек пропущен.",
-                        getattr(track, "pk", None),
-                        getattr(record, "pk", None),
-                    )
-
-        # Если аудио вообще нет — плейлист не из чего делать
-        if not audio_attachments:
-            logger.warning(
-                "VK: для релиза #%s не удалось загрузить ни одного аудио-превью — публикую обычным методом.",
-                getattr(record, "pk", None),
-            )
-            return self.post_record_with_audio(
-                record, message_template=message_template
-            )
-
-        # 3) Создаём плейлист + добавляем туда аудио
-        try:
-            playlist_owner_id = self._get_current_user_id()
-
-            playlist_title = (
-                f"{_record_artists(record)} — {getattr(record, 'title', '')}".strip(
-                    " —"
-                )
-            )
-            playlist_id, playlist_access_key = self._create_playlist(
-                owner_id=playlist_owner_id,
-                title=playlist_title or "New playlist",
-            )
-
-            audio_ids = [self._audio_attachment_to_id(a) for a in audio_attachments]
-            audio_ids = [x for x in audio_ids if x]
-
-            self._add_audios_to_playlist(
-                owner_id=playlist_owner_id,
-                playlist_id=playlist_id,
-                audio_ids=audio_ids,
-            )
-
-            playlist_attachment = f"audio_playlist{playlist_owner_id}_{playlist_id}"
-            if playlist_access_key:
-                playlist_attachment += f"_{playlist_access_key}"
-
-        except ApiError as e:
-            logger.warning(
-                "VK: не удалось создать/наполнить плейлист (ApiError). Фоллбэк на обычный пост: %s",
-                e,
-            )
-            return self.post_record_with_audio(
-                record, message_template=message_template
-            )
-        except Exception as e:
-            logger.exception(
-                "VK: не удалось создать/наполнить плейлист. Фоллбэк на обычный пост: %s",
-                e,
-            )
-            return self.post_record_with_audio(
-                record, message_template=message_template
-            )
-
-        # 4) Постим: обложка (если есть) + плейлист
-        attachments_for_post: list[str] = []
-        if photo_attachment:
-            attachments_for_post.append(photo_attachment)
-        else:
-            logger.warning(
-                "VK: релиз #%s публикуется с плейлистом без обложки. "
-                "Если VK откажет — добавь/проверь cover_image.",
-                getattr(record, "pk", None),
-            )
-
-        attachments_for_post.append(playlist_attachment)
-
-        logger.info(
-            "VK: публикую релиз (record_id=%s) плейлистом. attachments=%s",
-            getattr(record, "pk", None),
-            ",".join(attachments_for_post),
+        publish_date_ts = int(publish_at.timestamp()) if publish_at else None
+        return self._wall_post(
+            message=message,
+            attachments=all_attachments or None,
+            publish_date_ts=publish_date_ts,
         )
-        return self._wall_post(message=message, attachments=attachments_for_post)
 
     def _get_current_user_id(self) -> int:
         """
@@ -472,50 +351,6 @@ class VKService:
         if not attachment.startswith("audio"):
             return None
         return attachment[len("audio") :]
-
-    def _create_playlist(self, owner_id: int, title: str) -> tuple[int, str | None]:
-        """
-        Создаёт плейлист. Возвращает (playlist_id, access_key|None).
-        """
-        resp: Dict[str, Any] = self._vk.method(
-            "audio.createPlaylist",
-            {"owner_id": owner_id, "title": title},
-        )
-
-        playlist: Dict[str, Any] = resp.get("playlist", resp)
-        playlist_id = (
-            playlist.get("id")
-            or playlist.get("playlist_id")
-            or playlist.get("album_id")
-        )
-        if not playlist_id:
-            raise ValueError(
-                f"VK: audio.createPlaylist вернул неожиданный ответ: {resp!r}"
-            )
-
-        access_key = playlist.get("access_key")
-        return int(playlist_id), str(access_key) if access_key else None
-
-    def _add_audios_to_playlist(
-        self, owner_id: int, playlist_id: int, audio_ids: list[str]
-    ) -> None:
-        """
-        Добавляет аудио в плейлист. Шлём чанками, чтобы не упереться в лимит длины параметра.
-        """
-        if not audio_ids:
-            return
-
-        chunk_size = 50
-        for i in range(0, len(audio_ids), chunk_size):
-            chunk = audio_ids[i : i + chunk_size]
-            self._vk.method(
-                "audio.addToPlaylist",
-                {
-                    "owner_id": owner_id,
-                    "playlist_id": playlist_id,
-                    "audios": ",".join(chunk),
-                },
-            )
 
     # -------------------------------------------------------------------------
     # High-level internal helpers
@@ -697,29 +532,32 @@ class VKService:
             logger.warning("VK: ошибка audio.save, аудио пропущено: %s", e)
             return None
 
-    def _wall_post(self, message: str, attachments: Sequence[str] | None = None) -> int:
+    def _wall_post(
+        self,
+        message: str,
+        attachments: Sequence[str] | None = None,
+        *,
+        publish_date_ts: int | None = None,
+    ) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
         attachments — список attachment-строк вида "photo{owner_id}_{media_id}" и т.п.
         """
-        publish_date = int(time.time()) + POSTPONE_DELAY_SECONDS
-
         attach_param: str | None
         if attachments:
             attach_param = ",".join(att for att in attachments if att)
         else:
             attach_param = None
+        params: Dict[str, Any] = {
+            "owner_id": self.owner_id,
+            "message": message,
+            "attachments": attach_param,
+            "from_group": 1,
+        }
+        if publish_date_ts is not None:
+            params["publish_date"] = publish_date_ts
 
-        resp: Dict[str, Any] = self._vk.method(
-            "wall.post",
-            {
-                "owner_id": self.owner_id,
-                "message": message,
-                "attachments": attach_param,
-                "from_group": 1,
-                "publish_date": publish_date,
-            },
-        )
+        resp: Dict[str, Any] = self._vk.method("wall.post", params)
 
         post_id_raw = resp.get("post_id")
         if not isinstance(post_id_raw, int):

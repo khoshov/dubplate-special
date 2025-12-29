@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Optional, Tuple
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from playwright.sync_api import Browser
 
 from records.models import (
@@ -203,12 +203,15 @@ class RecordService:
         Returns:
             (record, created): created=True при создании, False — если запись уже существовала.
         """
-        if not catalog_number:
+        normalized_catalog_number = (catalog_number or "").strip().upper()
+        if not normalized_catalog_number:
             raise ValueError(
                 "Не указан каталожный номер (catalog_number) для импорта из Redeye."
             )
 
-        existing = Record.objects.find_by_catalog_number(catalog_number)
+        existing = Record.objects.filter(
+            catalog_number__iexact=normalized_catalog_number
+        ).first()
         if existing:
             logger.info(
                 "Найдена существующая запись по каталожному номеру (Redeye): %s",
@@ -224,35 +227,49 @@ class RecordService:
                     )
             return existing, False
 
-        result = self.redeye_service.fetch_by_catalog_number(catalog_number)
+        result = self.redeye_service.fetch_by_catalog_number(normalized_catalog_number)
         raw_payload: dict = result.payload or {}
 
         payload = adapt_redeye_payload(raw_payload)
-        payload["catalog_number"] = (catalog_number or "").strip().upper()
+        payload["catalog_number"] = normalized_catalog_number
 
-        with transaction.atomic():
-            record = build_record_from_payload(payload)
+        try:
+            with transaction.atomic():
+                record = build_record_from_payload(payload)
 
-            cover_url = raw_payload.get("image_url")
-            if save_image_decision and cover_url:
-                if self.image_service.download_cover(record, cover_url):
-                    logger.info("Обложка скачана для записи %s (Redeye)", record.id)
+                cover_url = raw_payload.get("image_url")
+                if save_image_decision and cover_url:
+                    if self.image_service.download_cover(record, cover_url):
+                        logger.info("Обложка скачана для записи %s (Redeye)", record.id)
 
-            source_url = (raw_payload.get("source") or {}).get(
-                "url"
-            ) or result.source_url
-            if source_url:
-                try:
-                    validate_redeye_product_url(source_url)
-                    self._upsert_record_source(
-                        record=record,
-                        provider=RecordSource.Provider.REDEYE,
-                        role=RecordSource.Role.PRODUCT_PAGE,
-                        url=source_url,
-                        can_fetch_audio=True,
-                    )
-                except ValueError as ve:
-                    logger.warning("Валидация URL источника Redeye не пройдена: %s", ve)
+                source_url = (raw_payload.get("source") or {}).get(
+                    "url"
+                ) or result.source_url
+                if source_url:
+                    try:
+                        validate_redeye_product_url(source_url)
+                        self._upsert_record_source(
+                            record=record,
+                            provider=RecordSource.Provider.REDEYE,
+                            role=RecordSource.Role.PRODUCT_PAGE,
+                            url=source_url,
+                            can_fetch_audio=True,
+                        )
+                    except ValueError as ve:
+                        logger.warning(
+                            "Валидация URL источника Redeye не пройдена: %s", ve
+                        )
+        except IntegrityError:
+            existing = Record.objects.filter(
+                catalog_number__iexact=normalized_catalog_number
+            ).first()
+            if existing:
+                logger.warning(
+                    "Запись с каталожным номером уже существует (Redeye): %s",
+                    existing.id,
+                )
+                return existing, False
+            raise
 
         if download_audio_decision:
             try:

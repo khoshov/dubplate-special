@@ -8,7 +8,6 @@ from django.db import transaction
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import path, reverse
-from django.contrib.admin import ModelAdmin
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +23,7 @@ class RedeyeAudioRefreshMixin:
     """
 
     def get_urls(self: Any):
-        base_urls = ModelAdmin.get_urls(self)
+        base_urls = super().get_urls()
         custom = [
             path(
                 "<path:object_id>/refresh/",
