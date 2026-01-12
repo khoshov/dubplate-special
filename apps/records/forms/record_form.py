@@ -231,6 +231,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
 
             if not record_is_new:
                 self.duplicate_record = record
+                setattr(record, "_duplicate_record", True)
             status = (
                 "Обнаружен дубликат" if not record_is_new else "Создана новая запись"
             )

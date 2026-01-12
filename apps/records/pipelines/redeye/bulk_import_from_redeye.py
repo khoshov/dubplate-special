@@ -5,7 +5,7 @@
   - при save=True сохраняет запись через RecordService.import_from_redeye(...),
   - НЕ качает аудио в рамках manage-команды (download_audio_decision=False),
   - гарантирует наличие источника redeye/product_page в RecordSource,
-  - отдаёт результаты построчно (ok/created/updated/url/summary/error) для CLI.
+  - отдаёт результаты построчно (ok/created/updated/skipped_duplicate/url/summary/error) для CLI.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Dict, Iterator, Optional
 
 from django.db import transaction
 
-from records.models import Record, RecordSource, Genre, Style
+from records.models import Genre, Record, Style
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
@@ -32,6 +32,7 @@ class BulkResult:
     ok: bool
     created: bool = False
     updated: bool = False
+    skipped_duplicate: bool = False
     summary: Optional[Dict] = None
     error: Optional[str] = None
 
@@ -43,19 +44,7 @@ class RedeyeBulkImporter:
 
     def __init__(
         self,
-        *,
-        delay_sec: float = 0.6,
-        jitter_sec: float = 0.5,
-        max_retries: int = 4,
-        cooldown_sec: int = 90,
-        stop_on_block: bool = False,
     ) -> None:
-        self.delay_sec = delay_sec
-        self.jitter_sec = jitter_sec
-        self.max_retries = max_retries
-        self.cooldown_sec = cooldown_sec
-        self.stop_on_block = stop_on_block
-
         self.svc = RecordService(
             discogs_service=DiscogsService(),
             redeye_service=RedeyeService(),
@@ -72,7 +61,6 @@ class RedeyeBulkImporter:
         attach_style: Optional[str] = None,
         limit: Optional[int] = None,
         save: bool = False,
-        debug: bool = False,
     ) -> Iterator["BulkResult"]:
         """
         Обходит список категории Redeye, парсит карточки и (опционально) сохраняет их через RecordService.
@@ -84,21 +72,15 @@ class RedeyeBulkImporter:
             attach_style: (опц.) добавить стиль к записи.
             limit: максимум карточек к обработке.
             save: при True — сохраняем запись; аудио НЕ качаем.
-            debug: при True — логируем traceback.
         """
         from records.scrapers.redeye_listing import RedeyeListingScraper
 
         logger.info("[%s] %s", category_name, listing_url)
 
-        scraper = RedeyeListingScraper(
-            delay_sec=self.delay_sec,
-            jitter_sec=self.jitter_sec,
-            max_retries=self.max_retries,
-            cooldown_sec=self.cooldown_sec,
-            stop_on_block=self.stop_on_block,
-        )
+        scraper = RedeyeListingScraper()
 
         processed = 0
+        duplicate_catalog_numbers: list[str] = []
 
         for product_url in scraper.iter_product_urls(listing_url):
             if limit is not None and processed >= limit:
@@ -106,12 +88,14 @@ class RedeyeBulkImporter:
                 break
 
             try:
-                payload: dict = self.svc.parse_redeye_product_by_url(product_url) or {}
-                payload.setdefault("source", "redeye")
-                payload.setdefault("source_url", product_url)
+                raw_payload: dict = (
+                    self.svc.parse_redeye_product_by_url(product_url) or {}
+                )
 
-                catalog_number = (payload.get("catalog_number") or "").strip().upper()
-                summary = self._summary_from_payload(payload)
+                catalog_number = (
+                    (raw_payload.get("catalog_number") or "").strip().upper()
+                )
+                summary = self._summary_from_payload(raw_payload)
 
                 if not catalog_number:
                     logger.warning("Пропуск: нет каталожного номера → %s", product_url)
@@ -137,38 +121,52 @@ class RedeyeBulkImporter:
                 with transaction.atomic():
                     record, created = self.svc.import_from_redeye(
                         catalog_number=catalog_number,
+                        raw_payload=raw_payload,
+                        source_url=product_url,
                         save_image_decision=True,
                         download_audio_decision=False,
                     )
-                    self._ensure_redeye_record_source(record, product_url)
 
-                    if attach_genre:
-                        self._attach_single_choice(
-                            record, model=Genre, field_name="genres", name=attach_genre
-                        )
-                    if attach_style:
-                        self._attach_single_choice(
-                            record, model=Style, field_name="styles", name=attach_style
-                        )
+                    if created:
+                        if attach_genre:
+                            self._attach_single_choice(
+                                record,
+                                model=Genre,
+                                field_name="genres",
+                                name=attach_genre,
+                            )
+                        if attach_style:
+                            self._attach_single_choice(
+                                record,
+                                model=Style,
+                                field_name="styles",
+                                name=attach_style,
+                            )
+                    else:
+                        duplicate_catalog_numbers.append(catalog_number)
 
                 processed += 1
                 yield BulkResult(
                     url=product_url,
                     ok=True,
                     created=bool(created),
-                    updated=not created,
+                    updated=False,
+                    skipped_duplicate=not created,
                     summary=summary,
                 )
 
             except Exception as e:
-                if debug:
-                    logger.exception("Failed to import %s :: %s", product_url, e)
-                else:
-                    logger.error("Failed to import %s :: %s", product_url, e)
+                logger.error("Failed to import %s :: %s", product_url, e)
                 processed += 1
                 yield BulkResult(url=product_url, ok=False, error=str(e))
 
         logger.info("Готово. Обработано: %s", processed)
+        if duplicate_catalog_numbers:
+            logger.info(
+                "Пропущено дублей (catalog_number уже есть в БД): %s",
+                len(duplicate_catalog_numbers),
+            )
+            logger.info("CAT дублей: %s", ", ".join(duplicate_catalog_numbers))
 
     @staticmethod
     def _summary_from_payload(payload: Dict) -> Dict:
@@ -203,30 +201,6 @@ class RedeyeBulkImporter:
             "availability": availability,
             "price": price,
         }
-
-    @staticmethod
-    def _ensure_redeye_record_source(record: Record, product_url: str) -> None:
-        """
-        Гарантирует наличие источника redeye/product_page у записи (idempotent).
-        """
-        if not product_url:
-            return
-
-        exists = record.sources.filter(
-            provider=RecordSource.Provider.REDEYE,
-            role=RecordSource.Role.PRODUCT_PAGE,
-            url=product_url,
-        ).exists()
-        if exists:
-            return
-
-        RecordSource.objects.update_or_create(
-            record=record,
-            provider=RecordSource.Provider.REDEYE,
-            role=RecordSource.Role.PRODUCT_PAGE,
-            defaults={"url": product_url, "can_fetch_audio": True},
-        )
-        logger.info("Добавлен источник redeye/product_page для записи %s", record.pk)
 
     @staticmethod
     def _attach_single_choice(

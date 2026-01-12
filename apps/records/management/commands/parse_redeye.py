@@ -11,13 +11,7 @@ Management-команда: парсинг разделов Redeye и (опцио
 docker compose exec django uv run python manage.py parse_redeye `
    --category all `
    --limit 2 `
-   --delay 0.8 `
-   --jitter 0.3 `
-   --max-retries 3 `
-   --cooldown 60 `
-   --stop-on-block `
-   --save `
-   --debug
+   --save
 
 
 
@@ -79,54 +73,13 @@ class Command(BaseCommand):
             help="Максимум карточек на категорию (0/None = без ограничения).",
         )
         parser.add_argument(
-            "--delay",
-            type=float,
-            default=0.8,
-            help="Базовая задержка между запросами (сек.).",
-        )
-        parser.add_argument(
-            "--jitter",
-            type=float,
-            default=0.5,
-            help="Случайная прибавка к задержке (сек.).",
-        )
-        parser.add_argument(
-            "--max-retries",
-            type=int,
-            default=5,
-            help="Максимум повторов при сетевых ошибках.",
-        )
-        parser.add_argument(
-            "--cooldown",
-            type=int,
-            default=120,
-            help="Охлаждение (сек.) при блокировке (403/429).",
-        )
-        parser.add_argument(
-            "--stop-on-block",
-            action="store_true",
-            help="Останавливать парсинг при повторной блокировке.",
-        )
-        parser.add_argument(
             "--save",
             action="store_true",
             help="Сохранять результаты в базу данных (иначе печать payload summary).",
         )
-        parser.add_argument(
-            "--debug", action="store_true", help="Включить DEBUG-логирование."
-        )
 
     def handle(self, *args, **options):
-        if options["debug"]:
-            logging.getLogger().setLevel(logging.DEBUG)
-
-        importer = RedeyeBulkImporter(
-            delay_sec=options["delay"],
-            jitter_sec=options["jitter"],
-            max_retries=options["max_retries"],
-            cooldown_sec=options["cooldown"],
-            stop_on_block=options["stop_on_block"],
-        )
+        importer = RedeyeBulkImporter()
 
         category_code = options["category"]
         selected = []
