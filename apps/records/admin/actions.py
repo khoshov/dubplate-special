@@ -97,7 +97,7 @@ def _batch_update(
     )
 
 
-@admin.action(description="Опубликовать в VK (сразу)")
+@admin.action(description="Опубликовать в VK")
 def post_to_vk(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
@@ -163,7 +163,7 @@ def post_to_vk(
     )
 
 
-@admin.action(description="Запланировать публикацию в VK (равномерно)")
+@admin.action(description="Запланировать публикацию в VK")
 def schedule_to_vk(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> HttpResponseRedirect | None:

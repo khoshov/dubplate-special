@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib import messages
@@ -9,6 +8,7 @@ from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.test import RequestFactory
+from django.utils import timezone
 
 from records.admin.record_admin import RecordAdmin
 from records.models import Record
@@ -98,9 +98,9 @@ def test_vk_schedule_view_posts_even_times(settings):
         title="R3", release_year=2002, release_month=1, release_day=1
     )
 
-    moscow_tz = ZoneInfo("Europe/Moscow")
-    start_at = datetime(2025, 1, 1, 10, 0, tzinfo=moscow_tz)
-    end_at = datetime(2025, 1, 1, 12, 0, tzinfo=moscow_tz)
+    current_tz = timezone.get_current_timezone()
+    start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
+    end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
 
     data = {
         "ids": [str(r1.pk), str(r2.pk), str(r3.pk)],
@@ -160,9 +160,9 @@ def test_vk_schedule_view_collision_shifts_time(settings):
         title="R2", release_year=2001, release_month=1, release_day=1
     )
 
-    moscow_tz = ZoneInfo("Europe/Moscow")
-    start_at = datetime(2025, 1, 1, 10, 0, tzinfo=moscow_tz)
-    end_at = datetime(2025, 1, 1, 12, 0, tzinfo=moscow_tz)
+    current_tz = timezone.get_current_timezone()
+    start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
+    end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
     delta = (end_at - start_at) / 2
 
     data = {
@@ -212,8 +212,8 @@ def test_vk_schedule_view_single_record_uses_publish_from(settings):
         title="R1", release_year=2000, release_month=1, release_day=1
     )
 
-    moscow_tz = ZoneInfo("Europe/Moscow")
-    publish_at = datetime(2025, 1, 1, 10, 15, tzinfo=moscow_tz)
+    current_tz = timezone.get_current_timezone()
+    publish_at = timezone.make_aware(datetime(2025, 1, 1, 10, 15), current_tz)
 
     data = {
         "ids": [str(record.pk)],
@@ -231,7 +231,7 @@ def test_vk_schedule_view_single_record_uses_publish_from(settings):
 
 
 @pytest.mark.django_db
-def test_vk_schedule_view_single_record_timezone_moscow(settings):
+def test_vk_schedule_view_single_record_timezone_local(settings):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
@@ -269,8 +269,9 @@ def test_vk_schedule_view_single_record_timezone_moscow(settings):
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
     assert calls
+    current_tz = timezone.get_current_timezone()
     expected_ts = int(
-        datetime(2025, 1, 1, 10, 0, tzinfo=ZoneInfo("Europe/Moscow")).timestamp()
+        timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz).timestamp()
     )
     assert int(calls[0].timestamp()) == expected_ts
 

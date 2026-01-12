@@ -381,5 +381,3 @@ def _cli() -> None:
         print(link)
         count += 1
     logger.info("Готово. Всего ссылок: %s", count)
-
-

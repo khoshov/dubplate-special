@@ -16,6 +16,7 @@
 - Typing: mypy (strict for core modules)
 
 ## Docker-first workflow
+
 ### Start/stop
 - Start stack: `docker compose up --build`
 - Stop: `docker compose down`
@@ -50,3 +51,18 @@ Use the `django` service for all management/dev commands:
 ## Configuration and Secrets
 - Copy `.env.example` to `.env` for local development.
 - Keep secrets out of Git. Postgres is provided by compose.
+
+## Language / Communication (Codex)
+- **All assistant messages must be in Russian**: explanations, plans, status updates, summaries, TODO lists, and suggested commit/PR text.
+- Source code identifiers follow project conventions (typically English for code), but user-facing explanations from the assistant remain Russian.
+- If you must add/modify user-facing strings in the app, keep them consistent with the existing localization approach (see `locale/`).
+
+## Codex workflow expectations
+- Before making changes: provide a short plan (in Russian) describing what files/areas will be touched.
+- After making changes: list modified files and provide docker commands to verify (migrate/test/ruff/mypy when applicable).
+- Prefer minimal, reviewable diffs. Avoid unrelated refactors unless explicitly requested.
+- If a change impacts migrations/data, call it out first and take the safest path (small migrations, clear rollback notes if relevant).
+
+## i18n / Translations
+- When adding/changing user-facing strings, consider `locale/` and avoid breaking translations.
+- If new strings are introduced, update translation files according to the project’s established process.

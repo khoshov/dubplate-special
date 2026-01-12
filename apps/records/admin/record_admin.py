@@ -1,6 +1,5 @@
 import logging
 from datetime import timedelta
-from zoneinfo import ZoneInfo
 from typing import Optional
 
 from django.contrib import admin
@@ -168,9 +167,9 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             publish_at_raw = request.POST.get("publish_at", "")
             publish_from_raw = request.POST.get("publish_from", "")
             publish_to_raw = request.POST.get("publish_to", "")
-            publish_at = self._parse_datetime_moscow(publish_at_raw)
-            publish_from = self._parse_datetime_moscow(publish_from_raw)
-            publish_to = self._parse_datetime_moscow(publish_to_raw)
+            publish_at = self._parse_datetime_local(publish_at_raw)
+            publish_from = self._parse_datetime_local(publish_from_raw)
+            publish_to = self._parse_datetime_local(publish_to_raw)
 
             if total == 1:
                 if publish_at is None:
@@ -322,21 +321,14 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 current_at = current_at + delta
 
     @staticmethod
-    def _parse_datetime_moscow(value: str):
+    def _parse_datetime_local(value: str):
         dt = parse_datetime(value)
         if dt is None:
             return None
-        tz = RecordAdmin._get_moscow_tz()
+        tz = timezone.get_current_timezone()
         if timezone.is_naive(dt):
-            return dt.replace(tzinfo=tz)
+            return timezone.make_aware(dt, tz)
         return dt.astimezone(tz)
-
-    @staticmethod
-    def _get_moscow_tz():
-        current = timezone.get_current_timezone()
-        if getattr(current, "key", None) == "Europe/Moscow":
-            return current
-        return ZoneInfo("Europe/Moscow")
 
     @staticmethod
     def _extract_ids(request: HttpRequest) -> list[int]:
