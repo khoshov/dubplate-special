@@ -6,8 +6,9 @@ from typing import Callable, TYPE_CHECKING
 
 from django.contrib import admin, messages
 from django.db.models import QuerySet
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponseRedirect
 from django.utils.text import Truncator
+from django.urls import reverse
 
 from records.models import Record
 
@@ -160,6 +161,27 @@ def post_to_vk(
         get_id=_get_id,
         do_update=_do_post,
     )
+
+
+@admin.action(description="Запланировать публикацию в VK")
+def schedule_to_vk(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> HttpResponseRedirect | None:
+    """
+    Перенаправляет на форму выбора интервала для равномерной публикации.
+    """
+    total = queryset.count()
+    if total == 0:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для планирования публикации.",
+            level=messages.WARNING,
+        )
+        return None
+
+    ids = list(queryset.values_list("pk", flat=True))
+    url = reverse("admin:records_record_vk_schedule")
+    return HttpResponseRedirect(f"{url}?ids={','.join(str(i) for i in ids)}")
 
 
 @admin.action(description="Обновить из Discogs")

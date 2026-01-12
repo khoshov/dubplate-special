@@ -1,8 +1,15 @@
 import logging
+from datetime import timedelta
 from typing import Optional
 
 from django.contrib import admin
-from django.http import HttpRequest
+from django.contrib import messages
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
+from vk_api.exceptions import ApiError
 
 from records.forms import RecordForm
 from records.models import Record, Artist, Format, Genre, Style
@@ -12,7 +19,8 @@ from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
 from records.services.social.vk_service import VKService
-from .actions import update_from_discogs, update_from_redeye, post_to_vk
+from records.services.social.schedule import build_even_schedule
+from .actions import update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk
 from .inlines import TrackInline
 from .mixins import RedeyeAudioRefreshMixin
 
@@ -31,7 +39,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     form = RecordForm
     autocomplete_fields = ("artists",)
     inlines = [TrackInline]
-    actions = [update_from_discogs, update_from_redeye, post_to_vk]
+    actions = [update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk]
     vk_service: VKService
     fieldsets = (
         (
@@ -125,6 +133,222 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         return ", ".join(names) or "-"
 
     get_artists_display.short_description = "Артисты"
+
+    def get_urls(self):
+        base_urls = super().get_urls()
+        custom = [
+            path(
+                "vk-schedule/",
+                self.admin_site.admin_view(self.vk_schedule_view),
+                name="records_record_vk_schedule",
+            ),
+        ]
+        return custom + base_urls
+
+    def vk_schedule_view(self, request: HttpRequest) -> HttpResponse:
+        if not self.has_change_permission(request):
+            messages.error(request, "Недостаточно прав для публикации записей.")
+            return HttpResponseRedirect(reverse("admin:records_record_changelist"))
+
+        selected_ids = self._extract_ids(request)
+        if not selected_ids:
+            messages.warning(request, "Не выбраны записи для публикации.")
+            return HttpResponseRedirect(reverse("admin:records_record_changelist"))
+
+        queryset = Record.objects.filter(pk__in=selected_ids)
+        ordering = self.get_ordering(request) or ("pk",)
+        queryset = queryset.order_by(*ordering)
+        total = queryset.count()
+        if total == 0:
+            messages.warning(request, "Не выбраны записи для публикации.")
+            return HttpResponseRedirect(reverse("admin:records_record_changelist"))
+
+        if request.method == "POST":
+            publish_at_raw = request.POST.get("publish_at", "")
+            publish_from_raw = request.POST.get("publish_from", "")
+            publish_to_raw = request.POST.get("publish_to", "")
+            publish_at = self._parse_datetime_local(publish_at_raw)
+            publish_from = self._parse_datetime_local(publish_from_raw)
+            publish_to = self._parse_datetime_local(publish_to_raw)
+
+            if total == 1:
+                if publish_at is None:
+                    messages.error(
+                        request, "Укажите корректную дату и время публикации."
+                    )
+                else:
+                    publish_from = publish_at
+                    publish_to = publish_at
+            else:
+                if publish_from is None or publish_to is None:
+                    messages.error(
+                        request,
+                        "Заполните корректные даты начала и окончания публикации.",
+                    )
+                elif publish_to < publish_from:
+                    messages.error(
+                        request, "Дата окончания должна быть не раньше даты начала."
+                    )
+
+            if publish_from and publish_to:
+                vk_service = getattr(self, "vk_service", None)
+                if vk_service is None:
+                    messages.error(
+                        request,
+                        "Сервис VK не сконфигурирован. Обратитесь к администратору.",
+                    )
+                    return HttpResponseRedirect(
+                        reverse("admin:records_record_changelist")
+                    )
+
+                if total == 1:
+                    times = [publish_from]
+                    step = None
+                else:
+                    times = build_even_schedule(publish_from, publish_to, total)
+                    step = (publish_to - publish_from) / (total - 1)
+
+                delta = self._get_retry_delta(step)
+                ok = fail = 0
+                failed: list[str] = []
+
+                for record, publish_at in zip(queryset, times, strict=False):
+                    try:
+                        success, final_at, shifted = self._post_with_retry(
+                            vk_service=vk_service,
+                            record=record,
+                            publish_at=publish_at,
+                            delta=delta,
+                            max_retries=10,
+                        )
+                        if not success:
+                            raise ApiError(
+                                None,
+                                "wall.post",
+                                {},
+                                {},
+                                {
+                                    "error_code": 214,
+                                    "error_msg": (
+                                        "Access to adding post denied: "
+                                        "a post is already scheduled for this time."
+                                    ),
+                                },
+                            )
+                        ok += 1
+                        if shifted:
+                            messages.info(
+                                request,
+                                self._format_shift_message(
+                                    record=record,
+                                    original_at=publish_at,
+                                    new_at=final_at,
+                                ),
+                            )
+                    except Exception as exc:
+                        fail += 1
+                        failed.append(f"#{record.pk} «{record}»: {exc!s}")
+
+                if ok:
+                    messages.success(
+                        request,
+                        f"Запланировано публикаций: {ok} из {total}.",
+                    )
+                if fail:
+                    messages.error(request, f"Ошибки при планировании: {fail}.")
+                    messages.error(request, "Ошибки:\n• " + "\n• ".join(failed))
+
+                return HttpResponseRedirect(reverse("admin:records_record_changelist"))
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "records": list(queryset),
+            "selected_ids": [str(pk) for pk in selected_ids],
+            "show_single": total == 1,
+            "publish_at_value": request.POST.get("publish_at", ""),
+            "publish_from_value": request.POST.get("publish_from", ""),
+            "publish_to_value": request.POST.get("publish_to", ""),
+        }
+        return TemplateResponse(
+            request, "admin/records/record/vk_schedule.html", context
+        )
+
+    @staticmethod
+    def _get_retry_delta(step):
+        if step is None:
+            return timedelta(minutes=5)
+        if step.total_seconds() <= 0:
+            return timedelta(minutes=5)
+        return step / 2
+
+    @staticmethod
+    def _format_shift_message(*, record: Record, original_at, new_at) -> str:
+        def _fmt(value):
+            if timezone.is_aware(value):
+                value = timezone.localtime(value)
+            return value.strftime("%Y-%m-%d %H:%M")
+
+        return (
+            f"Запись #{record.pk} «{record}» была запланирована на {_fmt(original_at)}, "
+            f"но это время занято во ВК; время смещено на {_fmt(new_at)}."
+        )
+
+    @staticmethod
+    def _post_with_retry(
+        *,
+        vk_service: VKService,
+        record: Record,
+        publish_at,
+        delta,
+        max_retries: int,
+    ) -> tuple[bool, object, bool]:
+        attempts = 0
+        current_at = publish_at
+        shifted = False
+
+        while True:
+            try:
+                vk_service.post_record_with_audio(record=record, publish_at=current_at)
+                return True, current_at, shifted
+            except ApiError as exc:
+                if exc.code != 214:
+                    raise
+                attempts += 1
+                shifted = True
+                if attempts > max_retries:
+                    return False, current_at, shifted
+                current_at = current_at + delta
+
+    @staticmethod
+    def _parse_datetime_local(value: str):
+        dt = parse_datetime(value)
+        if dt is None:
+            return None
+        tz = timezone.get_current_timezone()
+        if timezone.is_naive(dt):
+            return timezone.make_aware(dt, tz)
+        return dt.astimezone(tz)
+
+    @staticmethod
+    def _extract_ids(request: HttpRequest) -> list[int]:
+        if request.method == "POST":
+            raw_ids = request.POST.getlist("ids")
+            if not raw_ids:
+                raw = request.POST.get("ids", "")
+                raw_ids = raw.split(",") if raw else []
+        else:
+            raw = request.GET.get("ids", "")
+            raw_ids = raw.split(",") if raw else []
+
+        ids: list[int] = []
+        for raw_id in raw_ids:
+            raw_id = raw_id.strip()
+            if not raw_id:
+                continue
+            if raw_id.isdigit():
+                ids.append(int(raw_id))
+        return ids
 
     def get_fieldsets(self, request: HttpRequest, obj: Optional[Record] = None):
         """
@@ -246,6 +470,15 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return  # всё сохранено
 
         super().save_model(request, obj, form, change=True)
+
+    def response_add(self, request, obj, post_url_continue=None):
+        if getattr(obj, "_duplicate_record", False):
+            messages.warning(
+                request,
+                f"Запись с каталожным номером {obj.catalog_number!s} уже существует. "
+                "Создание пропущено, открыта существующая запись.",
+            )
+        return super().response_add(request, obj, post_url_continue=post_url_continue)
 
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}
