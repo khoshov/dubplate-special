@@ -179,3 +179,4 @@ pyrightconfig.json
 media
 pgdata
 staticfiles
+AGENTS.md
