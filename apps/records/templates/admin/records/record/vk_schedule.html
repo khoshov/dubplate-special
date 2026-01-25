@@ -16,6 +16,14 @@
     {% for pk in selected_ids %}
       <input type="hidden" name="ids" value="{{ pk }}">
     {% endfor %}
+    <input type="hidden" id="id_timezone" name="timezone" value="{{ timezone_value }}">
+
+    <p class="help">
+      Время вводится в зоне: <strong id="tz-label">{{ timezone_label }}</strong>
+      {% if timezone_fallback %}
+        (не удалось определить зону браузера, используется настройка сервера)
+      {% endif %}
+    </p>
 
     <fieldset class="module aligned">
       {% if show_single %}
@@ -60,4 +68,23 @@
       </a>
     </div>
   </form>
+
+  <script>
+    (function () {
+      var tz = "";
+      try {
+        tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      } catch (e) {
+        tz = "";
+      }
+      var input = document.getElementById("id_timezone");
+      var label = document.getElementById("tz-label");
+      if (input && tz) {
+        input.value = tz;
+      }
+      if (label && tz) {
+        label.textContent = tz;
+      }
+    })();
+  </script>
 {% endblock %}

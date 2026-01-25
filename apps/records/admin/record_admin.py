@@ -1,6 +1,7 @@
 import logging
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib import admin
 from django.contrib import messages
@@ -163,102 +164,119 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             messages.warning(request, "Не выбраны записи для публикации.")
             return HttpResponseRedirect(reverse("admin:records_record_changelist"))
 
+        tz_label = timezone.get_current_timezone_name()
+        tz_value = tz_label
+        tz_fallback = False
+
         if request.method == "POST":
-            publish_at_raw = request.POST.get("publish_at", "")
-            publish_from_raw = request.POST.get("publish_from", "")
-            publish_to_raw = request.POST.get("publish_to", "")
-            publish_at = self._parse_datetime_local(publish_at_raw)
-            publish_from = self._parse_datetime_local(publish_from_raw)
-            publish_to = self._parse_datetime_local(publish_to_raw)
+            tz_name = (request.POST.get("timezone") or "").strip()
+            user_tz = self._get_timezone_from_name(tz_name)
+            tz_fallback = not tz_name
+            previous_tz = timezone.get_current_timezone()
+            timezone.activate(user_tz)
+            tz_label = timezone.get_current_timezone_name()
+            tz_value = tz_label
+            try:
+                publish_at_raw = request.POST.get("publish_at", "")
+                publish_from_raw = request.POST.get("publish_from", "")
+                publish_to_raw = request.POST.get("publish_to", "")
+                publish_at = self._parse_datetime_local(publish_at_raw, user_tz)
+                publish_from = self._parse_datetime_local(publish_from_raw, user_tz)
+                publish_to = self._parse_datetime_local(publish_to_raw, user_tz)
 
-            if total == 1:
-                if publish_at is None:
-                    messages.error(
-                        request, "Укажите корректную дату и время публикации."
-                    )
+                if total == 1:
+                    if publish_at is None:
+                        messages.error(
+                            request, "Укажите корректную дату и время публикации."
+                        )
+                    else:
+                        publish_from = publish_at
+                        publish_to = publish_at
                 else:
-                    publish_from = publish_at
-                    publish_to = publish_at
-            else:
-                if publish_from is None or publish_to is None:
-                    messages.error(
-                        request,
-                        "Заполните корректные даты начала и окончания публикации.",
-                    )
-                elif publish_to < publish_from:
-                    messages.error(
-                        request, "Дата окончания должна быть не раньше даты начала."
-                    )
+                    if publish_from is None or publish_to is None:
+                        messages.error(
+                            request,
+                            "Заполните корректные даты начала и окончания публикации.",
+                        )
+                    elif publish_to < publish_from:
+                        messages.error(
+                            request,
+                            "Дата окончания должна быть не раньше даты начала.",
+                        )
 
-            if publish_from and publish_to:
-                vk_service = getattr(self, "vk_service", None)
-                if vk_service is None:
-                    messages.error(
-                        request,
-                        "Сервис VK не сконфигурирован. Обратитесь к администратору.",
-                    )
+                if publish_from and publish_to:
+                    vk_service = getattr(self, "vk_service", None)
+                    if vk_service is None:
+                        messages.error(
+                            request,
+                            "Сервис VK не сконфигурирован. Обратитесь к администратору.",
+                        )
+                        return HttpResponseRedirect(
+                            reverse("admin:records_record_changelist")
+                        )
+
+                    if total == 1:
+                        times = [publish_from]
+                        step = None
+                    else:
+                        times = build_even_schedule(publish_from, publish_to, total)
+                        step = (publish_to - publish_from) / (total - 1)
+
+                    delta = self._get_retry_delta(step)
+                    ok = fail = 0
+                    failed: list[str] = []
+
+                    for record, publish_at in zip(queryset, times, strict=False):
+                        try:
+                            success, final_at, shifted = self._post_with_retry(
+                                vk_service=vk_service,
+                                record=record,
+                                publish_at=publish_at,
+                                delta=delta,
+                                max_retries=10,
+                            )
+                            if not success:
+                                raise ApiError(
+                                    None,
+                                    "wall.post",
+                                    {},
+                                    {},
+                                    {
+                                        "error_code": 214,
+                                        "error_msg": (
+                                            "Access to adding post denied: "
+                                            "a post is already scheduled for this time."
+                                        ),
+                                    },
+                                )
+                            ok += 1
+                            if shifted:
+                                messages.info(
+                                    request,
+                                    self._format_shift_message(
+                                        record=record,
+                                        original_at=publish_at,
+                                        new_at=final_at,
+                                    ),
+                                )
+                        except Exception as exc:
+                            fail += 1
+                            failed.append(f"#{record.pk} «{record}»: {exc!s}")
+
+                    if ok:
+                        messages.success(
+                            request,
+                            f"Запланировано публикаций: {ok} из {total}.",
+                        )
+                    if fail:
+                        messages.error(request, f"Ошибки при планировании: {fail}.")
+                        messages.error(request, "Ошибки:\n• " + "\n• ".join(failed))
+
                     return HttpResponseRedirect(
                         reverse("admin:records_record_changelist")
                     )
-
-                if total == 1:
-                    times = [publish_from]
-                    step = None
-                else:
-                    times = build_even_schedule(publish_from, publish_to, total)
-                    step = (publish_to - publish_from) / (total - 1)
-
-                delta = self._get_retry_delta(step)
-                ok = fail = 0
-                failed: list[str] = []
-
-                for record, publish_at in zip(queryset, times, strict=False):
-                    try:
-                        success, final_at, shifted = self._post_with_retry(
-                            vk_service=vk_service,
-                            record=record,
-                            publish_at=publish_at,
-                            delta=delta,
-                            max_retries=10,
-                        )
-                        if not success:
-                            raise ApiError(
-                                None,
-                                "wall.post",
-                                {},
-                                {},
-                                {
-                                    "error_code": 214,
-                                    "error_msg": (
-                                        "Access to adding post denied: "
-                                        "a post is already scheduled for this time."
-                                    ),
-                                },
-                            )
-                        ok += 1
-                        if shifted:
-                            messages.info(
-                                request,
-                                self._format_shift_message(
-                                    record=record,
-                                    original_at=publish_at,
-                                    new_at=final_at,
-                                ),
-                            )
-                    except Exception as exc:
-                        fail += 1
-                        failed.append(f"#{record.pk} «{record}»: {exc!s}")
-
-                if ok:
-                    messages.success(
-                        request,
-                        f"Запланировано публикаций: {ok} из {total}.",
-                    )
-                if fail:
-                    messages.error(request, f"Ошибки при планировании: {fail}.")
-                    messages.error(request, "Ошибки:\n• " + "\n• ".join(failed))
-
-                return HttpResponseRedirect(reverse("admin:records_record_changelist"))
+            finally:
+                timezone.activate(previous_tz)
 
         context = {
             **self.admin_site.each_context(request),
@@ -269,6 +287,9 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             "publish_at_value": request.POST.get("publish_at", ""),
             "publish_from_value": request.POST.get("publish_from", ""),
             "publish_to_value": request.POST.get("publish_to", ""),
+            "timezone_label": tz_label,
+            "timezone_value": tz_value,
+            "timezone_fallback": tz_fallback,
         }
         return TemplateResponse(
             request, "admin/records/record/vk_schedule.html", context
@@ -321,14 +342,30 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 current_at = current_at + delta
 
     @staticmethod
-    def _parse_datetime_local(value: str):
+    def _parse_datetime_local(value: str, tz):
         dt = parse_datetime(value)
         if dt is None:
             return None
-        tz = timezone.get_current_timezone()
+        if tz is None:
+            tz = timezone.get_current_timezone()
         if timezone.is_naive(dt):
-            return timezone.make_aware(dt, tz)
-        return dt.astimezone(tz)
+            dt = timezone.make_aware(dt, tz)
+        else:
+            dt = dt.astimezone(tz)
+        return dt.astimezone(dt_timezone.utc)
+
+    @staticmethod
+    def _get_timezone_from_name(name: str):
+        if not name:
+            return timezone.get_current_timezone()
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            logger.warning(
+                "VK schedule: неизвестная timezone '%s', использую текущую.",
+                name,
+            )
+            return timezone.get_current_timezone()
 
     @staticmethod
     def _extract_ids(request: HttpRequest) -> list[int]:
