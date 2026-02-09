@@ -17,6 +17,7 @@ from records.models import Record
 
 logger = logging.getLogger(__name__)
 
+
 # =============================================================================
 # Config
 # =============================================================================
@@ -73,6 +74,24 @@ def _slugify_hashtag(text: str) -> str:
     return s
 
 
+def _is_not_specified_value(text: str) -> bool:
+    """
+    True если значение означает «не задано / not specified».
+    Сравнение делается по нормализованной строке без пробелов/подчёркиваний/дефисов.
+    """
+    s = (text or "").strip().lower()
+    if not s:
+        return True
+    key = re.sub(r"[\s_-]+", "", s)
+    return key in {
+        "notspecified",
+        "неуказано",
+        "незадано",
+        "нет",
+        "none",
+    }
+
+
 def _record_artists(record: Any) -> str:
     artists_qs = getattr(record, "artists", None)
     if artists_qs and hasattr(artists_qs, "all"):
@@ -122,6 +141,8 @@ def _format_record_format(record: Any) -> str | None:
     Формирует строку «Format» по record.formats:
       • если встречается 7"/10"/12" — '<size> Vinyl';
       • иначе берём первые 1–2 уникальных названия, склеенных « / ».
+
+    Если выбран 'Not specified' — считаем, что формата нет.
     """
     names: list[str] = []
     fm = getattr(record, "formats", None)
@@ -136,28 +157,71 @@ def _format_record_format(record: Any) -> str | None:
             logger.debug("VK: не удалось получить список форматов: %s", exc)
             names = []
 
-    names = [n for n in names if n]
+    # выкидываем пустые и Not specified
+    names = [n for n in names if n and not _is_not_specified_value(n)]
+
     size = next((n for n in names if n in {'7"', '10"', '12"'}), None)
     if size:
         return f"{size} Vinyl"
+
     if names:
         uniq: list[str] = []
         for n in names:
             if n not in uniq:
                 uniq.append(n)
         return " / ".join(uniq[:2])
+
     return None
+
+
+def _normalize_hashtag_slug(text: str) -> str:
+    """
+    Нормализует строку под требования хэштегов:
+
+    - если значение 'Not specified' (или аналог) — возвращает пустую строку;
+    - допускает вход как с префиксом 'ds_' так и без него;
+    - в основной части удаляет все подчёркивания:
+        hardcore_breakbeat -> hardcorebreakbeat
+        drum_and_bass -> drumandbass
+    """
+    if _is_not_specified_value(text):
+        return ""
+
+    s = _slugify_hashtag(text)
+    if not s:
+        return ""
+
+    # если вдруг в БД уже лежит ds_*
+    plain = s[3:] if s.startswith("ds_") else s
+
+    # на всякий случай, если slugify дал not_specified
+    if plain in {"not_specified", "notspecified"}:
+        return ""
+
+    # подчёркивания допускаются только после 'ds'
+    plain = plain.replace("_", "")
+
+    # финальная защита
+    if plain == "notspecified":
+        return ""
+
+    return plain
 
 
 def _build_hashtags(record: Any) -> str:
     """
     Формирует строку хэштегов из record.genres и record.styles.
 
-    Для каждого значения добавляет:
-      - #ds_<slug_without_ds_prefix>
-      - #<slug_without_ds_prefix>
+    Правила:
+      - если выбран 'Not specified' — ничего не добавляем
+      - '_' только после 'ds'
+      - в основной части '_' удаляются: hardcore_breakbeat -> hardcorebreakbeat
 
-    То есть у второй метки префикса ds_ нет, но хэштег (#) остаётся.
+    Для каждого значения добавляет:
+      - #ds_<tag>
+      - #<tag>
+
+    Дубликаты убираются.
     """
 
     def names(qs_name: str) -> Iterable[str]:
@@ -169,17 +233,15 @@ def _build_hashtags(record: Any) -> str:
     raw: list[str] = []
 
     for n in names("genres"):
-        s = _slugify_hashtag(n)
-        if not s:
+        plain = _normalize_hashtag_slug(n)
+        if not plain:
             continue
-        plain = s[3:] if s.startswith("ds_") else s
         raw.extend((f"ds_{plain}", plain))
 
     for n in names("styles"):
-        s = _slugify_hashtag(n)
-        if not s:
+        plain = _normalize_hashtag_slug(n)
+        if not plain:
             continue
-        plain = s[3:] if s.startswith("ds_") else s
         raw.extend((f"ds_{plain}", plain))
 
     out: list[str] = []

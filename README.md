@@ -1,6 +1,40 @@
 
 [![Ruff](https://github.com/khoshov/dubplate-special/actions/workflows/ruff.yml/badge.svg)](https://github.com/khoshov/dubplate-special/actions/workflows/ruff.yml)
 
+## Структура проекта
+- `apps/` — Django‑приложения (`accounts`, `core`, `orders`, `records`).
+- `config/` — настройки проекта и ASGI/WSGI.
+- `tests/` — тесты (см. `pytest.ini`).
+- `media/` — пользовательские файлы (не коммитить).
+- `pgdata/` — локальные данные Postgres (не коммитить).
+- В корне: `manage.py`, `Dockerfile`, `docker-compose.yml`.
+
+## Окружение разработки (основной режим — Docker Compose)
+- Поднять окружение: `docker compose up -d --build`
+- Команды выполнять внутри контейнера `django` через `docker compose exec`.
+
+### Команды внутри контейнера
+- Django команды: `docker compose exec django uv run manage.py <command>`
+- Сервер (как в compose): `uv run manage.py runserver 0.0.0.0:8000`
+- Тесты: `docker compose exec django uv run pytest`
+- Линт: `docker compose exec django uv run ruff check .`
+- Формат: `docker compose exec django uv run ruff format .`
+- Типы: `docker compose exec django uv run mypy .`
+
+## Зависимости (uv)
+- Dev‑инструменты закреплены в `[dependency-groups].dev` и запускаются через `uv run ...`.
+- `uvx` использовать только для разовых утилит, не являющихся зависимостями проекта.
+- При изменении зависимостей: `uv lock`, затем `uv sync --dev --locked` (в контейнере).
+
+## Миграции
+- После изменения моделей: `uv run manage.py makemigrations`, затем `uv run manage.py migrate`.
+- Разрушительные операции с БД/данными выполнять только после явного подтверждения.
+
+## Стиль и правила кода
+- Следуем PEP 8/PEP 484, имена переменных и параметров — на английском.
+- Русский допустим в докстрингах/логах, публичные идентификаторы — на английском.
+- Импорты предпочтительно абсолютные.
+- Типизация обязательна для `config.*`, `apps.accounts.*`, `apps.core.*`, `apps.orders.*`, `apps.records.*`.
 
 ## Установка и использование UV
 

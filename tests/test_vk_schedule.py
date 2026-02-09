@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib import messages
@@ -10,6 +11,7 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from django.test import RequestFactory
 from django.utils import timezone
 
+from records.admin.actions import post_to_vk
 from records.admin.record_admin import RecordAdmin
 from records.models import Record
 from records.services.social.schedule import build_even_schedule
@@ -67,6 +69,47 @@ def test_vk_service_publish_date_param():
 
 
 @pytest.mark.django_db
+def test_post_to_vk_action_ignores_timezone(settings):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    admin_site = AdminSite()
+    admin = RecordAdmin(Record, admin_site)
+
+    calls: list[datetime | None] = []
+
+    class DummyVKService:
+        def post_record_with_audio(self, record, publish_at=None, **kwargs):
+            calls.append(publish_at)
+            return 1
+
+    admin.vk_service = DummyVKService()
+
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="admin", email="admin@example.com", password="pass"
+    )
+
+    record = Record.objects.create(
+        title="R1", release_year=2000, release_month=1, release_day=1
+    )
+
+    request = RequestFactory().post("/admin/records/record/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    previous_tz = timezone.get_current_timezone()
+    timezone.activate(ZoneInfo("America/New_York"))
+    try:
+        post_to_vk(admin, request, Record.objects.filter(pk=record.pk))
+    finally:
+        timezone.activate(previous_tz)
+
+    assert calls == [None]
+
+
+@pytest.mark.django_db
 def test_vk_schedule_view_posts_even_times(settings):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
@@ -102,10 +145,14 @@ def test_vk_schedule_view_posts_even_times(settings):
     start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
     end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
 
+    start_utc = start_at.astimezone(ZoneInfo("UTC"))
+    end_utc = end_at.astimezone(ZoneInfo("UTC"))
+
     data = {
         "ids": [str(r1.pk), str(r2.pk), str(r3.pk)],
         "publish_from": start_at.strftime("%Y-%m-%dT%H:%M"),
         "publish_to": end_at.strftime("%Y-%m-%dT%H:%M"),
+        "timezone": timezone.get_current_timezone_name(),
     }
 
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
@@ -115,7 +162,7 @@ def test_vk_schedule_view_posts_even_times(settings):
 
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
-    assert calls == build_even_schedule(start_at, end_at, 3)
+    assert calls == build_even_schedule(start_utc, end_utc, 3)
 
 
 @pytest.mark.django_db
@@ -163,12 +210,15 @@ def test_vk_schedule_view_collision_shifts_time(settings):
     current_tz = timezone.get_current_timezone()
     start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
     end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
-    delta = (end_at - start_at) / 2
+    start_utc = start_at.astimezone(ZoneInfo("UTC"))
+    end_utc = end_at.astimezone(ZoneInfo("UTC"))
+    delta = (end_utc - start_utc) / 2
 
     data = {
         "ids": [str(r1.pk), str(r2.pk)],
         "publish_from": start_at.strftime("%Y-%m-%dT%H:%M"),
         "publish_to": end_at.strftime("%Y-%m-%dT%H:%M"),
+        "timezone": timezone.get_current_timezone_name(),
     }
 
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
@@ -178,9 +228,9 @@ def test_vk_schedule_view_collision_shifts_time(settings):
 
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
-    assert calls[0] == start_at
-    assert calls[1] == start_at + delta
-    assert calls[2] == end_at
+    assert calls[0] == start_utc
+    assert calls[1] == start_utc + delta
+    assert calls[2] == end_utc
 
     messages_list = list(messages.get_messages(request))
     assert any("время смещено" in str(msg) for msg in messages_list)
@@ -218,6 +268,7 @@ def test_vk_schedule_view_single_record_uses_publish_from(settings):
     data = {
         "ids": [str(record.pk)],
         "publish_at": publish_at.strftime("%Y-%m-%dT%H:%M"),
+        "timezone": timezone.get_current_timezone_name(),
     }
 
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
@@ -227,7 +278,7 @@ def test_vk_schedule_view_single_record_uses_publish_from(settings):
 
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
-    assert calls == [publish_at]
+    assert calls == [publish_at.astimezone(ZoneInfo("UTC"))]
 
 
 @pytest.mark.django_db
@@ -256,9 +307,11 @@ def test_vk_schedule_view_single_record_timezone_local(settings):
         title="R1", release_year=2000, release_month=1, release_day=1
     )
 
+    tz_name = "Europe/Amsterdam"
     data = {
         "ids": [str(record.pk)],
         "publish_at": "2025-01-01T10:00",
+        "timezone": tz_name,
     }
 
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
@@ -269,9 +322,10 @@ def test_vk_schedule_view_single_record_timezone_local(settings):
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
     assert calls
-    current_tz = timezone.get_current_timezone()
     expected_ts = int(
-        timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz).timestamp()
+        timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo(tz_name))
+        .astimezone(ZoneInfo("UTC"))
+        .timestamp()
     )
     assert int(calls[0].timestamp()) == expected_ts
 
@@ -305,6 +359,7 @@ def test_vk_schedule_view_single_record_requires_publish_at(settings):
     data = {
         "ids": [str(record.pk)],
         "publish_at": "",
+        "timezone": timezone.get_current_timezone_name(),
     }
 
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
@@ -317,3 +372,20 @@ def test_vk_schedule_view_single_record_requires_publish_at(settings):
     assert calls == []
     messages_list = list(messages.get_messages(request))
     assert any("Укажите корректную дату и время" in str(msg) for msg in messages_list)
+
+
+def test_parse_datetime_uses_client_timezone():
+    tz_moscow = ZoneInfo("Europe/Moscow")
+    tz_ny = ZoneInfo("America/New_York")
+    raw = "2025-01-01T10:00"
+
+    moscow_dt = RecordAdmin._parse_datetime_local(raw, tz_moscow)
+    ny_dt = RecordAdmin._parse_datetime_local(raw, tz_ny)
+
+    assert moscow_dt == timezone.make_aware(
+        datetime(2025, 1, 1, 10, 0), tz_moscow
+    ).astimezone(ZoneInfo("UTC"))
+    assert ny_dt == timezone.make_aware(datetime(2025, 1, 1, 10, 0), tz_ny).astimezone(
+        ZoneInfo("UTC")
+    )
+    assert moscow_dt != ny_dt
