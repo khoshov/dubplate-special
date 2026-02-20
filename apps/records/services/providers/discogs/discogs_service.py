@@ -10,6 +10,26 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+class DiscogsServiceError(Exception):
+    """Базовая ошибка интеграции с Discogs."""
+
+
+class DiscogsConfigError(DiscogsServiceError):
+    """Ошибка конфигурации Discogs (токен/user-agent)."""
+
+
+class DiscogsAuthError(DiscogsServiceError):
+    """Ошибка авторизации в Discogs API."""
+
+
+class DiscogsNotFoundError(DiscogsServiceError):
+    """Релиз не найден в Discogs."""
+
+
+class DiscogsApiError(DiscogsServiceError):
+    """Прочая ошибка обращения к Discogs API."""
+
+
 class DiscogsService:
     """Сервис для работы с Discogs API.
 
@@ -25,9 +45,35 @@ class DiscogsService:
 
     def __init__(self):
         """Инициализация сервиса с настройками из Django settings."""
-        self.client = discogs_client.Client(
-            settings.DISCOGS_USER_AGENT, user_token=settings.DISCOGS_TOKEN
-        )
+        self.client: discogs_client.Client | None = None
+        self._init_error: DiscogsConfigError | None = None
+
+        token = str(getattr(settings, "DISCOGS_TOKEN", "") or "").strip()
+        user_agent = str(getattr(settings, "DISCOGS_USER_AGENT", "") or "").strip()
+
+        if not token:
+            self._init_error = DiscogsConfigError(
+                "Импорт из Discogs недоступен: не задан API-ключ (DISCOGS_API_KEY)."
+            )
+            return
+
+        if not user_agent:
+            self._init_error = DiscogsConfigError(
+                "Импорт из Discogs недоступен: не задан DISCOGS_USER_AGENT."
+            )
+            return
+
+        self.client = discogs_client.Client(user_agent, user_token=token)
+
+    def _ensure_client_ready(self) -> discogs_client.Client:
+        """Возвращает инициализированный клиент Discogs или поднимает ошибку конфигурации."""
+        if self._init_error is not None:
+            raise self._init_error
+        if self.client is None:
+            raise DiscogsConfigError(
+                "Импорт из Discogs недоступен: клиент Discogs не инициализирован."
+            )
+        return self.client
 
     def search_by_barcode(self, barcode: str) -> Optional[discogs_client.Release]:
         """Поиск релиза по штрих-коду.
@@ -38,25 +84,21 @@ class DiscogsService:
         Returns:
             Объект релиза или None, если не найден.
         """
-        try:
-            results = self._make_request(
-                self.client.search, barcode=barcode, type="release"
+        client = self._ensure_client_ready()
+        results = self._make_request(client.search, barcode=barcode, type="release")
+        if not results:
+            raise DiscogsNotFoundError(
+                f"Релиз не найден в Discogs по штрих-коду {barcode}."
             )
 
-            if results:
-                search_result = results[0]
-                # Пробуем refresh для получения полных данных
-                try:
-                    self._make_request(search_result.refresh)
-                except Exception as e:
-                    logger.warning(f"Failed to refresh search result: {e}")
+        search_result = results[0]
+        # refresh делаем best-effort, чтобы не ломать поток на неполных данных search-result
+        try:
+            self._make_request(search_result.refresh)
+        except DiscogsServiceError as e:
+            logger.warning("Discogs: не удалось refresh search result: %s", e)
 
-                return search_result
-
-        except Exception as e:
-            logger.error(f"Barcode search failed for {barcode}: {e}")
-
-        return None
+        return search_result
 
     def search_by_catalog_number(
         self, catalog_number: str
@@ -69,25 +111,23 @@ class DiscogsService:
         Returns:
             Объект релиза или None, если не найден.
         """
-        try:
-            results = self._make_request(
-                self.client.search, catno=catalog_number, type="release"
+        client = self._ensure_client_ready()
+        results = self._make_request(
+            client.search, catno=catalog_number, type="release"
+        )
+        if not results:
+            raise DiscogsNotFoundError(
+                f"Релиз не найден в Discogs по каталожному номеру {catalog_number}."
             )
 
-            if results:
-                search_result = results[0]
-                # Пробуем refresh для получения полных данных
-                try:
-                    self._make_request(search_result.refresh)
-                except Exception as e:
-                    logger.warning(f"Failed to refresh search result: {e}")
+        search_result = results[0]
+        # refresh делаем best-effort, чтобы не ломать поток на неполных данных search-result
+        try:
+            self._make_request(search_result.refresh)
+        except DiscogsServiceError as e:
+            logger.warning("Discogs: не удалось refresh search result: %s", e)
 
-                return search_result
-
-        except Exception as e:
-            logger.error(f"Catalog number search failed for {catalog_number}: {e}")
-
-        return None
+        return search_result
 
     def get_release(self, discogs_id: int) -> Optional[discogs_client.Release]:
         """Получение релиза по Discogs ID.
@@ -98,11 +138,8 @@ class DiscogsService:
         Returns:
             Объект релиза или None, если не найден.
         """
-        try:
-            return self._make_request(self.client.release, discogs_id)
-        except Exception as e:
-            logger.error(f"Failed to get release {discogs_id}: {e}")
-            return None
+        client = self._ensure_client_ready()
+        return self._make_request(client.release, discogs_id)
 
     def get_release_videos(self, discogs_id: int) -> List[Dict[str, str]]:
         """Получение списка видео для релиза.
@@ -115,13 +152,16 @@ class DiscogsService:
             Каждый словарь содержит ключи 'title' и 'url'.
         """
         try:
-            release = self._make_request(self.client.release, discogs_id)
+            client = self._ensure_client_ready()
+            release = self._make_request(client.release, discogs_id)
             if hasattr(release, "videos") and release.videos:
                 return [
                     {"title": video.title, "url": video.url} for video in release.videos
                 ]
-        except Exception as e:
-            logger.error(f"Failed to get videos for release {discogs_id}: {e}")
+        except DiscogsServiceError as e:
+            logger.error(
+                "Discogs: не удалось получить видео для релиза %s: %s", discogs_id, e
+            )
         return []
 
     def extract_release_data(self, release: discogs_client.Release) -> Dict[str, Any]:
@@ -281,16 +321,27 @@ class DiscogsService:
             Результат выполнения функции.
 
         Raises:
-            Exception: При ошибке аутентификации.
-            discogs_client.exceptions.HTTPError: При других HTTP ошибках.
+            DiscogsAuthError: При ошибке аутентификации.
+            DiscogsNotFoundError: При отсутствии данных.
+            DiscogsApiError: При прочих ошибках API.
         """
         try:
             return func(*args, **kwargs)
         except discogs_client.exceptions.HTTPError as e:
             if e.status_code == status.HTTP_401_UNAUTHORIZED:
-                raise Exception("Discogs authentication error. Check your token.")
+                raise DiscogsAuthError(
+                    "Ошибка авторизации Discogs. Проверьте API-ключ."
+                ) from e
+            elif e.status_code == status.HTTP_404_NOT_FOUND:
+                raise DiscogsNotFoundError("Релиз не найден в Discogs.") from e
             elif e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
-                logger.warning("Rate limit exceeded, waiting...")
+                logger.warning("Discogs: превышен rate limit, повтор через ожидание...")
                 time.sleep(self.RATE_LIMIT_WAIT_TIME)
                 return self._make_request(func, *args, **kwargs)
+            raise DiscogsApiError(
+                f"Discogs API вернул ошибку HTTP {e.status_code}."
+            ) from e
+        except DiscogsServiceError:
             raise
+        except Exception as e:
+            raise DiscogsApiError("Ошибка обращения к Discogs API.") from e
