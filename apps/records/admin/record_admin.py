@@ -10,15 +10,17 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.utils.html import format_html
 from vk_api.exceptions import ApiError
 
 from records.forms import RecordForm
-from records.models import Record, Artist, Format, Genre, Style
+from records.models import Artist, Format, Genre, Record, Style, VKPublicationLog
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
+from records.services.social.publication_log import register_vk_publication_event
 from records.services.social.vk_service import VKService
 from records.services.social.schedule import build_even_schedule
 from .actions import update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk
@@ -84,6 +86,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "release_day",
         "is_expected",
         "availability_status",
+        "vk_published_at_display",
     )
     list_filter = (
         "condition",
@@ -111,6 +114,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         "-created",
     )
     date_hierarchy = "created"
+    list_per_page = 20
 
     list_select_related = ("label",)
 
@@ -134,6 +138,21 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         return ", ".join(names) or "-"
 
     get_artists_display.short_description = "Артисты"
+
+    @admin.display(description="Опубликовано", ordering="vk_published_at")
+    def vk_published_at_display(self, obj: Record) -> str:
+        published_at = getattr(obj, "vk_published_at", None)
+        if published_at is None:
+            return "-"
+
+        published_at_utc = published_at.astimezone(dt_timezone.utc)
+        iso = published_at_utc.isoformat()
+        fallback_text = published_at_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return format_html(
+            '<time class="js-vk-published-at" data-utc="{}">{}</time>',
+            iso,
+            fallback_text,
+        )
 
     def get_urls(self):
         base_urls = super().get_urls()
@@ -259,9 +278,23 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                                         new_at=final_at,
                                     ),
                                 )
+                            register_vk_publication_event(
+                                record=record,
+                                mode=VKPublicationLog.Mode.SCHEDULED,
+                                status=VKPublicationLog.Status.SUCCESS,
+                                planned_publish_at=publish_at,
+                                effective_publish_at=final_at,
+                            )
                         except Exception as exc:
                             fail += 1
                             failed.append(f"#{record.pk} «{record}»: {exc!s}")
+                            register_vk_publication_event(
+                                record=record,
+                                mode=VKPublicationLog.Mode.SCHEDULED,
+                                status=VKPublicationLog.Status.FAILED,
+                                planned_publish_at=publish_at,
+                                error_message=str(exc),
+                            )
 
                     if ok:
                         messages.success(
@@ -519,6 +552,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
 
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}
+        js = ("records/js/admin_local_datetime.js",)
 
 
 @admin.register(Artist)
@@ -586,3 +620,35 @@ class StyleAdmin(admin.ModelAdmin):
         но остаётся доступной для функции автозаполнения.
         """
         return {}
+
+
+@admin.register(VKPublicationLog)
+class VKPublicationLogAdmin(admin.ModelAdmin):
+    list_display = (
+        "record",
+        "mode",
+        "status",
+        "planned_publish_at",
+        "effective_publish_at",
+        "vk_post_id",
+        "created",
+    )
+    list_filter = ("mode", "status", "created")
+    search_fields = (
+        "record__title",
+        "record__catalog_number",
+        "error_message",
+    )
+    autocomplete_fields = ("record",)
+    ordering = ("-created",)
+    readonly_fields = (
+        "record",
+        "mode",
+        "status",
+        "planned_publish_at",
+        "effective_publish_at",
+        "vk_post_id",
+        "error_message",
+        "created",
+        "modified",
+    )

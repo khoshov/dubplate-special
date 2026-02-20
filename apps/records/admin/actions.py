@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from django.contrib import admin, messages
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponseRedirect
 from django.utils.text import Truncator
+from django.utils import timezone
 from django.urls import reverse
 
-from records.models import Record
+from records.models import Record, VKPublicationLog
+from records.services.social.publication_log import register_vk_publication_event
 
 if TYPE_CHECKING:
     from .record_admin import RecordAdmin
@@ -33,6 +35,8 @@ def _batch_update(
     id_label: str,
     get_id: Callable[[Record], str | None],
     do_update: Callable[[Record], object],
+    on_success: Callable[[Record, object], None] | None = None,
+    on_error: Callable[[Record, Exception], None] | None = None,
 ) -> None:
     """Универсальный исполнитель массового обновления."""
     start_ts = time.perf_counter()
@@ -57,11 +61,15 @@ def _batch_update(
             skipped.append(f"{log_record_name}: нет {id_label}")
             continue
         try:
-            do_update(record)
+            result = do_update(record)
+            if on_success is not None:
+                on_success(record, result)
             ok += 1
         except Exception as e:
             fail += 1
             failed.append(f"{log_record_name}: {e!s}")
+            if on_error is not None:
+                on_error(record, e)
             logger.exception(
                 "Ошибка при обновлении %s (%s=%s): %s",
                 log_record_name,
@@ -146,6 +154,24 @@ def post_to_vk(
         )
         return post_id
 
+    def _on_success(record: Record, result: object) -> None:
+        post_id = int(result)
+        register_vk_publication_event(
+            record=record,
+            mode=VKPublicationLog.Mode.IMMEDIATE,
+            status=VKPublicationLog.Status.SUCCESS,
+            effective_publish_at=timezone.now(),
+            vk_post_id=post_id,
+        )
+
+    def _on_error(record: Record, error: Exception) -> None:
+        register_vk_publication_event(
+            record=record,
+            mode=VKPublicationLog.Mode.IMMEDIATE,
+            status=VKPublicationLog.Status.FAILED,
+            error_message=str(error),
+        )
+
     _batch_update(
         admin_obj,
         request,
@@ -160,6 +186,8 @@ def post_to_vk(
         id_label="record_id",
         get_id=_get_id,
         do_update=_do_post,
+        on_success=_on_success,
+        on_error=_on_error,
     )
 
 

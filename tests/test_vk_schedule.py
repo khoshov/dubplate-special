@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from records.admin.actions import post_to_vk
 from records.admin.record_admin import RecordAdmin
-from records.models import Record
+from records.models import Record, VKPublicationLog
 from records.services.social.schedule import build_even_schedule
 from records.services.social.vk_service import VKConfig, VKService
 from vk_api.exceptions import ApiError
@@ -107,6 +107,54 @@ def test_post_to_vk_action_ignores_timezone(settings):
         timezone.activate(previous_tz)
 
     assert calls == [None]
+    record.refresh_from_db()
+    assert record.vk_published_at is not None
+
+    event = record.vk_publication_logs.order_by("-created").first()
+    assert event is not None
+    assert event.mode == VKPublicationLog.Mode.IMMEDIATE
+    assert event.status == VKPublicationLog.Status.SUCCESS
+    assert event.vk_post_id == 1
+
+
+@pytest.mark.django_db
+def test_post_to_vk_action_logs_failed_event(settings):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    admin_site = AdminSite()
+    admin = RecordAdmin(Record, admin_site)
+
+    class DummyVKService:
+        def post_record_with_audio(self, record, publish_at=None, **kwargs):
+            raise RuntimeError("vk unavailable")
+
+    admin.vk_service = DummyVKService()
+
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="admin", email="admin@example.com", password="pass"
+    )
+
+    record = Record.objects.create(
+        title="R1", release_year=2000, release_month=1, release_day=1
+    )
+
+    request = RequestFactory().post("/admin/records/record/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    post_to_vk(admin, request, Record.objects.filter(pk=record.pk))
+
+    record.refresh_from_db()
+    assert record.vk_published_at is None
+
+    event = record.vk_publication_logs.order_by("-created").first()
+    assert event is not None
+    assert event.mode == VKPublicationLog.Mode.IMMEDIATE
+    assert event.status == VKPublicationLog.Status.FAILED
+    assert "vk unavailable" in event.error_message
 
 
 @pytest.mark.django_db
@@ -278,7 +326,18 @@ def test_vk_schedule_view_single_record_uses_publish_from(settings):
 
     response = admin.vk_schedule_view(request)
     assert response.status_code == 302
-    assert calls == [publish_at.astimezone(ZoneInfo("UTC"))]
+    expected_utc = publish_at.astimezone(ZoneInfo("UTC"))
+    assert calls == [expected_utc]
+
+    record.refresh_from_db()
+    assert record.vk_published_at == expected_utc
+
+    event = record.vk_publication_logs.order_by("-created").first()
+    assert event is not None
+    assert event.mode == VKPublicationLog.Mode.SCHEDULED
+    assert event.status == VKPublicationLog.Status.SUCCESS
+    assert event.planned_publish_at == expected_utc
+    assert event.effective_publish_at == expected_utc
 
 
 @pytest.mark.django_db
@@ -389,3 +448,28 @@ def test_parse_datetime_uses_client_timezone():
         ZoneInfo("UTC")
     )
     assert moscow_dt != ny_dt
+
+
+@pytest.mark.django_db
+def test_record_admin_vk_published_at_display(settings):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    admin_site = AdminSite()
+    admin = RecordAdmin(Record, admin_site)
+
+    record = Record.objects.create(
+        title="R1", release_year=2000, release_month=1, release_day=1
+    )
+    assert admin.vk_published_at_display(record) == "-"
+
+    published_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo("UTC"))
+    record.vk_published_at = published_at
+    rendered = str(admin.vk_published_at_display(record))
+
+    assert "js-vk-published-at" in rendered
+    assert "data-utc=" in rendered
+
+
+def test_record_admin_list_per_page_is_20():
+    assert RecordAdmin.list_per_page == 20

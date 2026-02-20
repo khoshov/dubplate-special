@@ -307,6 +307,12 @@ class Record(TimeStampedModel):
         default=RecordConditions.NEW,
         verbose_name=_("Состояние"),
     )
+    vk_published_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Опубликовано в VK"),
+    )
     discogs_id = models.IntegerField(
         unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
     )
@@ -345,6 +351,71 @@ class Record(TimeStampedModel):
         verbose_name = _("Record")
         verbose_name_plural = _("Records")
         ordering = ("title",)
+
+
+class VKPublicationLog(TimeStampedModel):
+    """Лог публикаций записей в VK."""
+
+    class Mode(models.TextChoices):
+        IMMEDIATE = "IMMEDIATE", _("Сразу")
+        SCHEDULED = "SCHEDULED", _("Отложено")
+
+    class Status(models.TextChoices):
+        SUCCESS = "SUCCESS", _("Успех")
+        FAILED = "FAILED", _("Ошибка")
+
+    record = models.ForeignKey(
+        Record,
+        on_delete=models.CASCADE,
+        related_name="vk_publication_logs",
+        verbose_name=_("Запись"),
+    )
+    mode = models.CharField(
+        max_length=16,
+        choices=Mode.choices,
+        db_index=True,
+        verbose_name=_("Режим публикации"),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        db_index=True,
+        verbose_name=_("Статус публикации"),
+    )
+    planned_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Запланировано на"),
+    )
+    effective_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Фактическое время публикации"),
+    )
+    vk_post_id = models.BigIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("ID поста VK"),
+    )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Текст ошибки"),
+    )
+
+    class Meta:
+        verbose_name = _("Лог публикации VK")
+        verbose_name_plural = _("Логи публикаций VK")
+        ordering = ("-created",)
+
+    def __str__(self) -> str:
+        status = self.get_status_display()
+        mode = self.get_mode_display()
+        record_id = getattr(self, "record_id", None)
+        return f"VK [{status}] ({mode}) record_id={record_id}"
 
 
 class RecordSource(models.Model):
