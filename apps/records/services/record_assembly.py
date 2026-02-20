@@ -143,7 +143,7 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
 
     Правила:
       - Сопоставление по name нечувствительно к регистру (iexact).
-      - 'not specified' канонизируется в 'Not specified' для жанров/стилей.
+      - 'not specified' / 'не указан' канонизируется в 'Not specified'.
       - Пустые строки игнорируются.
 
     Args:
@@ -169,7 +169,7 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
             record.save(update_fields=["label"])
 
     for raw in _list_of_str(data.get("genres")):
-        name = _canon_vocab(raw)
+        name = _canon_genre(raw)
         if not name:
             continue
         obj = Genre.objects.filter(name__iexact=name).first() or Genre.objects.create(
@@ -178,7 +178,7 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
         record.genres.add(obj)
 
     for raw in _list_of_str(data.get("styles")):
-        name = _canon_vocab(raw)
+        name = _canon_style(raw)
         if not name:
             continue
         obj = Style.objects.filter(name__iexact=name).first() or Style.objects.create(
@@ -265,12 +265,36 @@ def _seq_of_maps(value: object) -> Sequence[Mapping[str, object]]:
     return []
 
 
-def _canon_vocab(name: object) -> str:
+def _norm_vocab_key(value: str) -> str:
+    """Нормализует строку словаря для устойчивого сравнения."""
+    return " ".join(value.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _canon_genre(name: object) -> str:
     """
-    Возвращает канонизированное имя для словарей (жанр/стиль).
-    'not specified' → 'Not specified', пустые строки → ''.
+    Возвращает канонизированное имя жанра.
+    - not specified / не указан / не указано -> Not specified
     """
     s = _clean_or_none(name)
     if not s:
         return ""
-    return "Not specified" if s.lower() == "not specified" else s
+
+    key = _norm_vocab_key(s)
+    if key in {"not specified", "не указан", "не указано"}:
+        return "Not specified"
+    return s
+
+
+def _canon_style(name: object) -> str:
+    """
+    Возвращает канонизированное имя стиля.
+    - not specified / не указан / не указано -> Not specified
+    """
+    s = _clean_or_none(name)
+    if not s:
+        return ""
+
+    key = _norm_vocab_key(s)
+    if key in {"not specified", "не указан", "не указано"}:
+        return "Not specified"
+    return s

@@ -554,9 +554,13 @@ class FormatAdmin(admin.ModelAdmin):
 
 @admin.register(Genre)
 class GenreAdmin(admin.ModelAdmin):
-    list_display = ("name",)
+    list_display = ("display_name",)
     search_fields = ("name",)
     ordering = ("name",)
+
+    @admin.display(description="Название", ordering="name")
+    def display_name(self, obj: Genre) -> str:
+        return str(obj)
 
     def get_model_perms(self, request: HttpRequest):
         """
@@ -568,9 +572,13 @@ class GenreAdmin(admin.ModelAdmin):
 
 @admin.register(Style)
 class StyleAdmin(admin.ModelAdmin):
-    list_display = ("name",)
+    list_display = ("display_name",)
     search_fields = ("name",)
     ordering = ("name",)
+
+    @admin.display(description="Название", ordering="name")
+    def display_name(self, obj: Style) -> str:
+        return str(obj)
 
     def get_model_perms(self, request: HttpRequest):
         """

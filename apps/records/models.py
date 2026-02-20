@@ -36,7 +36,7 @@ class GenreChoices(models.TextChoices):
     DRUM_AND_BASS = "Drum and Bass", _("Drum and Bass")
     HARDCORE_BREAKBEAT = "Hardcore Breakbeat", _("Hardcore Breakbeat")
     BREAKBEAT = "Breakbeat", _("Breakbeat")
-    UK_GARAGE = "UK Garage", _("UK Garage")
+    GARAGE = "Garage", _("Garage")
     ELECTRO = "Electro", _("Electro")
     DUBSTEP = "Dubstep", _("Dubstep")
     GRIME = "Grime", _("Grime")
@@ -77,7 +77,8 @@ class FormatChoices(models.TextChoices):
 class RecordConditions:
     """Константы состояния пластинок."""
 
-    NEW = "НОВАЯ"
+    NEW = "SS"
+    NOT_SPECIFIED = "NOT_SPECIFIED"
     M = "M"
     NM = "NM"
     VGP = "VG+"
@@ -97,6 +98,7 @@ class RecordConditions:
         (G, "Good (G)"),
         (F, "Fair (F)"),
         (P, "Poor (P)"),
+        (NOT_SPECIFIED, "Не указано"),
     )
 
 
@@ -151,6 +153,8 @@ class Genre(TimeStampedModel):
     objects = GenreManager()
 
     def __str__(self):
+        if self.name == GenreChoices.NOT_SPECIFIED:
+            return "Не указан"
         return self.name
 
     class Meta:
@@ -167,6 +171,8 @@ class Style(TimeStampedModel):
     objects = StyleManager()
 
     def __str__(self):
+        if self.name == StyleChoices.NOT_SPECIFIED:
+            return "Не указан"
         return self.name
 
     class Meta:
@@ -296,7 +302,7 @@ class Record(TimeStampedModel):
     )
 
     condition = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=RecordConditions.CONDITION_CHOICES,
         default=RecordConditions.NEW,
         verbose_name=_("Состояние"),
