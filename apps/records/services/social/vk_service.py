@@ -13,7 +13,7 @@ import vk_api
 from django.conf import settings
 from vk_api.exceptions import ApiError
 
-from records.models import Record
+from records.models import AvailableChoices, Record
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,15 @@ def _is_not_specified_value(text: str) -> bool:
         "незадано",
         "нет",
         "none",
+    }
+
+
+def _is_preorder_value(text: str) -> bool:
+    """True, если значение означает статус PREORDER/ПРЕДЗАКАЗ."""
+    s = (text or "").strip().lower()
+    return s in {
+        AvailableChoices.PREORDER.lower(),
+        "предзаказ",
     }
 
 
@@ -279,13 +288,19 @@ def compose_record_text(record: Any) -> str:
 
     price = getattr(record, "price", "")
     condition = getattr(record, "condition", "")
-    availability = getattr(record, "availability_status", "")
+    availability_raw = getattr(record, "availability_status", "")
+    availability = availability_raw
 
     if hasattr(record, "get_condition_display"):
         condition = record.get_condition_display()
 
     if hasattr(record, "get_availability_status_display"):
         availability = record.get_availability_status_display()
+
+    if _is_preorder_value(str(availability_raw)) or _is_preorder_value(
+        str(availability)
+    ):
+        condition = ""
 
     header_parts = [str(word) for word in (price, condition, availability) if word]
     first_line = " ".join(header_parts)

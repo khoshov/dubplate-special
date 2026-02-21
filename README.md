@@ -9,22 +9,25 @@
 - `pgdata/` — локальные данные Postgres (не коммитить).
 - В корне: `manage.py`, `Dockerfile`, `docker-compose.yml`.
 
-## Окружение разработки (основной режим — Docker Compose)
-- Поднять окружение: `docker compose up -d --build`
-- Команды выполнять внутри контейнера `django` через `docker compose exec`.
+## Окружение разработки (основной режим — локально через uv)
+- Основные команды (миграции/линт/тесты) выполняются локально через `uv run`.
 
-### Команды внутри контейнера
-- Django команды: `docker compose exec django uv run manage.py <command>`
-- Сервер (как в compose): `uv run manage.py runserver 0.0.0.0:8000`
-- Тесты: `docker compose exec django uv run pytest`
-- Линт: `docker compose exec django uv run ruff check .`
-- Формат: `docker compose exec django uv run ruff format .`
-- Типы: `docker compose exec django uv run mypy .`
+### Локальные команды
+- Django команды: `uv run manage.py <command>`
+- Сервер: `uv run manage.py runserver`
+- Тесты: `uv run pytest`
+- Линт: `uv run ruff check .`
+- Формат: `uv run ruff format .`
+- Типы: `uv run mypy .`
+
+### Docker Compose (опционально)
+- Поднять окружение: `docker compose up -d --build`
+- При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
 
 ## Зависимости (uv)
 - Dev‑инструменты закреплены в `[dependency-groups].dev` и запускаются через `uv run ...`.
 - `uvx` использовать только для разовых утилит, не являющихся зависимостями проекта.
-- При изменении зависимостей: `uv lock`, затем `uv sync --dev --locked` (в контейнере).
+- При изменении зависимостей: `uv lock`, затем `uv sync --dev --locked` (локально).
 
 ## Миграции
 - После изменения моделей: `uv run manage.py makemigrations`, затем `uv run manage.py migrate`.
@@ -109,14 +112,14 @@ uv run manage.py runserver  # Альтернатива python manage.py runserve
 
 [Ruff](https://github.com/astral-sh/ruff) - это молниеносный линтер для Python, также разработанный Astral.
 
-**Установка Ruff через UV:**
+**Запуск Ruff через UV (из зависимостей проекта):**
 ```bash
-uvx ruff  # Установит последнюю версию Ruff
+uv run ruff --version
 ```
 
 **Проверка кода с помощью Ruff:**
 ```bash
-uvx ruff check .  # Проверит все файлы в текущей директории
+uv run ruff check .  # Проверит все файлы в текущей директории
 ```
 </details>
 

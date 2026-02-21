@@ -36,7 +36,7 @@ class GenreChoices(models.TextChoices):
     DRUM_AND_BASS = "Drum and Bass", _("Drum and Bass")
     HARDCORE_BREAKBEAT = "Hardcore Breakbeat", _("Hardcore Breakbeat")
     BREAKBEAT = "Breakbeat", _("Breakbeat")
-    UK_GARAGE = "UK Garage", _("UK Garage")
+    GARAGE = "Garage", _("Garage")
     ELECTRO = "Electro", _("Electro")
     DUBSTEP = "Dubstep", _("Dubstep")
     GRIME = "Grime", _("Grime")
@@ -77,7 +77,8 @@ class FormatChoices(models.TextChoices):
 class RecordConditions:
     """Константы состояния пластинок."""
 
-    NEW = "НОВАЯ"
+    NEW = "SS"
+    NOT_SPECIFIED = "NOT_SPECIFIED"
     M = "M"
     NM = "NM"
     VGP = "VG+"
@@ -97,6 +98,7 @@ class RecordConditions:
         (G, "Good (G)"),
         (F, "Fair (F)"),
         (P, "Poor (P)"),
+        (NOT_SPECIFIED, "Не указано"),
     )
 
 
@@ -151,6 +153,8 @@ class Genre(TimeStampedModel):
     objects = GenreManager()
 
     def __str__(self):
+        if self.name == GenreChoices.NOT_SPECIFIED:
+            return "Не указан"
         return self.name
 
     class Meta:
@@ -167,6 +171,8 @@ class Style(TimeStampedModel):
     objects = StyleManager()
 
     def __str__(self):
+        if self.name == StyleChoices.NOT_SPECIFIED:
+            return "Не указан"
         return self.name
 
     class Meta:
@@ -296,10 +302,16 @@ class Record(TimeStampedModel):
     )
 
     condition = models.CharField(
-        max_length=10,
+        max_length=20,
         choices=RecordConditions.CONDITION_CHOICES,
         default=RecordConditions.NEW,
         verbose_name=_("Состояние"),
+    )
+    vk_published_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Опубликовано в VK"),
     )
     discogs_id = models.IntegerField(
         unique=True, null=True, blank=True, verbose_name=_("Discogs ID")
@@ -339,6 +351,71 @@ class Record(TimeStampedModel):
         verbose_name = _("Record")
         verbose_name_plural = _("Records")
         ordering = ("title",)
+
+
+class VKPublicationLog(TimeStampedModel):
+    """Лог публикаций записей в VK."""
+
+    class Mode(models.TextChoices):
+        IMMEDIATE = "IMMEDIATE", _("Сразу")
+        SCHEDULED = "SCHEDULED", _("Отложено")
+
+    class Status(models.TextChoices):
+        SUCCESS = "SUCCESS", _("Успех")
+        FAILED = "FAILED", _("Ошибка")
+
+    record = models.ForeignKey(
+        Record,
+        on_delete=models.CASCADE,
+        related_name="vk_publication_logs",
+        verbose_name=_("Запись"),
+    )
+    mode = models.CharField(
+        max_length=16,
+        choices=Mode.choices,
+        db_index=True,
+        verbose_name=_("Режим публикации"),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        db_index=True,
+        verbose_name=_("Статус публикации"),
+    )
+    planned_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Запланировано на"),
+    )
+    effective_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Фактическое время публикации"),
+    )
+    vk_post_id = models.BigIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("ID поста VK"),
+    )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Текст ошибки"),
+    )
+
+    class Meta:
+        verbose_name = _("Лог публикации VK")
+        verbose_name_plural = _("Логи публикаций VK")
+        ordering = ("-created",)
+
+    def __str__(self) -> str:
+        status = self.get_status_display()
+        mode = self.get_mode_display()
+        record_id = getattr(self, "record_id", None)
+        return f"VK [{status}] ({mode}) record_id={record_id}"
 
 
 class RecordSource(models.Model):

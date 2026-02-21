@@ -32,7 +32,13 @@ from records.services.provider_payload_adapter import (
     adapt_redeye_payload,
     adapt_discogs_release,
 )
-from records.services.providers.discogs.discogs_service import DiscogsService
+from records.services.providers.discogs.discogs_service import (
+    DiscogsApiError,
+    DiscogsAuthError,
+    DiscogsConfigError,
+    DiscogsNotFoundError,
+    DiscogsService,
+)
 from records.services.providers.redeye.helpers import validate_redeye_product_url
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_assembly import build_record_from_payload
@@ -114,16 +120,31 @@ class RecordService:
             self._update_missing_identifiers(existing, barcode, catalog_number)
             return existing, False
 
-        if barcode:
-            release = self.discogs_service.search_by_barcode(barcode)
-        elif catalog_number:
-            release = self.discogs_service.search_by_catalog_number(catalog_number)
-        else:
+        try:
+            if barcode:
+                release = self.discogs_service.search_by_barcode(barcode)
+            elif catalog_number:
+                release = self.discogs_service.search_by_catalog_number(catalog_number)
+            else:
+                raise ValueError(
+                    "Нужно указать barcode или catalog_number для импорта из Discogs."
+                )
+        except DiscogsConfigError as exc:
+            logger.warning("Discogs config error: %s", exc)
+            raise ValueError(str(exc)) from exc
+        except DiscogsAuthError as exc:
+            logger.warning("Discogs auth error: %s", exc)
             raise ValueError(
-                "Нужно указать barcode или catalog_number для импорта из Discogs."
-            )
-        if not release:
-            raise ValueError("Релиз не найден в Discogs.")
+                "Не удалось авторизоваться в Discogs. Проверьте API-ключ."
+            ) from exc
+        except DiscogsNotFoundError as exc:
+            logger.info("Discogs release not found: %s", exc)
+            raise ValueError("Релиз не найден в Discogs.") from exc
+        except DiscogsApiError as exc:
+            logger.error("Discogs API error during import: %s", exc)
+            raise ValueError(
+                "Ошибка обращения к Discogs API. Попробуйте позже."
+            ) from exc
 
         payload = adapt_discogs_release(release)
         if barcode and not payload.get("barcode"):
@@ -133,6 +154,8 @@ class RecordService:
 
         with transaction.atomic():
             record = build_record_from_payload(payload)
+
+            self._upsert_discogs_source(record=record, release=release)
 
             if save_image and getattr(release, "images", None):
                 first = release.images[0]
@@ -161,14 +184,30 @@ class RecordService:
             record.catalog_number,
         )
 
-        release = self.discogs_service.get_release(record.discogs_id)
-        if not release:
-            raise ValueError(f"Релиз {record.discogs_id} не найден в Discogs.")
+        try:
+            release = self.discogs_service.get_release(record.discogs_id)
+        except DiscogsConfigError as exc:
+            logger.warning("Discogs config error on update: %s", exc)
+            raise ValueError(str(exc)) from exc
+        except DiscogsAuthError as exc:
+            logger.warning("Discogs auth error on update: %s", exc)
+            raise ValueError(
+                "Не удалось авторизоваться в Discogs. Проверьте API-ключ."
+            ) from exc
+        except DiscogsNotFoundError as exc:
+            logger.info("Discogs release not found on update: %s", exc)
+            raise ValueError(f"Релиз {record.discogs_id} не найден в Discogs.") from exc
+        except DiscogsApiError as exc:
+            logger.error("Discogs API error on update: %s", exc)
+            raise ValueError(
+                "Ошибка обращения к Discogs API. Попробуйте позже."
+            ) from exc
 
         payload = adapt_discogs_release(release)
 
         with transaction.atomic():
             update_record_from_payload(record, payload)
+            self._upsert_discogs_source(record=record, release=release)
 
             if (
                 update_image
@@ -495,3 +534,74 @@ class RecordService:
                 "Обновлён источник %s/%s для записи %s", provider, role, record.pk
             )
         return obj
+
+    @staticmethod
+    def _extract_discogs_release_id(
+        release: object, fallback: int | None = None
+    ) -> int | None:
+        """Метод извлекает discogs release id из объекта релиза или fallback."""
+        release_id = getattr(release, "id", None)
+        if isinstance(release_id, int):
+            return release_id
+
+        data = getattr(release, "data", None)
+        if isinstance(data, dict):
+            raw_id = data.get("id")
+            try:
+                return int(raw_id)
+            except (TypeError, ValueError):
+                pass
+
+        return fallback
+
+    @staticmethod
+    def _resolve_discogs_source_url(
+        release: object, release_id: int | None = None
+    ) -> str | None:
+        """Метод выбирает URL источника Discogs (с fallback на API release endpoint)."""
+        candidates: list[str] = []
+
+        for attr in ("resource_url", "uri", "url"):
+            value = getattr(release, attr, None)
+            if isinstance(value, str) and value.strip():
+                candidates.append(value.strip())
+
+        data = getattr(release, "data", None)
+        if isinstance(data, dict):
+            for key in ("resource_url", "uri", "url"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.append(value.strip())
+
+        for url in candidates:
+            if url.startswith("https://") or url.startswith("http://"):
+                return url
+
+        if release_id is not None:
+            return f"https://api.discogs.com/releases/{release_id}"
+
+        return None
+
+    def _upsert_discogs_source(self, *, record: Record, release: object) -> None:
+        """Метод создаёт/обновляет RecordSource для Discogs API."""
+        release_id = self._extract_discogs_release_id(
+            release=release, fallback=record.discogs_id
+        )
+        source_url = self._resolve_discogs_source_url(
+            release=release, release_id=release_id
+        )
+        if not source_url:
+            logger.warning(
+                "Не удалось определить URL источника Discogs для записи %s (release_id=%s).",
+                record.pk,
+                release_id,
+            )
+            return
+
+        self._upsert_record_source(
+            record=record,
+            provider=RecordSource.Provider.DISCOGS,
+            role=RecordSource.Role.API,
+            url=source_url,
+            can_fetch_audio=False,
+        )
