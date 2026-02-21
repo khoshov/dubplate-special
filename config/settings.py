@@ -38,9 +38,9 @@ DEBUG = env.bool("DEBUG", False)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 # Discogs token
-DISCOGS_TOKEN = env("DISCOGS_API_KEY")
+DISCOGS_TOKEN = env("DISCOGS_API_KEY", default="")
 # User Agent
-DISCOGS_USER_AGENT = env("DISCOGS_USER_AGENT")
+DISCOGS_USER_AGENT = env("DISCOGS_USER_AGENT", default="dubplate-special/1.0")
 # SMS Settings
 SMS_API_KEY = env("SMS_API_KEY", default=None)
 SMS_PROVIDER = env("SMS_PROVIDER", default="sms_ru")
