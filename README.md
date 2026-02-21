@@ -24,6 +24,72 @@
 - Поднять окружение: `docker compose up -d --build`
 - При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
 
+## Команды Redeye (2 режима запуска)
+- Для `parse_redeye` и `redeye_mp3_attach` поддерживаются оба режима: локально и в Docker.
+- Для каждого режима ниже есть примеры под `bash` и под `PowerShell`.
+
+### `parse_redeye`
+Локально (bash):
+```bash
+uv run manage.py parse_redeye \
+  --category all \
+  --limit 2 \
+  --save
+```
+
+Локально (PowerShell):
+```powershell
+uv run manage.py parse_redeye `
+  --category all `
+  --limit 2 `
+  --save
+```
+
+Docker (bash):
+```bash
+docker compose exec django uv run manage.py parse_redeye \
+  --category all \
+  --limit 2 \
+  --save
+```
+
+Docker (PowerShell):
+```powershell
+docker compose exec django uv run manage.py parse_redeye `
+  --category all `
+  --limit 2 `
+  --save
+```
+
+### `redeye_mp3_attach`
+Локально (bash):
+```bash
+uv run manage.py redeye_mp3_attach \
+  --limit 20 \
+  --force
+```
+
+Локально (PowerShell):
+```powershell
+uv run manage.py redeye_mp3_attach `
+  --limit 20 `
+  --force
+```
+
+Docker (bash):
+```bash
+docker compose exec django uv run manage.py redeye_mp3_attach \
+  --limit 20 \
+  --force
+```
+
+Docker (PowerShell):
+```powershell
+docker compose exec django uv run manage.py redeye_mp3_attach `
+  --limit 20 `
+  --force
+```
+
 ## Зависимости (uv)
 - Dev‑инструменты закреплены в `[dependency-groups].dev` и запускаются через `uv run ...`.
 - `uvx` использовать только для разовых утилит, не являющихся зависимостями проекта.
