@@ -6,14 +6,31 @@ Management-команда: парсинг разделов Redeye и (опцио
      → payload  → _upsert_record_from_payload(save=True)
      → create_tracks_for_record(...)
 
- БЫСТРЫЙ КОД ЗАПУСКА
+Запуск (выберите один вариант):
 
-docker compose exec django uv run python manage.py parse_redeye `
-   --category all `
-   --limit 2 `
-   --save
+Локально (bash):
+  uv run manage.py parse_redeye \
+    --category all \
+    --limit 2 \
+    --save
 
+Локально (PowerShell):
+  uv run manage.py parse_redeye `
+    --category all `
+    --limit 2 `
+    --save
 
+Docker (bash):
+  docker compose exec django uv run manage.py parse_redeye \
+    --category all \
+    --limit 2 \
+    --save
+
+Docker (PowerShell):
+  docker compose exec django uv run manage.py parse_redeye `
+    --category all `
+    --limit 2 `
+    --save
 
 """
 

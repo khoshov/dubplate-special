@@ -1,10 +1,27 @@
 """
 Массовая докачка mp3-превью для записей с источником Redeye.
 
-Пример:
-docker compose exec django uv run python manage.py redeye_mp3_attach `
-  --limit 20 `
-  --force
+Запуск (выберите один вариант):
+
+Локально (bash):
+  uv run manage.py redeye_mp3_attach \
+    --limit 20 \
+    --force
+
+Локально (PowerShell):
+  uv run manage.py redeye_mp3_attach `
+    --limit 20 `
+    --force
+
+Docker (bash):
+  docker compose exec django uv run manage.py redeye_mp3_attach \
+    --limit 20 \
+    --force
+
+Docker (PowerShell):
+  docker compose exec django uv run manage.py redeye_mp3_attach `
+    --limit 20 `
+    --force
 """
 
 from __future__ import annotations
