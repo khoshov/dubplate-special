@@ -10,6 +10,7 @@ from django.http import HttpRequest, HttpResponseRedirect
 from django.utils.text import Truncator
 from django.utils import timezone
 from django.urls import reverse
+from django.utils.html import format_html
 
 from records.models import Record, VKPublicationLog
 from records.services.social.publication_log import register_vk_publication_event
@@ -217,6 +218,13 @@ def update_from_discogs(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
     record_service = admin_obj.record_service
+    enqueued_job_ids: list[str] = []
+
+    def _on_success(_record: Record, result: object) -> None:
+        job_id = getattr(result, "_discogs_enrichment_job_id", None)
+        if job_id:
+            enqueued_job_ids.append(str(job_id))
+
     _batch_update(
         admin_obj,
         request,
@@ -230,7 +238,69 @@ def update_from_discogs(
         fail_header="Ошибки:",
         id_label="Discogs ID",
         get_id=lambda record: record.discogs_id,
-        do_update=lambda record: record_service.update_from_discogs(record=record),
+        do_update=lambda record: record_service.update_from_discogs(
+            record=record,
+            requested_by_user_id=getattr(request.user, "id", None),
+        ),
+        on_success=_on_success,
+    )
+    if enqueued_job_ids:
+        admin_obj.message_user(
+            request,
+            (
+                "Запущено YouTube-аудио-обогащение: "
+                f"{len(enqueued_job_ids)} job(s). IDs: {', '.join(enqueued_job_ids)}"
+            ),
+            level=messages.INFO,
+        )
+
+
+@admin.action(description="Обновить аудио из YouTube")
+def update_audio_from_youtube(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
+    """Ставит массовое YouTube-аудио-обогащение в очередь."""
+    total = queryset.count()
+    if total == 0:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для обновления аудио из YouTube.",
+            level=messages.WARNING,
+        )
+        return
+
+    record_ids = list(queryset.values_list("pk", flat=True))
+    try:
+        job = admin_obj.record_service.enqueue_manual_youtube_audio_enrichment(
+            record_ids=record_ids,
+            requested_by_user_id=getattr(request.user, "id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Ошибка запуска YouTube-аудио-обогащения (records=%s): %s",
+            record_ids,
+            exc,
+        )
+        admin_obj.message_user(
+            request,
+            f"Не удалось запустить обновление аудио из YouTube: {exc!s}",
+            level=messages.ERROR,
+        )
+        return
+
+    report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    admin_obj.message_user(
+        request,
+        f"Поставлено в очередь YouTube-аудио-обогащение для {total} записей (job {job.id}).",
+        level=messages.SUCCESS,
+    )
+    admin_obj.message_user(
+        request,
+        format_html(
+            'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+            report_url,
+        ),
+        level=messages.INFO,
     )
 
 

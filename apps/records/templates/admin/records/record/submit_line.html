@@ -8,6 +8,7 @@
 
   {% if change and original.pk %}
     {% url 'admin:records_record_redeye_mp3_download' original.pk as refresh_url %}
+    {% url 'admin:records_record_youtube_audio_refresh' original.pk as youtube_refresh_url %}
     <span class="record-refresh-tools">
       <input
         type="submit"
@@ -16,6 +17,15 @@
         class="button"
         formmethod="post"
         formaction="{{ refresh_url }}"
+        formnovalidate
+      >
+      <input
+        type="submit"
+        name="_refresh_youtube_audio"
+        value="Обновить аудио из YouTube"
+        class="button"
+        formmethod="post"
+        formaction="{{ youtube_refresh_url }}"
         formnovalidate
       >
     </span>

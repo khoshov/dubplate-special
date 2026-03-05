@@ -23,6 +23,7 @@ from django.db import IntegrityError, transaction
 from playwright.sync_api import Browser
 
 from records.models import (
+    AudioEnrichmentJob,
     Record,
     RecordSource,
 )
@@ -43,6 +44,7 @@ from records.services.providers.redeye.helpers import validate_redeye_product_ur
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_assembly import build_record_from_payload
 from records.services.record_assembly import update_record_from_payload
+from records.services.tasks import run_youtube_enrichment_job
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,7 @@ class RecordService:
         barcode: Optional[str] = None,
         catalog_number: Optional[str] = None,
         save_image: bool = True,
+        requested_by_user_id: int | None = None,
     ) -> Tuple[Record, bool]:
         """
         Метод реализует импорт записи из Discogs (по barcode или catalog_number).
@@ -163,10 +166,25 @@ class RecordService:
                 if uri and self.image_service.download_cover(record, uri):
                     logger.info("Обложка скачана для записи %s (Discogs)", record.id)
 
-        logger.info("Импорт из Discogs выполнен: %s", record.id)
+            enrichment_job = self.enqueue_discogs_audio_enrichment(
+                record=record,
+                requested_by_user_id=requested_by_user_id,
+            )
+            setattr(record, "_discogs_enrichment_job_id", str(enrichment_job.id))
+
+        logger.info(
+            "Импорт из Discogs выполнен: %s (enrichment_job=%s)",
+            record.id,
+            getattr(record, "_discogs_enrichment_job_id", None),
+        )
         return record, True
 
-    def update_from_discogs(self, record: Record, update_image: bool = True) -> Record:
+    def update_from_discogs(
+        self,
+        record: Record,
+        update_image: bool = True,
+        requested_by_user_id: int | None = None,
+    ) -> Record:
         """
         Метод обновляет существующую запись данными из Discogs.
         Обновляются: базовые поля, связи и треклист (полная замена). Обложка — опционально.
@@ -219,8 +237,106 @@ class RecordService:
                 if uri and self.image_service.download_cover(record, uri):
                     logger.info("Обновлена обложка для записи %s", record.id)
 
-        logger.info("Обновление из Discogs завершено: %s", record.id)
+            enrichment_job = self.enqueue_discogs_audio_enrichment(
+                record=record,
+                requested_by_user_id=requested_by_user_id,
+            )
+            setattr(record, "_discogs_enrichment_job_id", str(enrichment_job.id))
+
+        logger.info(
+            "Обновление из Discogs завершено: %s (enrichment_job=%s)",
+            record.id,
+            getattr(record, "_discogs_enrichment_job_id", None),
+        )
         return record
+
+    def enqueue_discogs_audio_enrichment(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит YouTube enrichment для одной Discogs-записи в очередь Celery."""
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.DISCOGS_UPDATE,
+            overwrite_existing=False,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_manual_youtube_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """
+        Метод ставит ручное массовое YouTube-обогащение в очередь.
+
+        Для ручного `admin action` всегда включается перезапись существующих mp3.
+        """
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=record_ids,
+            source=AudioEnrichmentJob.Source.MANUAL_LIST,
+            overwrite_existing=True,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_record_youtube_audio_enrichment(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+        overwrite_existing: bool = True,
+    ) -> AudioEnrichmentJob:
+        """Ставит точечное YouTube-обогащение для одной записи с формы админки."""
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+            overwrite_existing=overwrite_existing,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_youtube_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        source: str,
+        overwrite_existing: bool,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит YouTube-аудио-обогащение в очередь по списку записей."""
+        normalized_record_ids = sorted({int(record_id) for record_id in record_ids})
+        if not normalized_record_ids:
+            raise ValueError(
+                "Список record_ids для YouTube enrichment не должен быть пустым."
+            )
+
+        job = AudioEnrichmentJob.objects.create(
+            source=source,
+            status=AudioEnrichmentJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=overwrite_existing,
+            total_records=len(normalized_record_ids),
+        )
+        payload = {
+            "job_id": str(job.id),
+            "record_ids": normalized_record_ids,
+            "overwrite_existing": overwrite_existing,
+            "requested_by_user_id": requested_by_user_id,
+            "source": source,
+        }
+        transaction.on_commit(
+            lambda: run_youtube_enrichment_job.delay(payload)  # noqa: B023
+        )
+        logger.info(
+            "YouTube enrichment enqueue: source=%s, job_id=%s, records=%s, overwrite=%s",
+            source,
+            job.id,
+            normalized_record_ids,
+            overwrite_existing,
+        )
+        return job
 
     def import_from_redeye(
         self,

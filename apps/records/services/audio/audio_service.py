@@ -5,9 +5,14 @@ from typing import Optional
 
 from playwright.sync_api import Browser
 
-from records.models import Record, Track
+from records.models import AudioEnrichmentJob, AudioEnrichmentJobRecord, Record, Track
 from records.services.audio.common.downloader import (
     download_audio_to_track as _download_audio_to_track,
+)
+from records.services.audio.providers.youtube_audio_enrichment import (
+    ProcessRecordPayload,
+    RunJobPayload,
+    YouTubeAudioEnrichmentProvider,
 )
 from records.services.audio.providers.redeye.redeye_audio_player import (
     attach_audio_from_redeye_player,
@@ -116,4 +121,52 @@ class AudioService:
             max_bytes=max_bytes,
             overwrite=overwrite,
             referer=referer,
+        )
+
+    @staticmethod
+    def parse_run_job_payload(payload: dict[str, object]) -> RunJobPayload:
+        """Метод валидирует payload запуска асинхронной job."""
+        return RunJobPayload.from_dict(payload)
+
+    @staticmethod
+    def parse_process_record_payload(
+        payload: dict[str, object],
+    ) -> ProcessRecordPayload:
+        """Метод валидирует payload обработки одной записи."""
+        return ProcessRecordPayload.from_dict(payload)
+
+    @staticmethod
+    def acquire_youtube_record_lock(
+        *,
+        job: AudioEnrichmentJob,
+        record: Record,
+    ) -> tuple[AudioEnrichmentJobRecord, bool]:
+        """Метод захватывает lock на обработку записи для YouTube enrichment."""
+        return YouTubeAudioEnrichmentProvider.acquire_record_lock(
+            job=job, record=record
+        )
+
+    @staticmethod
+    def mark_youtube_record_running(job_record: AudioEnrichmentJobRecord) -> None:
+        """Метод переводит job-record в состояние running."""
+        YouTubeAudioEnrichmentProvider.mark_record_running(job_record)
+
+    @staticmethod
+    def mark_youtube_record_finished(
+        *,
+        job_record: AudioEnrichmentJobRecord,
+        updated_count: int,
+        skipped_count: int,
+        error_count: int,
+        force_failed: bool = False,
+        reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+    ) -> AudioEnrichmentJobRecord:
+        """Метод фиксирует итог обработки job-record."""
+        return YouTubeAudioEnrichmentProvider.mark_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            force_failed=force_failed,
+            reason_code=reason_code,
         )

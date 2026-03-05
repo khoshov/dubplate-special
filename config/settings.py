@@ -179,6 +179,30 @@ LOCALE_PATHS = [
     os.path.join(BASE_DIR, "locale"),
 ]
 
+# =================
+# CELERY / REDIS
+# =================
+if RUN_ENV == "docker":
+    CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+    CELERY_RESULT_BACKEND = env(
+        "CELERY_RESULT_BACKEND",
+        default="redis://redis:6379/1",
+    )
+else:
+    CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://127.0.0.1:6379/0")
+    CELERY_RESULT_BACKEND = env(
+        "CELERY_RESULT_BACKEND",
+        default="redis://127.0.0.1:6379/1",
+    )
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=1800)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=1500)
+
 # =============
 # STATIC FILES
 # =============

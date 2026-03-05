@@ -9,10 +9,23 @@
 - `pgdata/` — локальные данные Postgres (не коммитить).
 - В корне: `manage.py`, `Dockerfile`, `docker-compose.yml`.
 
-## Окружение разработки (основной режим — локально через uv)
-- Основные команды (миграции/линт/тесты) выполняются локально через `uv run`.
+## Безопасность репозитория
+- Секреты хранятся только в `.env`/`.env.*`; эти файлы не коммитятся.
+- `env.example` используется как шаблон переменных и может храниться в репозитории.
+- Локальные данные `media/` и `pgdata/` не должны попадать в коммиты.
 
-### Локальные команды
+## Окружение разработки (основной режим — Docker Compose)
+- Основная разработка ведётся локальным редактированием кода с запуском сервисов в контейнерах.
+- В dev поднимаются `django`, `postgres`, `redis`, `celery`; изменения исходников подхватываются контейнерами автоматически.
+
+### Docker Compose (рекомендуется)
+- Поднять/обновить окружение: `docker compose up -d --build`
+- Django-команды: `docker compose exec django uv run manage.py <command>`
+- Линт: `docker compose exec django uv run ruff check .`
+- Формат: `docker compose exec django uv run ruff format .`
+- Тесты: `docker compose exec django uv run pytest`
+
+### Локальные команды (дополнительно)
 - Django команды: `uv run manage.py <command>`
 - Сервер: `uv run manage.py runserver`
 - Тесты: `uv run pytest`
@@ -20,9 +33,10 @@
 - Формат: `uv run ruff format .`
 - Типы: `uv run mypy .`
 
-### Docker Compose (опционально)
-- Поднять окружение: `docker compose up -d --build`
-- При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
+## Продакшн (без Docker)
+- Продакшн-развёртывание использует systemd-сервисы на сервере.
+- Минимальный набор сервисов: Django (ASGI/WSGI), Celery worker, Redis, PostgreSQL.
+- Для операционного контроля используются стандартные команды `systemctl` и журналы `journalctl`.
 
 ## Команды Redeye (2 режима запуска)
 - Для `parse_redeye` и `redeye_mp3_attach` поддерживаются оба режима: локально и в Docker.

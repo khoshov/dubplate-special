@@ -1,7 +1,11 @@
 import calendar
+import uuid
 from datetime import date
 
+from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django_ckeditor_5.fields import CKEditor5Field
@@ -509,6 +513,257 @@ class RecordSource(models.Model):
 
     def __str__(self) -> str:  # type: ignore[override]
         return f"{self.get_provider_display()}:{self.get_role_display()} → {self.url}"
+
+
+class AudioEnrichmentJob(TimeStampedModel):
+    """Асинхронная операция YouTube-аудио-обогащения."""
+
+    class Source(models.TextChoices):
+        DISCOGS_UPDATE = "discogs_update", _("Discogs update")
+        MANUAL_LIST = "manual_list", _("Manual list action")
+        MANUAL_RECORD = "manual_record", _("Manual record form")
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", _("Queued")
+        RUNNING = "running", _("Running")
+        COMPLETED = "completed", _("Completed")
+        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Completed with errors")
+        FAILED = "failed", _("Failed")
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name=_("ID"),
+    )
+    source = models.CharField(
+        max_length=32,
+        choices=Source.choices,
+        verbose_name=_("Source"),
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+        verbose_name=_("Status"),
+    )
+    requested_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audio_enrichment_jobs",
+        verbose_name=_("Requested by"),
+    )
+    overwrite_existing = models.BooleanField(
+        default=False,
+        verbose_name=_("Overwrite existing"),
+    )
+    total_records = models.PositiveIntegerField(
+        default=0, verbose_name=_("Total records")
+    )
+    total_tracks = models.PositiveIntegerField(
+        default=0, verbose_name=_("Total tracks")
+    )
+    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Updated"))
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Skipped"))
+    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Errors"))
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Started at"),
+    )
+    finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Finished at"),
+    )
+
+    class Meta:
+        verbose_name = _("Audio enrichment job")
+        verbose_name_plural = _("Audio enrichment jobs")
+        ordering = ("-created",)
+
+    def __str__(self) -> str:
+        return f"AudioJob {self.id} [{self.status}]"
+
+
+class AudioEnrichmentJobRecord(TimeStampedModel):
+    """Состояние обработки конкретной записи в рамках асинхронной операции."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", _("Queued")
+        RUNNING = "running", _("Running")
+        COMPLETED = "completed", _("Completed")
+        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Completed with errors")
+        FAILED = "failed", _("Failed")
+        SKIPPED = "skipped", _("Skipped")
+
+    class Reason(models.TextChoices):
+        NONE = "", _("None")
+        ALREADY_RUNNING = "already_running", _("Already running")
+        MISSING_SOURCE = "missing_source", _("Missing source")
+        VALIDATION_ERROR = "validation_error", _("Validation error")
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name=_("ID"),
+    )
+    job = models.ForeignKey(
+        AudioEnrichmentJob,
+        on_delete=models.CASCADE,
+        related_name="job_records",
+        verbose_name=_("Job"),
+    )
+    record = models.ForeignKey(
+        "Record",
+        on_delete=models.CASCADE,
+        related_name="audio_enrichment_job_records",
+        verbose_name=_("Record"),
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+        verbose_name=_("Status"),
+    )
+    reason_code = models.CharField(
+        max_length=64,
+        choices=Reason.choices,
+        default=Reason.NONE,
+        blank=True,
+        verbose_name=_("Reason code"),
+    )
+    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Updated"))
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Skipped"))
+    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Errors"))
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Started at"),
+    )
+    finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Finished at"),
+    )
+
+    class Meta:
+        verbose_name = _("Audio enrichment job record")
+        verbose_name_plural = _("Audio enrichment job records")
+        ordering = ("-created",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "record"],
+                name="uq_audio_enrichment_job_record",
+            ),
+            models.UniqueConstraint(
+                fields=["record"],
+                condition=Q(status__in=["queued", "running"]),
+                name="uq_audio_enrichment_active_record",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"AudioJobRecord job={self.job_id} record={self.record_id} [{self.status}]"
+        )
+
+
+class AudioEnrichmentTrackResult(TimeStampedModel):
+    """Результат обработки отдельного трека в рамках job-record."""
+
+    class Status(models.TextChoices):
+        UPDATED = "updated", _("Updated")
+        SKIPPED = "skipped", _("Skipped")
+        FAILED = "failed", _("Failed")
+
+    class Reason(models.TextChoices):
+        NONE = "", _("None")
+        MISMATCH = "mismatch", _("Mismatch")
+        MISSING_YOUTUBE_URL = "missing_youtube_url", _("Missing YouTube URL")
+        INVALID_URL = "invalid_url", _("Invalid URL")
+        ALREADY_RUNNING = "already_running", _("Already running")
+        DOWNLOAD_ERROR = "download_error", _("Download error")
+        RETRY_EXHAUSTED = "retry_exhausted", _("Retry exhausted")
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name=_("ID"),
+    )
+    job_record = models.ForeignKey(
+        AudioEnrichmentJobRecord,
+        on_delete=models.CASCADE,
+        related_name="track_results",
+        verbose_name=_("Job record"),
+    )
+    track = models.ForeignKey(
+        "Track",
+        on_delete=models.CASCADE,
+        related_name="audio_enrichment_track_results",
+        verbose_name=_("Track"),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        verbose_name=_("Status"),
+    )
+    reason_code = models.CharField(
+        max_length=64,
+        choices=Reason.choices,
+        default=Reason.NONE,
+        blank=True,
+        verbose_name=_("Reason code"),
+    )
+    attempts = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(3)],
+        verbose_name=_("Attempts"),
+    )
+    matched_title = models.BooleanField(default=False, verbose_name=_("Matched title"))
+    matched_artist = models.BooleanField(
+        default=False, verbose_name=_("Matched artist")
+    )
+    previous_audio_present = models.BooleanField(
+        default=False,
+        verbose_name=_("Previous audio present"),
+    )
+    final_audio_name = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        verbose_name=_("Final audio name"),
+    )
+    error_message = models.TextField(
+        blank=True, default="", verbose_name=_("Error message")
+    )
+
+    class Meta:
+        verbose_name = _("Audio enrichment track result")
+        verbose_name_plural = _("Audio enrichment track results")
+        ordering = ("created",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job_record", "track"],
+                name="uq_audio_enrichment_track_result",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"AudioTrackResult job_record={self.job_record_id} "
+            f"track={self.track_id} [{self.status}]"
+        )
 
 
 class Track(TimeStampedModel):
