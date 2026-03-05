@@ -37,6 +37,7 @@ SECRET_KEY = env("SECRET_KEY")
 DEBUG = env.bool("DEBUG", False)
 # Hosts/domain names that this Django site can serve
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 5000
 # Discogs token
 DISCOGS_TOKEN = env("DISCOGS_API_KEY", default="")
 # User Agent
@@ -78,6 +79,7 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "core.middleware.AdminTooManyFieldsSentMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",

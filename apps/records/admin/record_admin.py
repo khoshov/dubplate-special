@@ -13,6 +13,7 @@ from django.utils.dateparse import parse_datetime
 from django.utils.html import format_html
 from vk_api.exceptions import ApiError
 
+from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
 from records.forms import RecordForm
 from records.models import Artist, Format, Genre, Record, Style, VKPublicationLog
 from records.services.audio.audio_service import AudioService
@@ -128,6 +129,15 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             audio_service=AudioService(),
         )
         self.vk_service = VKService.from_settings()
+
+    def changelist_view(
+        self, request: HttpRequest, extra_context: Optional[dict] = None
+    ) -> HttpResponse:
+        """Отображает отложенное сообщение об ошибке массового POST из middleware."""
+        pending_error = request.session.pop(ADMIN_TOO_MANY_FIELDS_SESSION_KEY, None)
+        if pending_error:
+            messages.error(request, pending_error)
+        return super().changelist_view(request, extra_context=extra_context)
 
     def get_artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
