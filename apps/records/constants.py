@@ -34,14 +34,12 @@ REDEYE_HOST: str = "www.redeyerecords.co.uk"
 REDEYE_URLS = [
     {
         "code": "bass-preorders",
-        # "url": "https://www.redeyerecords.co.uk/bass-music/pre-orders",
         "url": "https://www.redeyerecords.co.uk/bass-music/new-releases",
         "style": "Not specified",
         "genre": "Bass Music",
     },
     {
         "code": "dnb-preorders",
-        # "url": "https://www.redeyerecords.co.uk/drum-and-bass/pre-orders",
         "url": "https://www.redeyerecords.co.uk/drum-and-bass/new-releases",
         "style": "Not specified",
         "genre": "Drum and Bass",

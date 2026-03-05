@@ -14,7 +14,7 @@ from django.utils.html import format_html
 from vk_api.exceptions import ApiError
 
 from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
-from records.constants import SOURCE_DISCOGS
+from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
 from records.forms import RecordForm
 from records.models import Artist, Format, Genre, Record, Style, VKPublicationLog
 from records.services.audio.audio_service import AudioService
@@ -139,6 +139,41 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         if pending_error:
             messages.error(request, pending_error)
         return super().changelist_view(request, extra_context=extra_context)
+
+    def add_view(
+        self,
+        request: HttpRequest,
+        form_url: str = "",
+        extra_context: Optional[dict] = None,
+    ) -> HttpResponse:
+        """Показывает всплывающее сообщение при некорректном URL Redeye в add-форме."""
+        response = super().add_view(
+            request=request, form_url=form_url, extra_context=extra_context
+        )
+        if request.method != "POST" or not isinstance(response, TemplateResponse):
+            return response
+
+        admin_form = (response.context_data or {}).get("adminform")
+        form = getattr(admin_form, "form", None)
+        if form is None:
+            return response
+
+        source_value = (form.data.get("source") or "").strip().lower()
+        source_url_value = (form.data.get("source_url") or "").strip()
+        source_url_errors = [str(err) for err in form.errors.get("source_url", [])]
+
+        if (
+            source_value == SOURCE_REDEYE
+            and source_url_value
+            and RecordForm.REDEYE_URL_NOT_FOUND_ERROR in source_url_errors
+        ):
+            self.message_user(
+                request,
+                RecordForm.REDEYE_URL_NOT_FOUND_ERROR,
+                level=messages.ERROR,
+            )
+
+        return response
 
     def get_artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
@@ -447,39 +482,40 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return self.fieldsets
 
         source = (
-            request.POST.get("source") or request.GET.get("source") or SOURCE_DISCOGS
+            request.POST.get("source") or request.GET.get("source") or SOURCE_REDEYE
         ).lower()
-        if source == "redeye":
+        if source == SOURCE_DISCOGS:
             logger.debug(
-                "RecordAdmin.get_fieldsets(add): источник=Redeye → поля: (source, catalog_number)."
+                "RecordAdmin.get_fieldsets(add): источник=Discogs → URL Redeye скрыт."
             )
-            add_fieldsets_redeye = (
-                (
-                    None,
-                    {
-                        "fields": ("source", "catalog_number"),
-                        "description": "Импорт из Redeye использует только каталожный номер.",
-                    },
-                ),
+            add_import_fields = ("source", "catalog_number", "barcode")
+            description = "Импорт из Discogs поддерживает barcode или catalog_number."
+        else:
+            logger.debug(
+                "RecordAdmin.get_fieldsets(add): источник=Redeye → barcode скрыт."
             )
-            return add_fieldsets_redeye
+            add_import_fields = ("source", "catalog_number", "source_url")
+            description = (
+                "Импорт из Redeye поддерживает catalog_number или URL карточки релиза."
+            )
 
-        logger.debug(
-            "RecordAdmin.get_fieldsets(add): источник=Discogs → поля: (source, barcode, catalog_number)."
-        )
-        add_fieldsets_discogs = (
+        return (
             (
                 None,
                 {
-                    "fields": ("source", "barcode", "catalog_number"),
-                    "description": (
-                        "Выберите источник данных (Discogs или Redeye), затем введите штрих-код или каталожный номер. "
-                        "Для Redeye используется только каталожный номер."
-                    ),
+                    "fields": add_import_fields,
+                    "description": description,
                 },
             ),
         )
-        return add_fieldsets_discogs
+
+    def get_changeform_initial_data(self, request: HttpRequest) -> dict[str, str]:
+        """Синхронизирует источник импорта в форме с query-параметром source."""
+        initial = super().get_changeform_initial_data(request)
+        source = (request.GET.get("source") or SOURCE_REDEYE).strip().lower()
+        if source in {SOURCE_REDEYE, SOURCE_DISCOGS}:
+            initial["source"] = source
+        return initial
 
     def get_inline_instances(self, request: HttpRequest, obj: Optional[Record] = None):
         """
