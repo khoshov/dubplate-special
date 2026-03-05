@@ -181,3 +181,4 @@ AGENT_INSTRUCTIONS.md
 AGENT*.md
 agent*.md
 .codex/
+/.uv-cache/
