@@ -102,7 +102,7 @@ AUDIO_STREAM_CHUNK_SIZE: int = 64 * 1024
 AUDIO_DEFAULT_TIMEOUT: int = 30
 """Таймаут HTTP-загрузки аудио-файла (сек)."""
 
-AUDIO_DEFAULT_MAX_BYTES: int = 15 * 1024 * 1024
+AUDIO_DEFAULT_MAX_BYTES: int = 40 * 1024 * 1024
 """Максимально допустимый размер аудио-файла (байт)."""
 
 ALLOWED_AUDIO_CONTENT_TYPES = {
