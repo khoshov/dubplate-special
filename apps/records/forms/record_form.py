@@ -40,7 +40,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
 
     source = forms.ChoiceField(
         choices=SOURCE_CHOICES,
-        initial=SOURCE_DISCOGS,
+        initial=SOURCE_REDEYE,
         required=True,
         label="Источник данных",
         help_text="Выберите источник для автоматического импорта",

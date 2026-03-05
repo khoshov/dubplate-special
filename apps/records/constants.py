@@ -20,8 +20,8 @@ SOURCE_DISCOGS: str = "discogs"
 SOURCE_REDEYE: str = "redeye"
 
 SOURCE_CHOICES: Tuple[Tuple[str, str], ...] = (
-    (SOURCE_DISCOGS, "Discogs"),
     (SOURCE_REDEYE, "Redeye Records"),
+    (SOURCE_DISCOGS, "Discogs"),
 )
 
 

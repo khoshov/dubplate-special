@@ -14,6 +14,7 @@ from django.utils.html import format_html
 from vk_api.exceptions import ApiError
 
 from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
+from records.constants import SOURCE_DISCOGS
 from records.forms import RecordForm
 from records.models import Artist, Format, Genre, Record, Style, VKPublicationLog
 from records.services.audio.audio_service import AudioService
@@ -446,7 +447,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             return self.fieldsets
 
         source = (
-            request.POST.get("source") or request.GET.get("source") or "discogs"
+            request.POST.get("source") or request.GET.get("source") or SOURCE_DISCOGS
         ).lower()
         if source == "redeye":
             logger.debug(
