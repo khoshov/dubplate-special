@@ -20,8 +20,8 @@ SOURCE_DISCOGS: str = "discogs"
 SOURCE_REDEYE: str = "redeye"
 
 SOURCE_CHOICES: Tuple[Tuple[str, str], ...] = (
-    (SOURCE_DISCOGS, "Discogs"),
     (SOURCE_REDEYE, "Redeye Records"),
+    (SOURCE_DISCOGS, "Discogs"),
 )
 
 
@@ -34,13 +34,13 @@ REDEYE_HOST: str = "www.redeyerecords.co.uk"
 REDEYE_URLS = [
     {
         "code": "bass-preorders",
-        "url": "https://www.redeyerecords.co.uk/bass-music/pre-orders",
+        "url": "https://www.redeyerecords.co.uk/bass-music/new-releases",
         "style": "Not specified",
         "genre": "Bass Music",
     },
     {
         "code": "dnb-preorders",
-        "url": "https://www.redeyerecords.co.uk/drum-and-bass/pre-orders",
+        "url": "https://www.redeyerecords.co.uk/drum-and-bass/new-releases",
         "style": "Not specified",
         "genre": "Drum and Bass",
     },
@@ -102,7 +102,7 @@ AUDIO_STREAM_CHUNK_SIZE: int = 64 * 1024
 AUDIO_DEFAULT_TIMEOUT: int = 30
 """Таймаут HTTP-загрузки аудио-файла (сек)."""
 
-AUDIO_DEFAULT_MAX_BYTES: int = 15 * 1024 * 1024
+AUDIO_DEFAULT_MAX_BYTES: int = 40 * 1024 * 1024
 """Максимально допустимый размер аудио-файла (байт)."""
 
 ALLOWED_AUDIO_CONTENT_TYPES = {

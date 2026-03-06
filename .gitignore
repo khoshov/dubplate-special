@@ -1,6 +1,3 @@
-# Created by https://www.toptal.com/developers/gitignore/api/python
-# Edit at https://www.toptal.com/developers/gitignore?templates=python
-
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -53,6 +50,8 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest_cache_local/
+pytest-cache-files-*/
 cover/
 
 # Translations
@@ -181,3 +180,7 @@ pgdata
 staticfiles
 AGENTS.md
 AGENT_INSTRUCTIONS.md
+AGENT*.md
+agent*.md
+.codex/
+/.uv-cache/

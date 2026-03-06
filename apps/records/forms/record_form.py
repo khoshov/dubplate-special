@@ -8,11 +8,16 @@ from django.core.exceptions import ValidationError
 
 from .mixins import ApplyFieldsMixin
 from .validators import RecordIdentifierValidator
-from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE, SOURCE_CHOICES
+from records.constants import (
+    SOURCE_CHOICES,
+    SOURCE_DISCOGS,
+    SOURCE_REDEYE,
+)
 from records.models import Record
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.image.image_service import ImageService
 from records.services.audio.audio_service import AudioService
+from records.services.providers.redeye.helpers import validate_redeye_product_url
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
 
@@ -37,13 +42,22 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
     record_service: RecordService
     save_m2m: Callable[[], None]
     duplicate_record: Optional[Record] = None
+    REDEYE_URL_NOT_FOUND_ERROR = "Некорректный URL: запись в Redeye Records не найдена."
+    REDEYE_IDENTIFIER_REQUIRED_ERROR = (
+        "Для импорта из Redeye укажите URL карточки или catalog_number."
+    )
 
     source = forms.ChoiceField(
         choices=SOURCE_CHOICES,
-        initial=SOURCE_DISCOGS,
+        initial=SOURCE_REDEYE,
         required=True,
         label="Источник данных",
         help_text="Выберите источник для автоматического импорта",
+    )
+    source_url = forms.URLField(
+        required=False,
+        label="URL карточки Redeye",
+        help_text="Прямая ссылка на карточку релиза на сайте Redeye Records (или укажите catalog_number).",
     )
 
     class Meta:
@@ -77,6 +91,8 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             audio_service=AudioService(),
         )
         self.save_m2m = lambda: None  # type: ignore[assignment]
+        self._prefetched_redeye_payload: dict | None = None
+        self._prefetched_redeye_catalog_number: str | None = None
 
         if "barcode" in self.fields:
             self.fields["barcode"].required = False
@@ -94,14 +110,11 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             )
         else:
             self.fields.pop("source", None)
+            self.fields.pop("source_url", None)
 
-    def _setup_fields_for_new_record(self, current_source: str) -> None:
-        """Убирает поля не соответствующие источнику."""
-        allowed: set = set()
-        if current_source == SOURCE_REDEYE:
-            allowed = {"source", "catalog_number"}
-        elif current_source == SOURCE_DISCOGS:
-            allowed = {"source", "barcode", "catalog_number"}
+    def _setup_fields_for_new_record(self, _current_source: str) -> None:
+        """Убирает поля, не участвующие в импорте при создании записи."""
+        allowed = {"source", "barcode", "catalog_number", "source_url"}
 
         for name in list(self.fields.keys()):
             if name not in allowed:
@@ -120,6 +133,13 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 {
                     "placeholder": "Например: RT0541LP2",
                     "class": "forms-control catalog-input",
+                }
+            )
+        if "source_url" in self.fields:
+            self.fields["source_url"].widget.attrs.update(
+                {
+                    "placeholder": ("https://www.redeyerecords.co.uk/vinyl/..."),
+                    "class": "forms-control source-url-input",
                 }
             )
         if "source" in self.fields:
@@ -144,7 +164,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         Общая валидация формы.
 
         Create:
-            - Redeye: обязателен catalog_number (НО не проверяем его уникальность).
+            - Redeye: обязателен хотя бы один идентификатор (source_url ИЛИ catalog_number).
             - Discogs: обязателен хотя бы один идентификатор (barcode ИЛИ catalog_number).
         Edit:
             - поведение без изменений (валидация как обычно).
@@ -156,15 +176,48 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         source = cleaned.get("source") or self.data.get("source") or SOURCE_DISCOGS
 
         if source == SOURCE_REDEYE:
-            if not cleaned.get("catalog_number"):
-                logger.debug("Валидация: Redeye без каталожного номера — ошибка формы.")
+            source_url = (cleaned.get("source_url") or "").strip()
+            catalog_number = (cleaned.get("catalog_number") or "").strip().upper()
+            if not source_url and not catalog_number:
                 raise ValidationError(
-                    {
-                        "catalog_number": "Для импорта из Redeye укажите каталожный номер."
-                    }
+                    {"source_url": self.REDEYE_IDENTIFIER_REQUIRED_ERROR}
                 )
+            if source_url:
+                try:
+                    validate_redeye_product_url(source_url)
+                except ValueError as err:
+                    raise ValidationError({"source_url": str(err)})
+            if source_url and not catalog_number:
+                try:
+                    prefetched_payload = (
+                        self.record_service.parse_redeye_product_by_url(source_url)
+                        or {}
+                    )
+                except ValueError:
+                    raise ValidationError(
+                        {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
+                    )
+                except Exception:
+                    logger.warning(
+                        "Не удалось разобрать карточку Redeye по URL во время валидации формы.",
+                        exc_info=True,
+                    )
+                    raise ValidationError(
+                        {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
+                    )
+
+                parsed_catalog_number = (
+                    str(prefetched_payload.get("catalog_number") or "").strip().upper()
+                )
+                if not parsed_catalog_number:
+                    raise ValidationError(
+                        {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
+                    )
+                self._prefetched_redeye_payload = prefetched_payload
+                self._prefetched_redeye_catalog_number = parsed_catalog_number
+                cleaned["catalog_number"] = parsed_catalog_number
             return cleaned
-        elif source == SOURCE_DISCOGS:
+        if source == SOURCE_DISCOGS:
             return RecordIdentifierValidator.validate_identifiers_required(cleaned)
         return cleaned
 
@@ -194,7 +247,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             — обычное сохранение ModelForm.
 
         Create:
-            — импорт из выбранного источника (Redeye по catalog_number, Discogs по barcode/catalog_number),
+            — импорт из выбранного источника:
+              Redeye по catalog_number или прямой ссылке,
+              Discogs по barcode/catalog_number,
             — применение значений формы (если заданы),
             — установка duplicate_record, если импорт обнаружил существующую запись (imported=False).
         """
@@ -205,13 +260,47 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         source: str = self.cleaned_data.get("source") or SOURCE_DISCOGS
         barcode: Optional[str] = self.cleaned_data.get("barcode")
         catalog_number: Optional[str] = self.cleaned_data.get("catalog_number")
+        source_url: Optional[str] = self.cleaned_data.get("source_url")
 
         try:
             if source == SOURCE_REDEYE:
                 logger.debug("Выбран redeye в качестве источника")
-                record, record_is_new = self.record_service.import_from_redeye(
-                    catalog_number=catalog_number
-                )
+                normalized_source_url = (source_url or "").strip()
+                fallback_catalog_number = (catalog_number or "").strip().upper()
+                if normalized_source_url and not fallback_catalog_number:
+                    raw_payload = (
+                        self._prefetched_redeye_payload
+                        if self._prefetched_redeye_payload is not None
+                        else (
+                            self.record_service.parse_redeye_product_by_url(
+                                normalized_source_url
+                            )
+                            or {}
+                        )
+                    )
+                    parsed_catalog_number = (
+                        self._prefetched_redeye_catalog_number
+                        or str(raw_payload.get("catalog_number") or "").strip().upper()
+                    )
+                    effective_catalog_number = parsed_catalog_number
+                    if not effective_catalog_number:
+                        raise ValidationError(
+                            {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
+                        )
+                    record, record_is_new = self.record_service.import_from_redeye(
+                        catalog_number=effective_catalog_number,
+                        raw_payload=raw_payload,
+                        source_url=normalized_source_url,
+                    )
+                else:
+                    if not fallback_catalog_number:
+                        raise ValidationError(
+                            {"source_url": self.REDEYE_IDENTIFIER_REQUIRED_ERROR}
+                        )
+                    record, record_is_new = self.record_service.import_from_redeye(
+                        catalog_number=fallback_catalog_number,
+                        source_url=normalized_source_url or None,
+                    )
             elif source == SOURCE_DISCOGS:
                 logger.debug("Выбран discogs в качестве источника")
                 record, record_is_new = self.record_service.import_from_discogs(
@@ -244,8 +333,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
 
         except ValueError as err:
             logger.warning("Не удалось импортировать из %s: %s.", source, err)
+            error_field = "source_url" if source == SOURCE_REDEYE else "catalog_number"
             raise ValidationError(
-                {"catalog_number": f"Не удалось импортировать из {source}: {err}"}
+                {error_field: f"Не удалось импортировать из {source}: {err}"}
             )
 
     class Media:

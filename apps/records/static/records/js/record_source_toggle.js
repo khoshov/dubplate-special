@@ -1,27 +1,44 @@
 (function () {
-  function toggleFields() {
-    const source = document.querySelector('select[name="source"]');
-    if (!source) return;
+  function normalizeSource(value) {
+    return (value || '').trim().toLowerCase();
+  }
 
-    const barcodeRow = document.querySelector('.forms-row.field-barcode, .field-barcode');
-    const catalogRow = document.querySelector('.forms-row.field-catalog_number, .field-catalog_number');
+  function getCurrentSourceFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeSource(params.get('source'));
+  }
 
-    if (!barcodeRow || !catalogRow) return;
+  function syncSourceSelectWithUrl(sourceSelect) {
+    const sourceFromUrl = getCurrentSourceFromUrl();
+    if (!sourceFromUrl) return;
 
-    if (source.value === 'redeye') {
-      barcodeRow.style.display = 'none';
-      catalogRow.style.display = '';
-    } else {
-      barcodeRow.style.display = '';
-      catalogRow.style.display = '';
+    const hasOption = Array.from(sourceSelect.options).some(function (option) {
+      return normalizeSource(option.value) === sourceFromUrl;
+    });
+    if (!hasOption) return;
+
+    if (normalizeSource(sourceSelect.value) !== sourceFromUrl) {
+      sourceSelect.value = sourceFromUrl;
     }
   }
 
+  function reloadWithSelectedSource(selectedSource) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('source', selectedSource);
+    window.location.assign(url.toString());
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
-    toggleFields();
     const source = document.querySelector('select[name="source"]');
-    if (source) {
-      source.addEventListener('change', toggleFields);
-    }
+    if (!source) return;
+
+    syncSourceSelectWithUrl(source);
+
+    source.addEventListener('change', function () {
+      const selectedSource = normalizeSource(source.value);
+      const currentSource = getCurrentSourceFromUrl() || 'redeye';
+      if (!selectedSource || selectedSource === currentSource) return;
+      reloadWithSelectedSource(selectedSource);
+    });
   });
 })();

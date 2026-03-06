@@ -52,6 +52,9 @@ RX_POS_ALPHA = re.compile(r"^\s*([A-D]\d{1,2})\s*[.) :\-–—]?\s+(.*)$", re.I)
 # Чисто числовая позиция: "1. Title" / "2) Title"
 RX_POS_NUM = re.compile(r"^\s*(\d{1,2})[.)]\s+(.*)$")
 
+# Встроенные маркеры позиций в одной строке: "A1. ... A2. ... B1. ..."
+RX_INLINE_POS = re.compile(r"\b(?:[A-D]\d{1,2}(?:[.) :\-–—]?\s+)|\d{1,2}[.)]\s+)", re.I)
+
 # Длительность в конце строки (опционально)
 RX_DURATION = re.compile(r"^(.*?)(?:\s+(\d{1,2}:\d{2}))?$")
 
@@ -129,29 +132,60 @@ def _html_lines_to_tracks(html_fragment: str) -> List[TrackPayload]:
 
     # Разбор строк с позициями/длительностями
     parsed: List[Dict[str, Optional[str]]] = []
+
+    def _split_inline_position_chunks(line: str) -> List[str]:
+        """
+        Делит одну строку на несколько, если позиции треков записаны inline.
+
+        Пример:
+            "A1. Foo A2. Bar B1. Baz" -> ["A1. Foo", "A2. Bar", "B1. Baz"]
+        """
+        normalized_line = re.sub(r"\s+", " ", line).strip()
+        markers = list(RX_INLINE_POS.finditer(normalized_line))
+        if len(markers) < 2:
+            return [line]
+        if markers[0].start() != 0:
+            return [line]
+
+        chunks: List[str] = []
+        for idx, marker in enumerate(markers):
+            start = marker.start()
+            end = (
+                markers[idx + 1].start()
+                if idx + 1 < len(markers)
+                else len(normalized_line)
+            )
+            chunk = normalized_line[start:end].strip(" \t\r\n-–—")
+            if chunk:
+                chunks.append(chunk)
+        return chunks or [line]
+
     for line in lines:
-        # Пропускаем заголовки сторон пластинки
-        if RX_SIDE.match(line):
-            continue
+        for chunk in _split_inline_position_chunks(line):
+            # Пропускаем заголовки сторон пластинки
+            if RX_SIDE.match(chunk):
+                continue
 
-        match = RX_POS_ALPHA.match(line) or RX_POS_NUM.match(line)
-        if match:
-            position = match.group(1).strip()
-            tail = match.group(2).strip()
-        else:
-            position = ""
-            tail = line
+            match = RX_POS_ALPHA.match(chunk) or RX_POS_NUM.match(chunk)
+            if match:
+                position = match.group(1).strip()
+                tail = match.group(2).strip()
+            else:
+                position = ""
+                tail = chunk
 
-        md = RX_DURATION.fullmatch(tail)
-        if md:
-            title = (md.group(1) or "").strip()
-            duration = ((md.group(2) or "").strip()) or None
-        else:
-            title = tail
-            duration = None
+            md = RX_DURATION.fullmatch(tail)
+            if md:
+                title = (md.group(1) or "").strip()
+                duration = ((md.group(2) or "").strip()) or None
+            else:
+                title = tail
+                duration = None
 
-        if title:
-            parsed.append({"position": position, "title": title, "duration": duration})
+            if title:
+                parsed.append(
+                    {"position": position, "title": title, "duration": duration}
+                )
 
     # Дедуп по (position, title) с приоритетом варианта, где есть duration
     dedup: Dict[tuple[str, str], Dict[str, Optional[str]]] = {}
