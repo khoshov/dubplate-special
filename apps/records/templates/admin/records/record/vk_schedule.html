@@ -1,0 +1,90 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <h1>Планирование публикации в VK</h1>
+
+  <p>Выбрано записей: {{ records|length }}</p>
+  <ul>
+    {% for record in records %}
+      <li>#{{ record.pk }} — {{ record }}</li>
+    {% endfor %}
+  </ul>
+
+  <form method="post">
+    {% csrf_token %}
+    {% for pk in selected_ids %}
+      <input type="hidden" name="ids" value="{{ pk }}">
+    {% endfor %}
+    <input type="hidden" id="id_timezone" name="timezone" value="{{ timezone_value }}">
+
+    <p class="help">
+      Время вводится в зоне: <strong id="tz-label">{{ timezone_label }}</strong>
+      {% if timezone_fallback %}
+        (не удалось определить зону браузера, используется настройка сервера)
+      {% endif %}
+    </p>
+
+    <fieldset class="module aligned">
+      {% if show_single %}
+        <div class="form-row">
+          <label for="id_publish_at">Публиковать в</label>
+          <input
+            type="datetime-local"
+            id="id_publish_at"
+            name="publish_at"
+            value="{{ publish_at_value }}"
+            required
+          >
+        </div>
+      {% else %}
+        <div class="form-row">
+          <label for="id_publish_from">Публиковать с</label>
+          <input
+            type="datetime-local"
+            id="id_publish_from"
+            name="publish_from"
+            value="{{ publish_from_value }}"
+            required
+          >
+        </div>
+        <div class="form-row">
+          <label for="id_publish_to">Публиковать по</label>
+          <input
+            type="datetime-local"
+            id="id_publish_to"
+            name="publish_to"
+            value="{{ publish_to_value }}"
+            required
+          >
+        </div>
+      {% endif %}
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" value="Запланировать" class="default">
+      <a class="button cancel-link" href="{% url 'admin:records_record_changelist' %}">
+        Отмена
+      </a>
+    </div>
+  </form>
+
+  <script>
+    (function () {
+      var tz = "";
+      try {
+        tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      } catch (e) {
+        tz = "";
+      }
+      var input = document.getElementById("id_timezone");
+      var label = document.getElementById("tz-label");
+      if (input && tz) {
+        input.value = tz;
+      }
+      if (label && tz) {
+        label.textContent = tz;
+      }
+    })();
+  </script>
+{% endblock %}
