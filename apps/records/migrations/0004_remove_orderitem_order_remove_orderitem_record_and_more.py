@@ -4,74 +4,95 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('records', '0003_alter_order_options_order_notes_order_status_and_more'),
+        ("records", "0003_alter_order_options_order_notes_order_status_and_more"),
     ]
 
     operations = [
         migrations.RemoveField(
-            model_name='orderitem',
-            name='order',
+            model_name="orderitem",
+            name="order",
         ),
         migrations.RemoveField(
-            model_name='orderitem',
-            name='record',
+            model_name="orderitem",
+            name="record",
         ),
         migrations.AlterField(
-            model_name='format',
-            name='name',
-            field=models.CharField(max_length=100, unique=True, verbose_name='Name'),
+            model_name="format",
+            name="name",
+            field=models.CharField(max_length=100, unique=True, verbose_name="Name"),
         ),
         migrations.AlterField(
-            model_name='genre',
-            name='name',
-            field=models.CharField(max_length=100, unique=True, verbose_name='Name'),
+            model_name="genre",
+            name="name",
+            field=models.CharField(max_length=100, unique=True, verbose_name="Name"),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='artists',
-            field=models.ManyToManyField(related_name='records', to='records.artist', verbose_name='Artists'),
+            model_name="record",
+            name="artists",
+            field=models.ManyToManyField(
+                related_name="records", to="records.artist", verbose_name="Artists"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='barcode',
-            field=models.CharField(blank=True, max_length=20, null=True, unique=True, verbose_name='Barcode'),
+            model_name="record",
+            name="barcode",
+            field=models.CharField(
+                blank=True,
+                max_length=20,
+                null=True,
+                unique=True,
+                verbose_name="Barcode",
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='catalog_number',
-            field=models.CharField(blank=True, max_length=50, null=True, unique=True, verbose_name='Catalog number'),
+            model_name="record",
+            name="catalog_number",
+            field=models.CharField(
+                blank=True,
+                max_length=50,
+                null=True,
+                unique=True,
+                verbose_name="Catalog number",
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='discogs_id',
-            field=models.IntegerField(blank=True, null=True, unique=True, verbose_name='Discogs ID'),
+            model_name="record",
+            name="discogs_id",
+            field=models.IntegerField(
+                blank=True, null=True, unique=True, verbose_name="Discogs ID"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='formats',
-            field=models.ManyToManyField(related_name='records', to='records.format', verbose_name='Formats'),
+            model_name="record",
+            name="formats",
+            field=models.ManyToManyField(
+                related_name="records", to="records.format", verbose_name="Formats"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='genres',
-            field=models.ManyToManyField(related_name='records', to='records.genre', verbose_name='Genres'),
+            model_name="record",
+            name="genres",
+            field=models.ManyToManyField(
+                related_name="records", to="records.genre", verbose_name="Genres"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='styles',
-            field=models.ManyToManyField(related_name='records', to='records.style', verbose_name='Styles'),
+            model_name="record",
+            name="styles",
+            field=models.ManyToManyField(
+                related_name="records", to="records.style", verbose_name="Styles"
+            ),
         ),
         migrations.AlterField(
-            model_name='style',
-            name='name',
-            field=models.CharField(max_length=100, unique=True, verbose_name='Name'),
+            model_name="style",
+            name="name",
+            field=models.CharField(max_length=100, unique=True, verbose_name="Name"),
         ),
         migrations.DeleteModel(
-            name='Order',
+            name="Order",
         ),
         migrations.DeleteModel(
-            name='OrderItem',
+            name="OrderItem",
         ),
     ]

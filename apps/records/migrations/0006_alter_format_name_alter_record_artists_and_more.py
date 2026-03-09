@@ -58,7 +58,6 @@ def seed_formats_and_genres(apps, schema_editor) -> None:
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("records", "0005_alter_track_options_record_is_expected_and_more"),
     ]
@@ -132,7 +131,6 @@ class Migration(migrations.Migration):
             name="title",
             field=models.CharField(max_length=255, verbose_name="Название"),
         ),
-
         # Засев справочников (идемпотентно).
         migrations.RunPython(
             seed_formats_and_genres,

@@ -4,20 +4,32 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('records', '0007_record_availability_status_and_more'),
+        ("records", "0007_record_availability_status_and_more"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='record',
-            name='availability_status',
-            field=models.CharField(choices=[('IN_STOCK', 'В НАЛИЧИИ'), ('PREORDER', 'ПРЕДЗАКАЗ')], db_index=True, default='PREORDER', max_length=16, verbose_name='Наличие'),
+            model_name="record",
+            name="availability_status",
+            field=models.CharField(
+                choices=[("IN_STOCK", "В НАЛИЧИИ"), ("PREORDER", "ПРЕДЗАКАЗ")],
+                db_index=True,
+                default="PREORDER",
+                max_length=16,
+                verbose_name="Наличие",
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='price',
-            field=models.DecimalField(blank=True, decimal_places=0, help_text='Например: 5000', max_digits=10, null=True, verbose_name='Цена'),
+            model_name="record",
+            name="price",
+            field=models.DecimalField(
+                blank=True,
+                decimal_places=0,
+                help_text="Например: 5000",
+                max_digits=10,
+                null=True,
+                verbose_name="Цена",
+            ),
         ),
     ]

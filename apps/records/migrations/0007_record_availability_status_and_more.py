@@ -5,40 +5,64 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('records', '0006_alter_format_name_alter_record_artists_and_more'),
+        ("records", "0006_alter_format_name_alter_record_artists_and_more"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='record',
-            name='availability_status',
-            field=models.CharField(choices=[('IN_STOCK', 'В НАЛИЧИИ'), ('PREORDER', 'ПРЕДЗАКАЗ')], db_index=True, default='IN_STOCK', max_length=16, verbose_name='Наличие'),
+            model_name="record",
+            name="availability_status",
+            field=models.CharField(
+                choices=[("IN_STOCK", "В НАЛИЧИИ"), ("PREORDER", "ПРЕДЗАКАЗ")],
+                db_index=True,
+                default="IN_STOCK",
+                max_length=16,
+                verbose_name="Наличие",
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='catalog_number',
-            field=models.CharField(blank=True, max_length=50, null=True, unique=True, verbose_name='Каталожный номер'),
+            model_name="record",
+            name="catalog_number",
+            field=models.CharField(
+                blank=True,
+                max_length=50,
+                null=True,
+                unique=True,
+                verbose_name="Каталожный номер",
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='country',
-            field=models.CharField(blank=True, max_length=50, null=True, verbose_name='Страна'),
+            model_name="record",
+            name="country",
+            field=models.CharField(
+                blank=True, max_length=50, null=True, verbose_name="Страна"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='is_expected',
-            field=models.BooleanField(db_index=True, default=False, verbose_name='Ожидается'),
+            model_name="record",
+            name="is_expected",
+            field=models.BooleanField(
+                db_index=True, default=False, verbose_name="Ожидается"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='notes',
-            field=django_ckeditor_5.fields.CKEditor5Field(blank=True, null=True, verbose_name='Заметки'),
+            model_name="record",
+            name="notes",
+            field=django_ckeditor_5.fields.CKEditor5Field(
+                blank=True, null=True, verbose_name="Заметки"
+            ),
         ),
         migrations.AlterField(
-            model_name='record',
-            name='price',
-            field=models.DecimalField(blank=True, decimal_places=2, help_text='Например: 5000', max_digits=10, null=True, verbose_name='Цена'),
+            model_name="record",
+            name="price",
+            field=models.DecimalField(
+                blank=True,
+                decimal_places=2,
+                help_text="Например: 5000",
+                max_digits=10,
+                null=True,
+                verbose_name="Цена",
+            ),
         ),
     ]

@@ -186,3 +186,6 @@ AGENT*.md
 agent*.md
 .codex/
 /.uv-cache/
+.specify/
+codex_without_speckit/
+specs/001-youtube-track-audio-enrichment/specify_input.md
