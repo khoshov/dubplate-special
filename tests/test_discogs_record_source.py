@@ -50,7 +50,14 @@ def test_import_from_discogs_creates_discogs_record_source(monkeypatch):
     monkeypatch.setattr(
         record_service_module,
         "adapt_discogs_release",
-        lambda _release: {"title": "Discogs Import", "tracks": []},
+        lambda _release: {
+            "title": "Discogs Import",
+            "discogs_id": 321,
+            "release_year": 2025,
+            "release_month": 9,
+            "release_day": 26,
+            "tracks": [],
+        },
     )
 
     service = RecordService(
@@ -75,6 +82,10 @@ def test_import_from_discogs_creates_discogs_record_source(monkeypatch):
     )
 
     assert created is True
+    assert record.discogs_id == 321
+    assert record.release_year == 2025
+    assert record.release_month == 9
+    assert record.release_day == 26
     assert source.url == "https://api.discogs.com/releases/321"
     assert source.can_fetch_audio is False
 
@@ -84,7 +95,14 @@ def test_update_from_discogs_updates_source_with_release_id_fallback(monkeypatch
     monkeypatch.setattr(
         record_service_module,
         "adapt_discogs_release",
-        lambda _release: {"title": "Updated from Discogs", "tracks": []},
+        lambda _release: {
+            "title": "Updated from Discogs",
+            "discogs_id": 777,
+            "release_year": 2025,
+            "release_month": 9,
+            "release_day": 26,
+            "tracks": [],
+        },
     )
 
     record = Record.objects.create(
@@ -120,3 +138,7 @@ def test_update_from_discogs_updates_source_with_release_id_fallback(monkeypatch
     assert source.url == "https://api.discogs.com/releases/777"
     assert source.can_fetch_audio is False
     assert updated_record.title == "Updated from Discogs"
+    assert updated_record.discogs_id == 777
+    assert updated_record.release_year == 2025
+    assert updated_record.release_month == 9
+    assert updated_record.release_day == 26

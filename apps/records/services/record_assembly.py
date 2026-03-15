@@ -15,7 +15,8 @@
   label: str | None             (опционально)
   catalog_number: str | None    (опционально, но желательно уникально)
   barcode, country, notes: опционально
-  release_year, release_month, release_day: int | None
+   discogs_id: int | None
+   release_year, release_month, release_day: int | None
   genres, styles, formats: list[str] (опционально)
   tracks: последовательность словарей c ключами:
       - title: str
@@ -60,6 +61,7 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
         raise ValueError("Поле 'title' обязательно для создания записи Record.")
 
     catalog_number = _clean_or_none(data.get("catalog_number"))
+    discogs_id = _int_or_none(data.get("discogs_id"))
     release_year = _int_or_none(data.get("release_year"))
     release_month = _int_or_none(data.get("release_month"))
     release_day = _int_or_none(data.get("release_day"))
@@ -72,6 +74,7 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
     with transaction.atomic():
         record = Record.objects.create(
             title=title,
+            discogs_id=discogs_id,
             catalog_number=catalog_number,
             barcode=barcode,
             country=country,
@@ -106,6 +109,10 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
         record.title = title
 
     # базовые идентификаторы/метаданные (обновляем только если данные даны)
+    discogs_id = _int_or_none(data.get("discogs_id"))
+    if discogs_id is not None:
+        record.discogs_id = discogs_id
+
     catalog_number = _clean_or_none(data.get("catalog_number"))
     if catalog_number:
         record.catalog_number = catalog_number
