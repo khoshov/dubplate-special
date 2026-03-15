@@ -40,7 +40,10 @@ from records.services.providers.discogs.discogs_service import (
     DiscogsNotFoundError,
     DiscogsService,
 )
-from records.services.providers.redeye.helpers import validate_redeye_product_url
+from records.services.providers.redeye.helpers import (
+    normalize_abs_url,
+    validate_redeye_product_url,
+)
 from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_assembly import build_record_from_payload
 from records.services.record_assembly import update_record_from_payload
@@ -340,7 +343,7 @@ class RecordService:
         Returns:
             (record, created): created=True при создании, False — если запись уже существовала.
         """
-        normalized_catalog_number = (catalog_number or "").strip().upper()
+        normalized_catalog_number = self._normalize_redeye_catalog_number(catalog_number)
         if not normalized_catalog_number:
             raise ValueError(
                 "Не указан каталожный номер (catalog_number) для импорта из Redeye."
@@ -356,7 +359,12 @@ class RecordService:
             )
             if download_audio_decision:
                 try:
-                    self.attach_audio_from_redeye(existing, force=False)
+                    resolved_page_url = self._ensure_redeye_source_for_record(
+                        existing, normalized_catalog_number
+                    )
+                    self.attach_audio_from_redeye(
+                        existing, force=False, page_url=resolved_page_url
+                    )
                 except Exception as err:  # noqa: BLE001 — логируем любую ошибку привязки
                     logger.warning(
                         "Докачка аудио для существующей записи завершилась с ошибкой: %s",
@@ -393,6 +401,7 @@ class RecordService:
                     or raw_source_url
                     or (result.source_url if result else None)
                 )
+                effective_source_url = normalize_abs_url(effective_source_url or "")
 
                 if effective_source_url:
                     try:
@@ -438,6 +447,8 @@ class RecordService:
         record: "Record",
         *,
         force: bool = False,
+        require_source: bool = False,
+        page_url: Optional[str] = None,
         per_click_timeout_sec: Optional[int] = None,
         browser: Optional[Browser] = None,
     ) -> int:
@@ -458,18 +469,82 @@ class RecordService:
         """
         from records.models import RecordSource
 
-        page_url: str | None = (
-            record.sources.filter(
-                provider=RecordSource.Provider.REDEYE,
-                role=RecordSource.Role.PRODUCT_PAGE,
+        resolved_page_url: str | None = normalize_abs_url(page_url or "") or None
+        if resolved_page_url:
+            try:
+                validate_redeye_product_url(resolved_page_url)
+            except ValueError:
+                logger.info(
+                    "Передан невалидный URL Redeye для записи %s: %s",
+                    record.pk,
+                    resolved_page_url,
+                )
+                resolved_page_url = None
+
+        if not resolved_page_url:
+            source_obj = (
+                record.sources.filter(
+                    provider=RecordSource.Provider.REDEYE,
+                    role=RecordSource.Role.PRODUCT_PAGE,
+                )
+                .only("url")
+                .first()
             )
-            .values_list("url", flat=True)
-            .first()
-        ) or None
+            existing_source_url = source_obj.url if source_obj else None
+            normalized_source_url = normalize_abs_url(existing_source_url or "") or None
+            if normalized_source_url:
+                try:
+                    validate_redeye_product_url(normalized_source_url)
+                    if (
+                        existing_source_url
+                        and normalized_source_url != existing_source_url
+                    ):
+                        self._upsert_record_source(
+                            record=record,
+                            provider=RecordSource.Provider.REDEYE,
+                            role=RecordSource.Role.PRODUCT_PAGE,
+                            url=normalized_source_url,
+                            can_fetch_audio=True,
+                        )
+                except ValueError:
+                    logger.info(
+                        "Сохранённый URL Redeye невалиден для записи %s: %s",
+                        record.pk,
+                        existing_source_url,
+                    )
+                    normalized_source_url = None
+            resolved_page_url = normalized_source_url
+
+        if not resolved_page_url:
+            resolved_page_url = self._ensure_redeye_source_for_record(
+                record, getattr(record, "catalog_number", None)
+            )
+
+        if require_source and not resolved_page_url:
+            normalized_catalog_number = self._normalize_redeye_catalog_number(
+                getattr(record, "catalog_number", None)
+            )
+            if normalized_catalog_number:
+                reason = (
+                    "Обновление из Redeye невозможно: не найден релиз с точным "
+                    f"совпадением каталожного номера '{normalized_catalog_number}'."
+                )
+            else:
+                reason = (
+                    "Обновление из Redeye невозможно: у записи отсутствует "
+                    "каталожный номер."
+                )
+            logger.info(
+                "Redeye update aborted: record_id=%s, catalog_number=%s, reason=%s",
+                record.pk,
+                normalized_catalog_number or "—",
+                reason,
+            )
+            raise ValueError(reason)
 
         updated = self.audio_service.attach_audio_from_redeye(
             record=record,
-            page_url=page_url,
+            page_url=resolved_page_url,
             force=force,
             per_click_timeout_sec=per_click_timeout_sec,
             browser=browser,
@@ -503,6 +578,90 @@ class RecordService:
         result = self.redeye_service.parse_redeye_product_by_url(clean)
         return result.payload
 
+    def _ensure_redeye_source_for_record(
+        self, record: Record, catalog_number: Optional[str]
+    ) -> Optional[str]:
+        """
+        Гарантирует наличие валидного Redeye PRODUCT_PAGE source для записи.
+
+        Если валидный источник уже есть — возвращает его URL.
+        Иначе пытается найти карточку по catalog_number и upsert-ит RecordSource.
+        """
+        existing_source_url = (
+            record.sources.filter(
+                provider=RecordSource.Provider.REDEYE,
+                role=RecordSource.Role.PRODUCT_PAGE,
+            )
+            .values_list("url", flat=True)
+            .first()
+        ) or None
+        normalized_existing = normalize_abs_url(existing_source_url or "") or None
+        if normalized_existing:
+            try:
+                validate_redeye_product_url(normalized_existing)
+                if normalized_existing != existing_source_url:
+                    self._upsert_record_source(
+                        record=record,
+                        provider=RecordSource.Provider.REDEYE,
+                        role=RecordSource.Role.PRODUCT_PAGE,
+                        url=normalized_existing,
+                        can_fetch_audio=True,
+                    )
+                return normalized_existing
+            except ValueError:
+                logger.info(
+                    "Игнорирую невалидный сохранённый URL Redeye для записи %s: %s",
+                    record.pk,
+                    existing_source_url,
+                )
+
+        normalized_catalog_number = self._normalize_redeye_catalog_number(catalog_number)
+        if not normalized_catalog_number:
+            return None
+
+        try:
+            result = self.redeye_service.fetch_by_catalog_number(normalized_catalog_number)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "Не удалось получить карточку Redeye по CAT=%s для записи %s: %s",
+                normalized_catalog_number,
+                record.pk,
+                exc,
+            )
+            return None
+
+        source_url = normalize_abs_url(getattr(result, "source_url", "") or "")
+        if not source_url:
+            raw_payload = getattr(result, "payload", {}) or {}
+            raw_source = raw_payload.get("source")
+            raw_source_url = (
+                raw_source.get("url") if isinstance(raw_source, dict) else None
+            )
+            source_url = normalize_abs_url(raw_source_url or "")
+        if not source_url:
+            return None
+
+        try:
+            validate_redeye_product_url(source_url)
+        except ValueError as exc:
+            logger.info(
+                "URL Redeye после резолва невалиден (record=%s, CAT=%s): %s (%s)",
+                record.pk,
+                normalized_catalog_number,
+                source_url,
+                exc,
+            )
+            return None
+
+        self._upsert_record_source(
+            record=record,
+            provider=RecordSource.Provider.REDEYE,
+            role=RecordSource.Role.PRODUCT_PAGE,
+            url=source_url,
+            can_fetch_audio=True,
+        )
+        return source_url
+
     @staticmethod
     def _is_empty_identifier(value: Optional[str]) -> bool:
         """Метод проверяет, является ли идентификатор пустым (None/''/пробелы)."""
@@ -534,6 +693,20 @@ class RecordService:
             return None
         normalized = value.strip().upper()
         return normalized or None
+
+    @staticmethod
+    def _normalize_redeye_catalog_number(value: object) -> str | None:
+        """
+        Нормализует catalog_number для поиска в Redeye.
+
+        Помимо trim+upper отбрасывает псевдо-пустые значения.
+        """
+        normalized = RecordService._normalize_catalog_number(value)
+        if not normalized:
+            return None
+        if normalized in {"NONE", "NULL", "N/A", "N-A", "-", "—"}:
+            return None
+        return normalized
 
     def _find_existing_record(
         self,

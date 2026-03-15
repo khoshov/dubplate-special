@@ -123,3 +123,16 @@ def test_adapt_discogs_release_reads_object_identifiers_and_label_catno():
 
     assert payload["barcode"] == "5021732635679"
     assert payload["catalog_number"] == "1635679"
+
+
+def test_adapt_discogs_release_ignores_none_like_catalog_number_from_identifiers():
+    release = DummyRelease(
+        release_id=36313477,
+        year=2026,
+        released="2026-02-06",
+        identifiers=[DummyIdentifier("Catalog Number", " none ")],
+    )
+
+    payload = adapt_discogs_release(release)
+
+    assert payload["catalog_number"] is None

@@ -36,6 +36,7 @@ from records.models import Artist, Format, Genre, Label, Record, Style
 from records.services.tracklist_writer import create_tracks_for_record
 
 logger = logging.getLogger(__name__)
+_INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
 
 
 def build_record_from_payload(data: Mapping[str, object]) -> Record:
@@ -60,7 +61,7 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
     if not title:
         raise ValueError("Поле 'title' обязательно для создания записи Record.")
 
-    catalog_number = _clean_or_none(data.get("catalog_number"))
+    catalog_number = _clean_catalog_number_or_none(data.get("catalog_number"))
     discogs_id = _int_or_none(data.get("discogs_id"))
     release_year = _int_or_none(data.get("release_year"))
     release_month = _int_or_none(data.get("release_month"))
@@ -113,7 +114,7 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
     if discogs_id is not None:
         record.discogs_id = discogs_id
 
-    catalog_number = _clean_or_none(data.get("catalog_number"))
+    catalog_number = _clean_catalog_number_or_none(data.get("catalog_number"))
     if catalog_number:
         record.catalog_number = catalog_number
 
@@ -235,6 +236,16 @@ def _clean_or_none(value: object) -> str | None:
         s = value.strip()
         return s or None
     return None
+
+
+def _clean_catalog_number_or_none(value: object) -> str | None:
+    """Очищает catalog_number и отбрасывает псевдо-пустые значения."""
+    cleaned = _clean_or_none(value)
+    if not cleaned:
+        return None
+    if cleaned.strip().upper() in _INVALID_CATALOG_VALUES:
+        return None
+    return cleaned
 
 
 def _str_or_empty(value: object) -> str:

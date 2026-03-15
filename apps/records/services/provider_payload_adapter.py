@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
+_INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
 
 
 def _to_str(value: Any) -> str:
@@ -153,6 +154,15 @@ def _normalize_barcode_or_none(value: Optional[str]) -> Optional[str]:
     return digits_only or value
 
 
+def _normalize_catalog_number_or_none(value: Any) -> Optional[str]:
+    text = _to_optional_str(value)
+    if not text:
+        return None
+    if text.strip().upper() in _INVALID_CATALOG_VALUES:
+        return None
+    return text
+
+
 def _normalize_common_fields(dst: Dict[str, Any], src: Mapping[str, Any]) -> None:
     """
     Нормализует общий набор полей в словаре назначения dst на основе src.
@@ -161,7 +171,7 @@ def _normalize_common_fields(dst: Dict[str, Any], src: Mapping[str, Any]) -> Non
     dst["title"] = _to_str(src.get("title"))
     dst["discogs_id"] = _to_int_or_none(src.get("discogs_id"))
     dst["label"] = _to_optional_str(src.get("label"))
-    dst["catalog_number"] = _to_optional_str(src.get("catalog_number"))
+    dst["catalog_number"] = _normalize_catalog_number_or_none(src.get("catalog_number"))
     dst["barcode"] = _to_optional_str(src.get("barcode"))
     dst["country"] = _to_optional_str(src.get("country"))
     dst["notes"] = _to_optional_str(src.get("notes"))
