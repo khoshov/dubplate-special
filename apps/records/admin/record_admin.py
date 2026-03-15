@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib import admin
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -147,9 +148,32 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         extra_context: Optional[dict] = None,
     ) -> HttpResponse:
         """Показывает всплывающее сообщение при некорректном URL Redeye в add-форме."""
-        response = super().add_view(
-            request=request, form_url=form_url, extra_context=extra_context
-        )
+        try:
+            response = super().add_view(
+                request=request, form_url=form_url, extra_context=extra_context
+            )
+        except ValidationError as exc:
+            error_messages = self._extract_validation_error_messages(exc)
+            for error_message in error_messages:
+                self.message_user(request, error_message, level=messages.ERROR)
+
+            source = (
+                request.POST.get("source")
+                or request.GET.get("source")
+                or SOURCE_REDEYE
+            ).strip().lower()
+            if source not in {SOURCE_REDEYE, SOURCE_DISCOGS}:
+                source = SOURCE_REDEYE
+
+            logger.info(
+                "RecordAdmin.add_view: перехвачена ValidationError при создании записи. source=%s errors=%s",
+                source,
+                error_messages,
+            )
+            return HttpResponseRedirect(
+                f"{reverse('admin:records_record_add')}?source={source}"
+            )
+
         if request.method != "POST" or not isinstance(response, TemplateResponse):
             return response
 
@@ -174,6 +198,20 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             )
 
         return response
+
+    @staticmethod
+    def _extract_validation_error_messages(exc: ValidationError) -> list[str]:
+        """Преобразует ValidationError в плоский список сообщений для админки."""
+        if hasattr(exc, "message_dict"):
+            messages_list: list[str] = []
+            for field_errors in exc.message_dict.values():
+                for field_error in field_errors:
+                    messages_list.append(str(field_error))
+            if messages_list:
+                return messages_list
+        if hasattr(exc, "messages"):
+            return [str(msg) for msg in exc.messages]
+        return [str(exc)]
 
     def get_artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
@@ -488,8 +526,10 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
             logger.debug(
                 "RecordAdmin.get_fieldsets(add): источник=Discogs → URL Redeye скрыт."
             )
-            add_import_fields = ("source", "catalog_number", "barcode")
-            description = "Импорт из Discogs поддерживает barcode или catalog_number."
+            add_import_fields = ("source", "discogs_id", "catalog_number", "barcode")
+            description = (
+                "Импорт из Discogs поддерживает discogs_id, barecode или catalog_number."
+            )
         else:
             logger.debug(
                 "RecordAdmin.get_fieldsets(add): источник=Redeye → barcode скрыт."
@@ -538,9 +578,14 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         """
         Базовые поля только для чтения дополняем служебными.
         """
-        base = super().get_readonly_fields(request, obj)
-        extra = ("discogs_id", "created", "modified")
-        readonly = tuple(base) + extra
+        base = tuple(super().get_readonly_fields(request, obj))
+        extra = ("discogs_id", "created", "modified") if obj else ("created", "modified")
+
+        readonly_list = list(base)
+        for field_name in extra:
+            if field_name not in readonly_list:
+                readonly_list.append(field_name)
+        readonly = tuple(readonly_list)
         logger.debug(
             "RecordAdmin.get_readonly_fields: base=%s, добавлено=%s → итог=%s",
             base,

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from django.core.exceptions import ValidationError
 
@@ -12,6 +12,34 @@ class RecordIdentifierValidator:
     а также обеспечивает наличие хотя бы одного идентификатора
     при создании записи.
     """
+
+    @staticmethod
+    def validate_discogs_id(
+        discogs_id: Optional[int], exclude_pk: Optional[int] = None
+    ) -> Optional[int]:
+        """Валидация Discogs ID на уникальность.
+
+        Args:
+            discogs_id: Discogs ID для проверки.
+            exclude_pk: ID записи для исключения из проверки (при редактировании).
+
+        Returns:
+            Валидированный Discogs ID или None если не указан.
+
+        Raises:
+            ValidationError: Если запись с таким Discogs ID уже существует.
+        """
+        if not discogs_id:
+            return None
+
+        existing = Record.objects.find_by_discogs_id(discogs_id)
+        if existing and existing.pk != exclude_pk:
+            raise ValidationError(
+                f'Запись с таким Discogs ID уже существует: "{existing.title}" '
+                f"(ID: {existing.pk})"
+            )
+
+        return discogs_id
 
     @staticmethod
     def validate_barcode(
@@ -70,7 +98,9 @@ class RecordIdentifierValidator:
         return catalog_number
 
     @staticmethod
-    def validate_identifiers_required(cleaned_data: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_identifiers_required(
+        cleaned_data: Dict[str, Any], raw_data: Optional[Mapping[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Проверка наличия хотя бы одного идентификатора.
 
         Используется при создании новой записи для обеспечения
@@ -78,6 +108,8 @@ class RecordIdentifierValidator:
 
         Args:
             cleaned_data: Очищенные данные формы.
+            raw_data: Сырые данные формы (например, self.data), чтобы
+                не терять факт ввода при ошибке валидации конкретного поля.
 
         Returns:
             Данные формы без изменений.
@@ -85,13 +117,27 @@ class RecordIdentifierValidator:
         Raises:
             ValidationError: Если не указан ни один идентификатор.
         """
-        barcode = cleaned_data.get("barcode")
-        catalog_number = cleaned_data.get("catalog_number")
+        def _has_value(key: str) -> bool:
+            value = cleaned_data.get(key)
+            if value not in (None, ""):
+                return True
+            if raw_data is None:
+                return False
+            raw_value = raw_data.get(key)
+            if raw_value is None:
+                return False
+            if isinstance(raw_value, str):
+                return bool(raw_value.strip())
+            return True
 
-        if not barcode and not catalog_number:
+        if not (
+            _has_value("discogs_id")
+            or _has_value("barcode")
+            or _has_value("catalog_number")
+        ):
             raise ValidationError(
                 {
-                    "__all__": "Необходимо указать штрих-код или каталожный номер для импорта из Discogs"
+                    "__all__": "Необходимо указать хотя бы один идентификатор: discogs_id, barecode или catalog_number."
                 }
             )
 

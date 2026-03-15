@@ -124,8 +124,24 @@ class DiscogsService:
         # refresh делаем best-effort, чтобы не ломать поток на неполных данных search-result
         try:
             self._make_request(search_result.refresh)
+        except DiscogsNotFoundError as e:
+            logger.info(
+                "Discogs: поиск по catalog_number=%s вернул невалидный/удалённый релиз: %s",
+                catalog_number,
+                e,
+            )
+            raise DiscogsNotFoundError(
+                "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
+            ) from e
         except DiscogsServiceError as e:
-            logger.warning("Discogs: не удалось refresh search result: %s", e)
+            logger.info(
+                "Discogs: refresh search result завершился ошибкой для catalog_number=%s: %s",
+                catalog_number,
+                e,
+            )
+            raise DiscogsApiError(
+                "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
+            ) from e
 
         return search_result
 

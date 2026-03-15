@@ -21,6 +21,7 @@ from typing import Optional, Tuple
 
 from django.db import IntegrityError, transaction
 from playwright.sync_api import Browser
+from discogs_client.exceptions import HTTPError
 
 from records.models import (
     Record,
@@ -88,6 +89,7 @@ class RecordService:
 
     def import_from_discogs(
         self,
+        discogs_id: Optional[int] = None,
         barcode: Optional[str] = None,
         catalog_number: Optional[str] = None,
         save_image: bool = True,
@@ -110,60 +112,149 @@ class RecordService:
         Returns:
             (record, created): created=True — создана новая запись; False — возвращена существующая.
         """
-        existing: Optional[Record] = None
-        if barcode:
-            existing = Record.objects.find_by_barcode(barcode)
-        if not existing and catalog_number:
-            existing = Record.objects.find_by_catalog_number(catalog_number)
+        logger.info(
+            "Discogs import started: discogs_id=%s, barcode=%s, catalog_number=%s",
+            discogs_id,
+            barcode,
+            catalog_number,
+        )
+        normalized_barcode = self._normalize_barcode(barcode)
+        normalized_catalog_number = self._normalize_catalog_number(catalog_number)
+
+        existing = self._find_existing_record(
+            discogs_id=discogs_id,
+            barcode=normalized_barcode,
+            catalog_number=normalized_catalog_number,
+        )
         if existing:
-            logger.info("Найдена существующая запись: %s", existing.id)
-            self._update_missing_identifiers(existing, barcode, catalog_number)
+            logger.info("Discogs import: найдена существующая запись: %s", existing.id)
+            self._update_missing_identifiers(
+                existing,
+                barcode=normalized_barcode,
+                catalog_number=normalized_catalog_number,
+            )
             return existing, False
 
         try:
-            if barcode:
-                release = self.discogs_service.search_by_barcode(barcode)
-            elif catalog_number:
-                release = self.discogs_service.search_by_catalog_number(catalog_number)
+            if discogs_id:
+                release = self.discogs_service.get_release(discogs_id)
+            elif normalized_barcode:
+                release = self.discogs_service.search_by_barcode(normalized_barcode)
+            elif normalized_catalog_number:
+                release = self.discogs_service.search_by_catalog_number(
+                    normalized_catalog_number
+                )
             else:
                 raise ValueError(
-                    "Нужно указать barcode или catalog_number для импорта из Discogs."
+                    "Нужно указать discogs_id, barecode или catalog_number для импорта из Discogs."
                 )
         except DiscogsConfigError as exc:
-            logger.warning("Discogs config error: %s", exc)
+            logger.info("Discogs import failed: config error: %s", exc)
             raise ValueError(str(exc)) from exc
         except DiscogsAuthError as exc:
-            logger.warning("Discogs auth error: %s", exc)
+            logger.info("Discogs import failed: auth error: %s", exc)
             raise ValueError(
                 "Не удалось авторизоваться в Discogs. Проверьте API-ключ."
             ) from exc
         except DiscogsNotFoundError as exc:
-            logger.info("Discogs release not found: %s", exc)
-            raise ValueError("Релиз не найден в Discogs.") from exc
+            logger.info("Discogs import failed: release not found: %s", exc)
+            if discogs_id:
+                raise ValueError(
+                    "Релиз с таким Discogs ID не найден. Попробуйте добавить по barecode."
+                ) from exc
+            raise ValueError(str(exc) or "Релиз не найден в Discogs.") from exc
         except DiscogsApiError as exc:
-            logger.error("Discogs API error during import: %s", exc)
-            raise ValueError(
-                "Ошибка обращения к Discogs API. Попробуйте позже."
-            ) from exc
+            logger.info("Discogs import failed: API error: %s", exc)
+            if normalized_catalog_number:
+                raise ValueError(
+                    "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
+                ) from exc
+            if discogs_id:
+                raise ValueError(
+                    "Ошибка при импорте по Discogs ID. Попробуйте добавить по barecode."
+                ) from exc
+            raise ValueError("Ошибка обращения к Discogs API. Попробуйте позже.") from exc
+        except HTTPError as exc:
+            logger.info("Discogs import failed: raw HTTPError: %s", exc)
+            if normalized_catalog_number:
+                raise ValueError(
+                    "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
+                ) from exc
+            if discogs_id:
+                raise ValueError(
+                    "Релиз с таким Discogs ID не найден. Попробуйте добавить по barecode."
+                ) from exc
+            raise ValueError("Ошибка обращения к Discogs API. Попробуйте позже.") from exc
 
         payload = adapt_discogs_release(release)
-        if barcode and not payload.get("barcode"):
-            payload["barcode"] = barcode
-        if catalog_number and not payload.get("catalog_number"):
-            payload["catalog_number"] = catalog_number
+        if normalized_barcode and not payload.get("barcode"):
+            payload["barcode"] = normalized_barcode
+        if normalized_catalog_number and not payload.get("catalog_number"):
+            payload["catalog_number"] = normalized_catalog_number
+        if discogs_id and not payload.get("discogs_id"):
+            payload["discogs_id"] = discogs_id
 
-        with transaction.atomic():
-            record = build_record_from_payload(payload)
+        payload_discogs_id = self._to_int_or_none(payload.get("discogs_id"))
+        payload_barcode = self._normalize_barcode(payload.get("barcode"))
+        payload_catalog_number = self._normalize_catalog_number(
+            payload.get("catalog_number")
+        )
 
-            self._upsert_discogs_source(record=record, release=release)
+        existing = self._find_existing_record(
+            discogs_id=payload_discogs_id,
+            barcode=payload_barcode,
+            catalog_number=payload_catalog_number,
+        )
+        if existing:
+            logger.info(
+                "Discogs import: найдена существующая запись по payload (record_id=%s).",
+                existing.id,
+            )
+            self._update_missing_identifiers(
+                existing,
+                discogs_id=payload_discogs_id,
+                barcode=payload_barcode,
+                catalog_number=payload_catalog_number,
+            )
+            return existing, False
 
-            if save_image and getattr(release, "images", None):
-                first = release.images[0]
-                uri = first.get("uri") if isinstance(first, dict) else None
-                if uri and self.image_service.download_cover(record, uri):
-                    logger.info("Обложка скачана для записи %s (Discogs)", record.id)
+        try:
+            with transaction.atomic():
+                record = build_record_from_payload(payload)
 
-        logger.info("Импорт из Discogs выполнен: %s", record.id)
+                self._upsert_discogs_source(record=record, release=release)
+
+                if save_image and getattr(release, "images", None):
+                    first = release.images[0]
+                    uri = first.get("uri") if isinstance(first, dict) else None
+                    if uri and self.image_service.download_cover(record, uri):
+                        logger.info("Обложка скачана для записи %s (Discogs)", record.id)
+        except IntegrityError as exc:
+            existing = self._find_existing_record(
+                discogs_id=payload_discogs_id,
+                barcode=payload_barcode,
+                catalog_number=payload_catalog_number,
+            )
+            if existing:
+                logger.info(
+                    "Discogs import: duplicate key на сохранении, возвращаю существующую запись %s: %s",
+                    existing.id,
+                    exc,
+                )
+                self._update_missing_identifiers(
+                    existing,
+                    discogs_id=payload_discogs_id,
+                    barcode=payload_barcode,
+                    catalog_number=payload_catalog_number,
+                )
+                return existing, False
+            raise
+
+        logger.info(
+            "Discogs import succeeded: record_id=%s, discogs_id=%s",
+            record.id,
+            record.discogs_id,
+        )
         return record, True
 
     def update_from_discogs(self, record: Record, update_image: bool = True) -> Record:
@@ -417,32 +508,141 @@ class RecordService:
         """Метод проверяет, является ли идентификатор пустым (None/''/пробелы)."""
         return value is None or (isinstance(value, str) and value.strip() == "")
 
+    @staticmethod
+    def _to_int_or_none(value: object) -> int | None:
+        """Безопасно преобразует значение в int."""
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_barcode(value: object) -> str | None:
+        """Нормализует barcode в цифры (если возможно)."""
+        if not isinstance(value, str):
+            return None
+        raw = value.strip()
+        if not raw:
+            return None
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        return digits or raw
+
+    @staticmethod
+    def _normalize_catalog_number(value: object) -> str | None:
+        """Нормализует catalog_number: trim + upper."""
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip().upper()
+        return normalized or None
+
+    def _find_existing_record(
+        self,
+        *,
+        discogs_id: int | None = None,
+        barcode: str | None = None,
+        catalog_number: str | None = None,
+    ) -> Record | None:
+        """Ищет существующую запись по набору идентификаторов."""
+        if discogs_id is not None:
+            existing = Record.objects.find_by_discogs_id(discogs_id)
+            if existing:
+                return existing
+
+        if barcode:
+            existing = Record.objects.find_by_barcode(barcode)
+            if existing:
+                return existing
+
+        if catalog_number:
+            existing = (
+                Record.objects.filter(catalog_number__iexact=catalog_number).first()
+            )
+            if existing:
+                return existing
+
+        return None
+
+    @staticmethod
+    def _has_identifier_conflict(
+        record: Record,
+        *,
+        discogs_id: int | None = None,
+        barcode: str | None = None,
+        catalog_number: str | None = None,
+    ) -> bool:
+        """Проверяет, занят ли идентификатор другой записью."""
+        if discogs_id is not None and Record.objects.filter(discogs_id=discogs_id).exclude(
+            pk=record.pk
+        ).exists():
+            return True
+        if barcode and Record.objects.filter(barcode=barcode).exclude(pk=record.pk).exists():
+            return True
+        if catalog_number and Record.objects.filter(
+            catalog_number__iexact=catalog_number
+        ).exclude(pk=record.pk).exists():
+            return True
+        return False
+
     def _update_missing_identifiers(
         self,
         record: Record,
+        discogs_id: int | None = None,
         barcode: Optional[str] = None,
         catalog_number: Optional[str] = None,
     ) -> None:
-        """Метод заполняет недостающие barcode/catalog_number у записи (если были пусты)."""
-        updated = False
+        """Метод заполняет недостающие идентификаторы у записи (если они пусты)."""
+        update_fields: list[str] = []
+
+        if discogs_id is not None and record.discogs_id is None:
+            if self._has_identifier_conflict(record, discogs_id=discogs_id):
+                logger.info(
+                    "Пропущено обновление discogs_id для записи %s: значение %s уже занято.",
+                    record.id,
+                    discogs_id,
+                )
+            else:
+                record.discogs_id = discogs_id
+                update_fields.append("discogs_id")
+                logger.info(
+                    "Добавлен недостающий discogs_id для записи %s: %s",
+                    record.id,
+                    discogs_id,
+                )
+
         if barcode and self._is_empty_identifier(record.barcode):
-            record.barcode = barcode
-            updated = True
-            logger.info(
-                "Добавлен недостающий barcode для записи %s: %s", record.id, barcode
-            )
+            if self._has_identifier_conflict(record, barcode=barcode):
+                logger.info(
+                    "Пропущено обновление barcode для записи %s: значение %s уже занято.",
+                    record.id,
+                    barcode,
+                )
+            else:
+                record.barcode = barcode
+                update_fields.append("barcode")
+                logger.info(
+                    "Добавлен недостающий barcode для записи %s: %s",
+                    record.id,
+                    barcode,
+                )
 
         if catalog_number and self._is_empty_identifier(record.catalog_number):
-            record.catalog_number = catalog_number
-            updated = True
-            logger.info(
-                "Добавлен недостающий catalog_number для записи %s: %s",
-                record.id,
-                catalog_number,
-            )
+            if self._has_identifier_conflict(record, catalog_number=catalog_number):
+                logger.info(
+                    "Пропущено обновление catalog_number для записи %s: значение %s уже занято.",
+                    record.id,
+                    catalog_number,
+                )
+            else:
+                record.catalog_number = catalog_number
+                update_fields.append("catalog_number")
+                logger.info(
+                    "Добавлен недостающий catalog_number для записи %s: %s",
+                    record.id,
+                    catalog_number,
+                )
 
-        if updated:
-            record.save()
+        if update_fields:
+            record.save(update_fields=update_fields)
 
     def _update_record_fields(self, record: Record, discogs_release) -> None:
         """Метод обновляет основные поля записи по данным из Discogs."""
