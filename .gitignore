@@ -184,3 +184,6 @@ AGENT*.md
 agent*.md
 .codex/
 /.uv-cache/
+.specify/
+specs/
+codex_without_speckit/

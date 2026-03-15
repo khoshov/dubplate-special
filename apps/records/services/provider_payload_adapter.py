@@ -51,18 +51,124 @@ def _to_price_str_or_none(value: Any) -> Optional[str]:
         return None
 
 
+def _mapping_get(source: Any, key: str) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key)
+    getter = getattr(source, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _extract_discogs_release_id(release: Any) -> Optional[int]:
+    release_id = _to_int_or_none(getattr(release, "id", None))
+    if release_id is not None:
+        return release_id
+
+    fetcher = getattr(release, "fetch", None)
+    if callable(fetcher):
+        try:
+            fetched_id = _to_int_or_none(fetcher("id"))
+            if fetched_id is not None:
+                return fetched_id
+        except Exception:  # noqa: BLE001
+            pass
+
+    data = getattr(release, "data", None)
+    return _to_int_or_none(_mapping_get(data, "id"))
+
+
+def _extract_discogs_release_date_parts(
+    release: Any,
+) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    released_raw: Any = _to_optional_str(getattr(release, "released", None))
+    fetcher = getattr(release, "fetch", None)
+    if released_raw is None and callable(fetcher):
+        try:
+            released_raw = fetcher("released")
+        except Exception:  # noqa: BLE001
+            released_raw = None
+
+    if released_raw is None:
+        data = getattr(release, "data", None)
+        released_raw = _mapping_get(data, "released")
+
+    released_text = _to_str(released_raw)
+    year: Optional[int] = None
+    month: Optional[int] = None
+    day: Optional[int] = None
+    if released_text:
+        parts = released_text.split("T", 1)[0].split("-")
+        year = _to_int_or_none(parts[0] if len(parts) > 0 else None)
+        month = _to_int_or_none(parts[1] if len(parts) > 1 else None)
+        day = _to_int_or_none(parts[2] if len(parts) > 2 else None)
+
+        if month is not None and not 1 <= month <= 12:
+            month = None
+        if day is not None and not 1 <= day <= 31:
+            day = None
+        if month is None:
+            day = None
+
+    if year is not None:
+        return year, month, day
+
+    # Резервный источник: если released отсутствует/битый, сохраняем хотя бы год.
+    fallback_year = _to_int_or_none(getattr(release, "year", None))
+    if fallback_year is not None:
+        return fallback_year, None, None
+    if callable(fetcher):
+        try:
+            fetched_year = _to_int_or_none(fetcher("year"))
+            if fetched_year is not None:
+                return fetched_year, None, None
+        except Exception:  # noqa: BLE001
+            pass
+    data = getattr(release, "data", None)
+    data_year = _to_int_or_none(_mapping_get(data, "year"))
+    if data_year is not None:
+        return data_year, None, None
+
+    return None, None, None
+
+
+def _extract_discogs_identifier_type_value(identifier: Any) -> tuple[str, Optional[str]]:
+    if isinstance(identifier, Mapping):
+        ident_type = _to_str(identifier.get("type")).lower()
+        ident_value = _to_optional_str(identifier.get("value"))
+        return ident_type, ident_value
+
+    ident_type = _to_str(getattr(identifier, "type", None)).lower()
+    ident_value = _to_optional_str(getattr(identifier, "value", None))
+    return ident_type, ident_value
+
+
+def _normalize_barcode_or_none(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    digits_only = "".join(ch for ch in value if ch.isdigit())
+    return digits_only or value
+
+
 def _normalize_common_fields(dst: Dict[str, Any], src: Mapping[str, Any]) -> None:
     """
     Нормализует общий набор полей в словаре назначения dst на основе src.
     Устраняет дублирующийся код между адаптерами.
     """
     dst["title"] = _to_str(src.get("title"))
+    dst["discogs_id"] = _to_int_or_none(src.get("discogs_id"))
     dst["label"] = _to_optional_str(src.get("label"))
     dst["catalog_number"] = _to_optional_str(src.get("catalog_number"))
     dst["barcode"] = _to_optional_str(src.get("barcode"))
     dst["country"] = _to_optional_str(src.get("country"))
     dst["notes"] = _to_optional_str(src.get("notes"))
-    dst["release_year"] = _to_int_or_none(src.get("release_year") or src.get("year"))
+    release_year = src.get("release_year")
+    if release_year is None:
+        release_year = src.get("year")
+    dst["release_year"] = _to_int_or_none(release_year)
     dst["release_month"] = _to_int_or_none(src.get("release_month"))
     dst["release_day"] = _to_int_or_none(src.get("release_day"))
     dst["artists"] = _to_str_list(src.get("artists"))
@@ -130,19 +236,27 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     Метод нормализует объект `discogs_client.Release` к формату сборки записи.
 
     Извлекаемые поля:
-      - title, country, notes, barcode, catalog_number, release_year;
+      - discogs_id, title, country, notes, barcode, catalog_number, release_year;
+      - release_month/release_day, если Discogs вернул полную дату `released`;
       - artists: список имён артистов;
       - label: имя первого лейбла (если есть);
       - genres/styles: списки строк;
       - formats: списки человекочитаемых строк (например 'LP', '2LP', 'ALBUM', 'VINYL');
       - tracks: список словарей с position/title/duration и position_index=1..N.
     """
+    released_year, released_month, released_day = _extract_discogs_release_date_parts(
+        release
+    )
+
     # Плоский источник для общей нормализации
     src: Dict[str, Any] = {
         "title": _to_str(getattr(release, "title", "")),
+        "discogs_id": _extract_discogs_release_id(release),
         "country": _to_optional_str(getattr(release, "country", None)),
         "notes": _to_optional_str(getattr(release, "notes", None)),
-        "year": _to_int_or_none(getattr(release, "year", None)),
+        "release_year": released_year,
+        "release_month": released_month,
+        "release_day": released_day,
         "artists": [],
         "genres": _to_str_list(getattr(release, "genres", []) or []),
         "styles": _to_str_list(getattr(release, "styles", []) or []),
@@ -155,15 +269,21 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
 
     # Идентификаторы (barcode / catalog number)
     identifiers = getattr(release, "identifiers", None) or []
+    if not identifiers:
+        data = getattr(release, "data", None)
+        identifiers = _mapping_get(data, "identifiers") or []
+    barcode_candidates: List[str] = []
     for ident in identifiers:
-        if not isinstance(ident, dict):
-            continue
-        ident_type = _to_str(ident.get("type")).lower()
-        value = _to_optional_str(ident.get("value"))
-        if ident_type == "barcode" and not src["barcode"]:
-            src["barcode"] = value
+        ident_type, value = _extract_discogs_identifier_type_value(ident)
+        if ident_type == "barcode" and value:
+            barcode_candidates.append(value)
         if ident_type in {"catalog number", "catno"} and not src["catalog_number"]:
             src["catalog_number"] = value
+    for candidate in barcode_candidates:
+        normalized_barcode = _normalize_barcode_or_none(candidate)
+        if normalized_barcode:
+            src["barcode"] = normalized_barcode
+            break
 
     # Артисты
     for artist_obj in getattr(release, "artists", []) or []:
@@ -174,7 +294,15 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     # Лейбл (первый)
     labels = getattr(release, "labels", []) or []
     if labels:
-        src["label"] = _to_optional_str(getattr(labels[0], "name", None))
+        first_label = labels[0]
+        if isinstance(first_label, Mapping):
+            src["label"] = _to_optional_str(first_label.get("name"))
+            catno = _to_optional_str(first_label.get("catno"))
+        else:
+            src["label"] = _to_optional_str(getattr(first_label, "name", None))
+            catno = _to_optional_str(getattr(first_label, "catno", None))
+        if not src["catalog_number"]:
+            src["catalog_number"] = catno
 
     # Форматы
     out_formats: List[str] = []
