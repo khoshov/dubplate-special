@@ -746,9 +746,7 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         Базовые поля только для чтения дополняем служебными.
         """
         base = tuple(super().get_readonly_fields(request, obj))
-        extra = (
-            ("discogs_id", "created", "modified") if obj else ("created", "modified")
-        )
+        extra = ("created", "modified")
 
         readonly_list = list(base)
         for field_name in extra:
