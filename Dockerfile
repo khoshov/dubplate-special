@@ -16,11 +16,20 @@ ENV PYTHONUNBUFFERED=1 \
 # Install required system packages:
 # - curl: for downloading files
 # - gettext: for Django translation utilities
+# - ffmpeg: required by yt-dlp post-processing into mp3
+# - nodejs: runtime required by Playwright tooling
+# - unzip: required by Deno installer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
-    gettext && \
+    gettext \
+    ffmpeg \
+    nodejs \
+    unzip && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Deno as the supported JS runtime for modern yt-dlp YouTube extraction
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 
 # Set working directory inside container
 WORKDIR /app

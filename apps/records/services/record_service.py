@@ -24,6 +24,7 @@ from playwright.sync_api import Browser
 from discogs_client.exceptions import HTTPError
 
 from records.models import (
+    AudioEnrichmentJob,
     FormatChoices,
     Record,
     RecordSource,
@@ -51,6 +52,7 @@ from records.services.record_assembly import (
     ensure_legacy_formats,
     update_record_from_payload,
 )
+from records.services.tasks import run_youtube_enrichment_job
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,7 @@ class RecordService:
         barcode: Optional[str] = None,
         catalog_number: Optional[str] = None,
         save_image: bool = True,
+        requested_by_user_id: int | None = None,
     ) -> Tuple[Record, bool]:
         """
         Метод реализует импорт записи из Discogs (по barcode или catalog_number).
@@ -244,6 +247,11 @@ class RecordService:
                         logger.info(
                             "Обложка скачана для записи %s (Discogs)", record.id
                         )
+                enrichment_job = self.enqueue_discogs_audio_enrichment(
+                    record=record,
+                    requested_by_user_id=requested_by_user_id,
+                )
+                setattr(record, "_discogs_enrichment_job_id", str(enrichment_job.id))
         except IntegrityError as exc:
             existing = self._find_existing_record(
                 discogs_id=payload_discogs_id,
@@ -331,6 +339,89 @@ class RecordService:
 
         logger.info("Обновление из Discogs завершено: %s", record.id)
         return record
+
+    def enqueue_discogs_audio_enrichment(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь YouTube enrichment для новой Discogs-записи."""
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.DISCOGS_IMPORT,
+            overwrite_existing=False,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_manual_youtube_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит массовый ручной YouTube enrichment в очередь."""
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=record_ids,
+            source=AudioEnrichmentJob.Source.MANUAL_LIST,
+            overwrite_existing=True,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_record_youtube_audio_enrichment(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь single-record ручной YouTube enrichment."""
+        return self.enqueue_youtube_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+            overwrite_existing=True,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_youtube_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        source: str,
+        overwrite_existing: bool,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Создаёт job report и enqueue-ит background task в Celery."""
+        normalized_record_ids = sorted({int(record_id) for record_id in record_ids})
+        if not normalized_record_ids:
+            raise ValueError(
+                "Список record_ids для YouTube enrichment не должен быть пустым."
+            )
+
+        job = AudioEnrichmentJob.objects.create(
+            source=source,
+            status=AudioEnrichmentJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=overwrite_existing,
+            total_records=len(normalized_record_ids),
+        )
+        payload = {
+            "job_id": str(job.id),
+            "record_ids": normalized_record_ids,
+            "overwrite_existing": overwrite_existing,
+            "requested_by_user_id": requested_by_user_id,
+            "source": source,
+        }
+        transaction.on_commit(
+            lambda: run_youtube_enrichment_job.delay(payload)  # noqa: B023
+        )
+        logger.info(
+            "YouTube enrichment enqueue: source=%s, job_id=%s, records=%s, overwrite=%s",
+            source,
+            job.id,
+            normalized_record_ids,
+            overwrite_existing,
+        )
+        return job
 
     def import_from_redeye(
         self,

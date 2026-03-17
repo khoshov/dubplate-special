@@ -179,6 +179,69 @@ LOCALE_PATHS = [
     os.path.join(BASE_DIR, "locale"),
 ]
 
+# =================
+# CELERY / REDIS
+# =================
+if RUN_ENV == "docker":
+    CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+    CELERY_RESULT_BACKEND = env(
+        "CELERY_RESULT_BACKEND",
+        default="redis://redis:6379/1",
+    )
+else:
+    CELERY_BROKER_URL = env(
+        "CELERY_BROKER_URL",
+        default="redis://127.0.0.1:6379/0",
+    )
+    CELERY_RESULT_BACKEND = env(
+        "CELERY_RESULT_BACKEND",
+        default="redis://127.0.0.1:6379/1",
+    )
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=1800)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=1500)
+
+# =================
+# YOUTUBE AUDIO ENRICHMENT
+# =================
+if RUN_ENV == "docker":
+    YOUTUBE_COOKIE_FILE = env(
+        "YOUTUBE_COOKIE_FILE",
+        default="/app/runtime/youtube-cookies.txt",
+    )
+    YOUTUBE_YTDLP_CACHE_DIR = env(
+        "YOUTUBE_YTDLP_CACHE_DIR",
+        default="/app/runtime/yt-dlp-cache",
+    )
+    YOUTUBE_JS_RUNTIME_PATH = env(
+        "YOUTUBE_JS_RUNTIME_PATH",
+        default="/usr/local/bin/deno",
+    )
+else:
+    YOUTUBE_COOKIE_FILE = env(
+        "YOUTUBE_COOKIE_FILE",
+        default=str(BASE_DIR / "runtime" / "youtube-cookies.txt"),
+    )
+    YOUTUBE_YTDLP_CACHE_DIR = env(
+        "YOUTUBE_YTDLP_CACHE_DIR",
+        default=str(BASE_DIR / "runtime" / "yt-dlp-cache"),
+    )
+    YOUTUBE_JS_RUNTIME_PATH = env("YOUTUBE_JS_RUNTIME_PATH", default="")
+
+YOUTUBE_JS_RUNTIME = env(
+    "YOUTUBE_JS_RUNTIME",
+    default="deno" if RUN_ENV == "docker" else "node",
+)
+YOUTUBE_REMOTE_COMPONENTS = env.list(
+    "YOUTUBE_REMOTE_COMPONENTS",
+    default=["ejs:github"],
+)
+
 # =============
 # STATIC FILES
 # =============

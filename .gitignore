@@ -179,6 +179,8 @@ pyrightconfig.json
 media
 pgdata
 staticfiles
+runtime/*
+!runtime/.gitkeep
 AGENTS.md
 AGENT_INSTRUCTIONS.md
 AGENT*.md
