@@ -16,9 +16,27 @@ from typing import Any, Optional
 from django.db.models.signals import post_delete, pre_save
 from django.dispatch import receiver
 
+from config.logging import log_event
 from .models import Record, Track
 
 logger = logging.getLogger(__name__)
+_RECORD_SIGNALS_COMPONENT = "record_signals"
+
+
+def _log_record_signal_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_SIGNALS_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _safe_storage_delete(storage: Any, rel_path: str) -> None:
@@ -28,7 +46,13 @@ def _safe_storage_delete(storage: Any, rel_path: str) -> None:
     try:
         storage.delete(rel_path)
     except Exception as exc:
-        logger.debug("Не удалось удалить файл из storage (%s): %s", rel_path, exc)
+        _log_record_signal_event(
+            logging.DEBUG,
+            "storage_delete_failed",
+            "Не удалось удалить файл из storage.",
+            rel_path=rel_path,
+            error=str(exc),
+        )
 
 
 def _safe_rmdir(storage: Any, rel_dir: str) -> None:
@@ -45,7 +69,13 @@ def _safe_rmdir(storage: Any, rel_dir: str) -> None:
         if os.path.isdir(abs_dir) and not os.listdir(abs_dir):
             os.rmdir(abs_dir)
     except Exception as exc:
-        logger.debug("Не удалось удалить пустую директорию (%s): %s", abs_dir, exc)
+        _log_record_signal_event(
+            logging.DEBUG,
+            "rmdir_failed",
+            "Не удалось удалить пустую директорию.",
+            path=abs_dir,
+            error=str(exc),
+        )
 
 
 @receiver(pre_save, sender=Record)
@@ -64,8 +94,12 @@ def cleanup_old_cover_on_change(
     except Record.DoesNotExist:
         return
     except Exception as exc:
-        logger.debug(
-            "cleanup_old_cover_on_change: не удалось загрузить старую версию: %s", exc
+        _log_record_signal_event(
+            logging.DEBUG,
+            "cover_old_load_failed",
+            "Не удалось загрузить старую версию записи для сравнения обложки.",
+            record_id=getattr(instance, "pk", None),
+            error=str(exc),
         )
         return
 

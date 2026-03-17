@@ -901,10 +901,12 @@ class RecordService:
                     )
                 return normalized_existing
             except ValueError:
-                logger.info(
-                    "Игнорирую невалидный сохранённый URL Redeye для записи %s: %s",
-                    record.pk,
-                    existing_source_url,
+                _log_record_service_event(
+                    logging.INFO,
+                    "redeye_source_url_invalid",
+                    "Игнорирован невалидный сохранённый URL Redeye.",
+                    record_id=record.pk,
+                    source=existing_source_url,
                 )
 
         normalized_catalog_number = self._normalize_redeye_catalog_number(
@@ -918,11 +920,13 @@ class RecordService:
                 normalized_catalog_number
             )
         except Exception as exc:  # noqa: BLE001
-            logger.info(
-                "Не удалось получить карточку Redeye по CAT=%s для записи %s: %s",
-                normalized_catalog_number,
-                record.pk,
-                exc,
+            _log_record_service_event(
+                logging.INFO,
+                "redeye_fetch_failed",
+                "Не удалось получить карточку Redeye по каталожному номеру.",
+                record_id=record.pk,
+                catalog_number=normalized_catalog_number,
+                error=str(exc),
             )
             return None
 
@@ -940,12 +944,14 @@ class RecordService:
         try:
             validate_redeye_product_url(source_url)
         except ValueError as exc:
-            logger.info(
-                "URL Redeye после резолва невалиден (record=%s, CAT=%s): %s (%s)",
-                record.pk,
-                normalized_catalog_number,
-                source_url,
-                exc,
+            _log_record_service_event(
+                logging.INFO,
+                "redeye_source_url_invalid",
+                "URL Redeye после резолва невалиден.",
+                record_id=record.pk,
+                catalog_number=normalized_catalog_number,
+                source=source_url,
+                error=str(exc),
             )
             return None
 
@@ -1148,50 +1154,62 @@ class RecordService:
 
         if discogs_id is not None and record.discogs_id is None:
             if self._has_identifier_conflict(record, discogs_id=discogs_id):
-                logger.info(
-                    "Пропущено обновление discogs_id для записи %s: значение %s уже занято.",
-                    record.id,
-                    discogs_id,
+                _log_record_service_event(
+                    logging.INFO,
+                    "discogs_id_conflict",
+                    "Пропущено обновление discogs_id: значение уже занято.",
+                    record_id=record.id,
+                    discogs_id=discogs_id,
                 )
             else:
                 record.discogs_id = discogs_id
                 update_fields.append("discogs_id")
-                logger.info(
-                    "Добавлен недостающий discogs_id для записи %s: %s",
-                    record.id,
-                    discogs_id,
+                _log_record_service_event(
+                    logging.INFO,
+                    "discogs_id_filled",
+                    "Добавлен недостающий discogs_id.",
+                    record_id=record.id,
+                    discogs_id=discogs_id,
                 )
 
         if barcode and self._is_empty_identifier(record.barcode):
             if self._has_identifier_conflict(record, barcode=barcode):
-                logger.info(
-                    "Пропущено обновление barcode для записи %s: значение %s уже занято.",
-                    record.id,
-                    barcode,
+                _log_record_service_event(
+                    logging.INFO,
+                    "barcode_conflict",
+                    "Пропущено обновление barcode: значение уже занято.",
+                    record_id=record.id,
+                    barcode=barcode,
                 )
             else:
                 record.barcode = barcode
                 update_fields.append("barcode")
-                logger.info(
-                    "Добавлен недостающий barcode для записи %s: %s",
-                    record.id,
-                    barcode,
+                _log_record_service_event(
+                    logging.INFO,
+                    "barcode_filled",
+                    "Добавлен недостающий barcode.",
+                    record_id=record.id,
+                    barcode=barcode,
                 )
 
         if catalog_number and self._is_empty_identifier(record.catalog_number):
             if self._has_identifier_conflict(record, catalog_number=catalog_number):
-                logger.info(
-                    "Пропущено обновление catalog_number для записи %s: значение %s уже занято.",
-                    record.id,
-                    catalog_number,
+                _log_record_service_event(
+                    logging.INFO,
+                    "catalog_number_conflict",
+                    "Пропущено обновление catalog_number: значение уже занято.",
+                    record_id=record.id,
+                    catalog_number=catalog_number,
                 )
             else:
                 record.catalog_number = catalog_number
                 update_fields.append("catalog_number")
-                logger.info(
-                    "Добавлен недостающий catalog_number для записи %s: %s",
-                    record.id,
-                    catalog_number,
+                _log_record_service_event(
+                    logging.INFO,
+                    "catalog_number_filled",
+                    "Добавлен недостающий catalog_number.",
+                    record_id=record.id,
+                    catalog_number=catalog_number,
                 )
 
         if update_fields:
@@ -1218,13 +1236,23 @@ class RecordService:
             "catalog_number"
         ):
             record.catalog_number = record_data["catalog_number"]
-            logger.info(
-                "Добавлен недостающий catalog_number: %s", record.catalog_number
+            _log_record_service_event(
+                logging.INFO,
+                "catalog_number_filled",
+                "Добавлен недостающий catalog_number.",
+                record_id=record.id,
+                catalog_number=record.catalog_number,
             )
 
         if self._is_empty_identifier(record.barcode) and record_data.get("barcode"):
             record.barcode = record_data["barcode"]
-            logger.info("Добавлен недостающий barcode: %s", record.barcode)
+            _log_record_service_event(
+                logging.INFO,
+                "barcode_filled",
+                "Добавлен недостающий barcode.",
+                record_id=record.id,
+                barcode=record.barcode,
+            )
 
         changes = []
         for field, old_value in old_values.items():
@@ -1232,7 +1260,13 @@ class RecordService:
             if old_value != new_value:
                 changes.append(f"{field}: '{old_value}' → '{new_value}'")
         if changes:
-            logger.info("Обновлены поля записи %s: %s", record.id, ", ".join(changes))
+            _log_record_service_event(
+                logging.INFO,
+                "record_fields_updated",
+                "Обновлены поля записи.",
+                record_id=record.id,
+                changes=", ".join(changes),
+            )
 
         record.save()
 
@@ -1269,8 +1303,12 @@ class RecordService:
             defaults={"url": url, "can_fetch_audio": can_fetch_audio},
         )
         if created:
-            logger.info(
-                "Добавлен источник %s/%s для записи %s", provider, role, record.pk
+            _log_record_service_event(
+                logging.INFO,
+                "record_source_created",
+                "Добавлен источник записи.",
+                record_id=record.pk,
+                source=f"{provider}/{role}",
             )
             return obj
 
@@ -1283,8 +1321,12 @@ class RecordService:
             updated = True
         if updated:
             obj.save(update_fields=["url", "can_fetch_audio", "updated_at"])
-            logger.info(
-                "Обновлён источник %s/%s для записи %s", provider, role, record.pk
+            _log_record_service_event(
+                logging.INFO,
+                "record_source_updated",
+                "Обновлён источник записи.",
+                record_id=record.pk,
+                source=f"{provider}/{role}",
             )
         return obj
 
@@ -1344,10 +1386,12 @@ class RecordService:
             release=release, release_id=release_id
         )
         if not source_url:
-            logger.warning(
-                "Не удалось определить URL источника Discogs для записи %s (release_id=%s).",
-                record.pk,
-                release_id,
+            _log_record_service_event(
+                logging.WARNING,
+                "discogs_source_url_missing",
+                "Не удалось определить URL источника Discogs.",
+                record_id=record.pk,
+                discogs_id=release_id,
             )
             return
 
