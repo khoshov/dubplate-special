@@ -11,6 +11,7 @@ from django.utils.text import Truncator
 from django.utils import timezone
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
+from config.logging import NOTICE_LEVEL, log_event
 
 from records.models import Record, VKPublicationLog
 from records.services.social.publication_log import register_vk_publication_event
@@ -19,6 +20,23 @@ if TYPE_CHECKING:
     from .record_admin import RecordAdmin
 
 logger = logging.getLogger(__name__)
+_ADMIN_ACTIONS_COMPONENT = "records_admin_actions"
+
+
+def _log_admin_action_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_ADMIN_ACTIONS_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _batch_update(
@@ -48,7 +66,14 @@ def _batch_update(
     user = getattr(request, "user", None)
     username = getattr(user, "username", "unknown")
 
-    logger.info("%s (записей: %s, пользователь: %s)", start_log, total, username)
+    _log_admin_action_event(
+        logging.INFO,
+        "batch_start",
+        f"===== {start_log} =====",
+        action=start_log,
+        records_total=total,
+        username=username,
+    )
 
     if total == 0:
         admin_obj.message_user(request, empty_msg, level=messages.WARNING)
@@ -78,21 +103,28 @@ def _batch_update(
             if on_error is not None:
                 on_error(record, e)
             if expected_errors and isinstance(e, expected_errors):
-                logger.info(
-                    "Ожидаемая ошибка при обновлении %s (%s=%s): %s",
-                    log_record_name,
-                    id_label,
-                    extract_id,
-                    e,
+                _log_admin_action_event(
+                    NOTICE_LEVEL,
+                    "batch_item_failed_expected",
+                    "Операция завершилась ожидаемой ошибкой.",
+                    action=start_log,
+                    record_id=record.pk,
+                    item_id=extract_id,
+                    id_label=id_label,
+                    error=str(e),
                 )
             else:
-                logger.exception(
-                    "Ошибка при обновлении %s (%s=%s): %s",
-                    log_record_name,
-                    id_label,
-                    extract_id,
-                    e,
+                _log_admin_action_event(
+                    logging.ERROR,
+                    "batch_item_failed",
+                    "Операция завершилась ошибкой.",
+                    action=start_log,
+                    record_id=record.pk,
+                    item_id=extract_id,
+                    id_label=id_label,
+                    error=str(e),
                 )
+                logger.exception("Детали ошибки batch action.")
 
     if ok:
         admin_obj.message_user(
@@ -119,15 +151,17 @@ def _batch_update(
             level=messages.ERROR,
         )
 
-    logger.info(
-        "%s завершено: ок=%s, пропуск=%s, ошибки=%s, всего=%s, %.2fs, пользователь=%s",
-        start_log,
-        ok,
-        skip,
-        fail,
-        total,
-        time.perf_counter() - start_ts,
-        username,
+    _log_admin_action_event(
+        logging.INFO,
+        "batch_finish",
+        f"===== {start_log} завершено =====",
+        action=start_log,
+        ok=ok,
+        skipped=skip,
+        failed=fail,
+        records_total=total,
+        elapsed_sec=f"{time.perf_counter() - start_ts:.2f}",
+        username=username,
     )
 
 
@@ -145,15 +179,19 @@ def post_to_vk(
             "Сервис VK не сконфигурирован. Обратитесь к администратору.",
             level=messages.ERROR,
         )
-        logger.error(
-            "VK: сервис не инициализирован в RecordAdmin.__init__ (vk_service отсутствует)."
+        _log_admin_action_event(
+            logging.ERROR,
+            "vk_service_missing",
+            "Публикация в VK не запущена: сервис VK не инициализирован.",
         )
         return
 
-    logger.info(
-        "Публикация записей в VK (записей: %d, пользователь: %s).",
-        queryset.count(),
-        getattr(request.user, "username", "?"),
+    _log_admin_action_event(
+        logging.INFO,
+        "vk_publish_start",
+        "Запущена публикация записей в VK.",
+        records_total=queryset.count(),
+        username=getattr(request.user, "username", "?"),
     )
 
     def _get_id(record: Record) -> str | None:
@@ -163,20 +201,24 @@ def post_to_vk(
         title = getattr(record, "title", "")
         cover = getattr(record, "cover_image", None)
         cover_path = getattr(cover, "path", None) if cover else None
-        logger.debug(
-            "Попытка публикации: record_id=%s, title='%s', есть_обложка=%s, cover_path=%s",
-            getattr(record, "pk", None),
-            Truncator(title).chars(80),
-            bool(cover_path),
-            cover_path,
+        _log_admin_action_event(
+            logging.DEBUG,
+            "vk_publish_attempt",
+            "Подготовлена публикация записи в VK.",
+            record_id=getattr(record, "pk", None),
+            title=Truncator(title).chars(80),
+            has_cover=bool(cover_path),
+            cover_path=cover_path or "—",
         )
 
         post_id = vk_service.post_record_with_audio(record=record)
-        logger.info(
-            "Опубликовано в VK с аудио: record_id=%s, post_id=%s, title=%s",
-            getattr(record, "pk", None),
-            post_id,
-            Truncator(title).chars(80),
+        _log_admin_action_event(
+            logging.INFO,
+            "vk_publish_success",
+            "Запись опубликована в VK.",
+            record_id=getattr(record, "pk", None),
+            post_id=post_id,
+            title=Truncator(title).chars(80),
         )
         return post_id
 
@@ -281,11 +323,14 @@ def update_audio_from_youtube(
             requested_by_user_id=getattr(request.user, "id", None),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Ошибка запуска YouTube enrichment (records=%s): %s",
-            record_ids,
-            exc,
+        _log_admin_action_event(
+            logging.ERROR,
+            "youtube_audio_enqueue_failed",
+            "Не удалось поставить в очередь задачу обновления треков из YouTube.",
+            record_ids=",".join(str(record_id) for record_id in record_ids),
+            error=str(exc),
         )
+        logger.exception("Детали ошибки запуска YouTube job из admin action.")
         admin_obj.message_user(
             request,
             f"Не удалось запустить обновление треков из YouTube: {exc!s}",
@@ -294,6 +339,15 @@ def update_audio_from_youtube(
         return
 
     report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    _log_admin_action_event(
+        logging.INFO,
+        "youtube_audio_enqueued",
+        "Поставлена в очередь задача обновления треков из YouTube из admin action.",
+        job_id=job.id,
+        records_total=total,
+        record_ids=",".join(str(record_id) for record_id in record_ids),
+        requested_by_user_id=getattr(request.user, "id", None),
+    )
     admin_obj.message_user(
         request,
         (
@@ -321,30 +375,39 @@ def update_from_redeye(
     def _get_redeye_catalog_number(record: Record) -> str | None:
         raw_value = getattr(record, "catalog_number", None)
         if not isinstance(raw_value, str):
-            logger.info(
-                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
-                record.pk,
-                raw_value,
-                "—",
+            _log_admin_action_event(
+                NOTICE_LEVEL,
+                "redeye_catalog_invalid",
+                "Запись пропущена при обновлении из Redeye: каталожный номер невалиден.",
+                record_id=record.pk,
+                raw_catalog_number=raw_value,
+                catalog_number="—",
+                reason="invalid_catalog_number",
             )
             return None
 
         normalized = raw_value.strip().upper()
         if not normalized:
-            logger.info(
-                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
-                record.pk,
-                raw_value,
-                "—",
+            _log_admin_action_event(
+                NOTICE_LEVEL,
+                "redeye_catalog_invalid",
+                "Запись пропущена при обновлении из Redeye: каталожный номер пуст.",
+                record_id=record.pk,
+                raw_catalog_number=raw_value,
+                catalog_number="—",
+                reason="invalid_catalog_number",
             )
             return None
 
         if normalized in {"NONE", "NULL", "N/A", "N-A", "-", "—"}:
-            logger.info(
-                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
-                record.pk,
-                raw_value,
-                normalized,
+            _log_admin_action_event(
+                NOTICE_LEVEL,
+                "redeye_catalog_invalid",
+                "Запись пропущена при обновлении из Redeye: каталожный номер содержит псевдо-пустое значение.",
+                record_id=record.pk,
+                raw_catalog_number=raw_value,
+                catalog_number=normalized,
+                reason="invalid_catalog_number",
             )
             return None
 

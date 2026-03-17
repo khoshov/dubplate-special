@@ -14,6 +14,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.html import format_html
 from vk_api.exceptions import ApiError
+from config.logging import log_event
 
 from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
 from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
@@ -53,6 +54,23 @@ from .inlines import StructuredFormatInline, TrackInline
 from .mixins import RedeyeAudioRefreshMixin, YouTubeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
+_RECORD_ADMIN_COMPONENT = "record_admin"
+
+
+def _log_record_admin_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_ADMIN_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 @admin.register(Record)
@@ -200,10 +218,12 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             if source not in {SOURCE_REDEYE, SOURCE_DISCOGS}:
                 source = SOURCE_REDEYE
 
-            logger.info(
-                "RecordAdmin.add_view: перехвачена ValidationError при создании записи. source=%s errors=%s",
-                source,
-                error_messages,
+            _log_record_admin_event(
+                logging.INFO,
+                "add_view_validation_error",
+                "При создании записи перехвачена ошибка валидации формы.",
+                source=source,
+                errors=", ".join(error_messages),
             )
             return HttpResponseRedirect(
                 f"{reverse('admin:records_record_add')}?source={source}"
@@ -318,12 +338,16 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             track.audio_preview = None
             track.save(update_fields=["audio_preview", "modified"])
         except Exception as exc:
-            logger.exception(
-                "Не удалось удалить mp3 трека #%s у записи #%s: %s",
-                track.pk,
-                record.pk,
-                exc,
+            _log_record_admin_event(
+                logging.ERROR,
+                "track_audio_delete_failed",
+                "Не удалось удалить mp3 трека из админки.",
+                record_id=record.pk,
+                track_id=track.pk,
+                old_audio=audio_name,
+                error=str(exc),
             )
+            logger.exception("Детали ошибки удаления mp3 трека из админки.")
             return JsonResponse(
                 {"ok": False, "error": "Не удалось удалить mp3-файл."},
                 status=500,
@@ -560,9 +584,11 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         try:
             return ZoneInfo(name)
         except ZoneInfoNotFoundError:
-            logger.warning(
-                "VK schedule: неизвестная timezone '%s', использую текущую.",
-                name,
+            _log_record_admin_event(
+                logging.WARNING,
+                "vk_schedule_timezone_unknown",
+                "Указанная timezone не распознана, используется текущая timezone проекта.",
+                timezone_name=name,
             )
             return timezone.get_current_timezone()
 
@@ -595,9 +621,11 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         На странице редактирования возвращаем стандартный набор.
         """
         if obj:
-            logger.debug(
-                "RecordAdmin.get_fieldsets(change): pk=%s → используется стандартный набор полей.",
-                getattr(obj, "pk", None),
+            _log_record_admin_event(
+                logging.DEBUG,
+                "fieldsets_change",
+                "Для change-view используется стандартный набор fieldsets.",
+                record_id=getattr(obj, "pk", None),
             )
             return self.fieldsets
 
@@ -605,14 +633,18 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             request.POST.get("source") or request.GET.get("source") or SOURCE_REDEYE
         ).lower()
         if source == SOURCE_DISCOGS:
-            logger.debug(
-                "RecordAdmin.get_fieldsets(add): источник=Discogs → URL Redeye скрыт."
+            _log_record_admin_event(
+                logging.DEBUG,
+                "fieldsets_add_discogs",
+                "Для add-view выбран источник Discogs: поле URL Redeye скрыто.",
             )
             add_import_fields = ("source", "discogs_id", "catalog_number", "barcode")
             description = "Импорт из Discogs поддерживает discogs_id, barecode или catalog_number."
         else:
-            logger.debug(
-                "RecordAdmin.get_fieldsets(add): источник=Redeye → barcode скрыт."
+            _log_record_admin_event(
+                logging.DEBUG,
+                "fieldsets_add_redeye",
+                "Для add-view выбран источник Redeye: поле barcode скрыто.",
             )
             add_import_fields = ("source", "catalog_number", "source_url")
             description = (
@@ -643,14 +675,18 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         На странице добавления треки скрыты.
         """
         if obj and obj.pk:
-            logger.debug(
-                "RecordAdmin.get_inline_instances: pk=%s → отображение треков подключено.",
-                obj.pk,
+            _log_record_admin_event(
+                logging.DEBUG,
+                "inline_instances_change",
+                "Для change-view включены inline треков.",
+                record_id=obj.pk,
             )
             return super().get_inline_instances(request, obj)
 
-        logger.debug(
-            "RecordAdmin.get_inline_instances: add-view → отображение треков отключено."
+        _log_record_admin_event(
+            logging.DEBUG,
+            "inline_instances_add",
+            "Для add-view inline треков отключены.",
         )
         return []
 
@@ -668,11 +704,13 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             if field_name not in readonly_list:
                 readonly_list.append(field_name)
         readonly = tuple(readonly_list)
-        logger.debug(
-            "RecordAdmin.get_readonly_fields: base=%s, добавлено=%s → итог=%s",
-            base,
-            extra,
-            readonly,
+        _log_record_admin_event(
+            logging.DEBUG,
+            "readonly_fields_resolved",
+            "Сформирован итоговый список readonly fields.",
+            base_fields=", ".join(base) or "—",
+            added_fields=", ".join(extra) or "—",
+            readonly_fields=", ".join(readonly) or "—",
         )
         return readonly
 
@@ -691,9 +729,11 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         formfield = super().formfield_for_manytomany(db_field, request, **kwargs)
         if formfield:
             formfield.required = False
-            logger.debug(
-                "RecordAdmin.formfield_for_manytomany: поле '%s' помечено как необязательное к заполнению.",
-                db_field.name,
+            _log_record_admin_event(
+                logging.DEBUG,
+                "many_to_many_optional",
+                "M2M-поле помечено как необязательное в админке.",
+                field_name=db_field.name,
             )
         return formfield
 

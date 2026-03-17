@@ -2,6 +2,7 @@ import html
 
 import pytest
 from django.contrib import messages
+from config.logging import NOTICE_LEVEL
 
 # noinspection PyProtectedMember
 from records.admin.actions import _batch_update, update_from_redeye
@@ -114,7 +115,7 @@ def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkey
     admin.record_service = _FailingRecordService()
     req = FakeRequest()
     exception_calls: list[tuple] = []
-    info_calls: list[tuple] = []
+    log_calls: list[tuple] = []
 
     monkeypatch.setattr(
         actions_module.logger,
@@ -123,8 +124,8 @@ def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkey
     )
     monkeypatch.setattr(
         actions_module.logger,
-        "info",
-        lambda *args, **kwargs: info_calls.append((args, kwargs)),
+        "log",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
     )
 
     update_from_redeye(
@@ -140,7 +141,9 @@ def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkey
     assert "на сайте не найден релиз с каталожным номером 'SP34'" in all_messages
     assert exception_calls == []
     assert any(
-        "Ожидаемая ошибка при обновлении" in str(args[0]) for args, _ in info_calls
+        args[0] == NOTICE_LEVEL
+        and "Операция завершилась ожидаемой ошибкой." in str(args[1])
+        for args, _ in log_calls
     )
 
 

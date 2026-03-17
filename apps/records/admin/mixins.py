@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
+from config.logging import log_event
 
 from records.services.tasks import (
     login_youtube_session_profile,
@@ -18,6 +19,23 @@ from records.services.tasks import (
 )
 
 logger = logging.getLogger(__name__)
+_ADMIN_MIXINS_COMPONENT = "records_admin_mixins"
+
+
+def _log_admin_mixin_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_ADMIN_MIXINS_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class RedeyeAudioRefreshMixin:
@@ -67,15 +85,28 @@ class RedeyeAudioRefreshMixin:
             added_count: int = self.record_service.attach_audio_from_redeye(
                 obj, force=False
             )
+            _log_admin_mixin_event(
+                logging.INFO,
+                "redeye_audio_refresh_finished",
+                "Завершено обновление аудио из Redeye по кнопке записи.",
+                record_id=obj.pk,
+                updated_tracks=added_count,
+                overwrite=False,
+            )
             if added_count > 0:
                 messages.success(request, f"Добавлены mp3-превью: {added_count}.")
             else:
                 messages.info(request, "Новых mp3-превью не найдено.")
-        except Exception as e:
-            logger.exception(
-                "Ошибка закачки mp3 с Redeye для записи #%s: %s", obj.pk, e
+        except Exception as exc:  # noqa: BLE001
+            _log_admin_mixin_event(
+                logging.ERROR,
+                "redeye_audio_refresh_failed",
+                "Не удалось выполнить обновление аудио из Redeye по кнопке записи.",
+                record_id=obj.pk,
+                error=str(exc),
             )
-            messages.error(request, f"Не удалось закачать аудио: {e!s}")
+            logger.exception("Детали ошибки обновления Redeye по кнопке записи.")
+            messages.error(request, f"Не удалось закачать аудио: {exc!s}")
 
         return redirect(reverse("admin:records_record_change", args=[obj.pk]))
 
@@ -135,6 +166,14 @@ class YouTubeAudioRefreshMixin:
                 record=obj,
                 requested_by_user_id=getattr(request.user, "id", None),
             )
+            _log_admin_mixin_event(
+                logging.INFO,
+                "youtube_audio_refresh_enqueued",
+                "Поставлена в очередь задача обновления треков из YouTube по кнопке записи.",
+                record_id=obj.pk,
+                job_id=job.id,
+                requested_by_user_id=getattr(request.user, "id", None),
+            )
             report_url = reverse(
                 "admin:records_audioenrichmentjob_change",
                 args=[job.id],
@@ -150,15 +189,18 @@ class YouTubeAudioRefreshMixin:
                     report_url,
                 ),
             )
-        except Exception as e:  # noqa: BLE001
-            logger.exception(
-                "Ошибка запуска YouTube-аудио-обогащения для записи #%s: %s",
-                obj.pk,
-                e,
+        except Exception as exc:  # noqa: BLE001
+            _log_admin_mixin_event(
+                logging.ERROR,
+                "youtube_audio_refresh_failed",
+                "Не удалось поставить в очередь задачу обновления треков из YouTube по кнопке записи.",
+                record_id=obj.pk,
+                error=str(exc),
             )
+            logger.exception("Детали ошибки запуска YouTube job по кнопке записи.")
             messages.error(
                 request,
-                f"Не удалось запустить обновление треков из YouTube: {e!s}",
+                f"Не удалось запустить обновление треков из YouTube: {exc!s}",
             )
 
         return redirect(reverse("admin:records_record_change", args=[obj.pk]))
@@ -171,12 +213,26 @@ class YouTubeAudioRefreshMixin:
 
         try:
             refresh_youtube_session_profile.delay()
+            _log_admin_mixin_event(
+                logging.INFO,
+                "youtube_session_refresh_enqueued",
+                "Поставлена в очередь задача обновления YouTube-сессии.",
+                requested_by_user_id=getattr(
+                    getattr(request, "user", None), "id", None
+                ),
+            )
             messages.success(
                 request,
                 "Поставлена в очередь задача обновления YouTube-сессии.",
             )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Не удалось запустить обновление YouTube-сессии: %s", exc)
+            _log_admin_mixin_event(
+                logging.ERROR,
+                "youtube_session_refresh_failed",
+                "Не удалось поставить в очередь задачу обновления YouTube-сессии.",
+                error=str(exc),
+            )
+            logger.exception("Детали ошибки запуска обновления YouTube-сессии.")
             messages.error(
                 request,
                 f"Не удалось запустить обновление YouTube-сессии: {exc!s}",
@@ -196,6 +252,15 @@ class YouTubeAudioRefreshMixin:
         ui_url = str(getattr(settings, "YOUTUBE_SESSION_UI_URL", "") or "").strip()
         try:
             login_youtube_session_profile.delay(timeout_sec=timeout_sec)
+            _log_admin_mixin_event(
+                logging.INFO,
+                "youtube_session_login_enqueued",
+                "Поставлена в очередь интерактивная авторизация YouTube-сессии.",
+                requested_by_user_id=getattr(
+                    getattr(request, "user", None), "id", None
+                ),
+                timeout_sec=timeout_sec,
+            )
             messages.success(
                 request,
                 "Запущена интерактивная авторизация YouTube-сессии.",
@@ -209,7 +274,13 @@ class YouTubeAudioRefreshMixin:
                     ),
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Не удалось запустить авторизацию YouTube-сессии: %s", exc)
+            _log_admin_mixin_event(
+                logging.ERROR,
+                "youtube_session_login_failed",
+                "Не удалось поставить в очередь интерактивную авторизацию YouTube-сессии.",
+                error=str(exc),
+            )
+            logger.exception("Детали ошибки запуска авторизации YouTube-сессии.")
             messages.error(
                 request,
                 f"Не удалось запустить авторизацию YouTube-сессии: {exc!s}",
