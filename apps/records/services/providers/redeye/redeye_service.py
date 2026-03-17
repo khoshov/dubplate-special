@@ -6,12 +6,30 @@ from typing import Dict, Optional
 from urllib.parse import urljoin, quote
 
 from bs4 import BeautifulSoup
+from config.logging import NOTICE_LEVEL, log_event
 from records.constants import REDEYE_BASE_URL
 from .helpers import normalize_abs_url
 from .http import RedeyeHTTPClient
 from .page_product_scraper import RedeyeProductParser
 
 logger = logging.getLogger(__name__)
+_REDEYE_SERVICE_COMPONENT = "redeye_service"
+
+
+def _log_redeye_service_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 @dataclass
@@ -54,32 +72,47 @@ class RedeyeService:
         if not cat:
             raise ValueError("Catalogue number is required.")
 
-        logger.info("[Redeye] search by CAT: '%s'", cat)
+        _log_redeye_service_event(
+            logging.INFO,
+            "catalog_search_start",
+            "Запущен поиск релиза Redeye по каталожному номеру.",
+            catalog_number=cat,
+        )
         product_urls = self._product_page_urls_by_catalog_number(cat)
         if not product_urls:
             raise ValueError(f"Redeye: release not found by Catalogue No. '{cat}'")
 
         req_cat = cat.upper()
         for abs_url in product_urls:
-            logger.info("[Redeye] opening product: %s", abs_url)
+            _log_redeye_service_event(
+                logging.INFO,
+                "product_open",
+                "Открыта карточка релиза Redeye.",
+                catalog_number=req_cat,
+                source=abs_url,
+            )
             html_text = self.http.get_text(abs_url)
 
             payload = self.parser.parse(abs_url, html_text)
             parsed_cat = (payload.get("catalog_number") or "").strip().upper()
             if not parsed_cat:
-                logger.info(
-                    "[Redeye] skip candidate with empty parsed CAT: requested '%s' (%s)",
-                    req_cat,
-                    abs_url,
+                _log_redeye_service_event(
+                    NOTICE_LEVEL,
+                    "catalog_candidate_skipped",
+                    "Карточка Redeye пропущена: не удалось извлечь каталожный номер.",
+                    catalog_number=req_cat,
+                    source=abs_url,
                 )
                 continue
 
             if parsed_cat != req_cat:
-                logger.info(
-                    "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
-                    req_cat,
-                    parsed_cat,
-                    abs_url,
+                _log_redeye_service_event(
+                    NOTICE_LEVEL,
+                    "catalog_candidate_mismatch",
+                    "Карточка Redeye пропущена: каталожный номер не совпал.",
+                    catalog_number=req_cat,
+                    parsed_catalog_number=parsed_cat,
+                    source=abs_url,
                 )
                 continue
 
@@ -95,7 +128,12 @@ class RedeyeService:
             raise ValueError("Product URL is required.")
 
         abs_url = normalize_abs_url(url)
-        logger.info("[Redeye] opening product by URL: %s", abs_url)
+        _log_redeye_service_event(
+            logging.INFO,
+            "product_open_by_url",
+            "Открыта карточка релиза Redeye по прямому URL.",
+            source=abs_url,
+        )
         html_text = self.http.get_text(abs_url)
         payload = self.parser.parse(abs_url, html_text)
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
@@ -112,7 +150,13 @@ class RedeyeService:
         search_url = (
             f"{REDEYE_BASE_URL}/search/?searchType=CAT&keywords={quote(catalog_number)}"
         )
-        logger.info("[Redeye] search URL: %s", search_url)
+        _log_redeye_service_event(
+            logging.DEBUG,
+            "catalog_search_url_built",
+            "Сформирован URL поиска Redeye по каталожному номеру.",
+            catalog_number=catalog_number,
+            source=search_url,
+        )
 
         html_text = self.http.get_text(
             search_url, referer=f"{REDEYE_BASE_URL}/", slow=True

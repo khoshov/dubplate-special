@@ -33,10 +33,29 @@ from typing import Dict, List, Optional, Sequence, TypedDict, Union
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
+from config.logging import log_event
 
 from .helpers import text_join
 
 logger = logging.getLogger(__name__)
+_REDEYE_TRACKS_PARSER_COMPONENT = "redeye_tracks_parser"
+
+
+def _log_redeye_tracks_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_TRACKS_PARSER_COMPONENT,
+        event=event,
+        **context,
+    )
+
 
 # Заголовки сторон: "Side A", "A", "Disc 1", "CD 2"
 RX_SIDE = re.compile(r"^\s*(?:side\s+[A-D]|[A-D]|disc\s+\d+|cd\s*\d+)\s*$", re.I)
@@ -236,12 +255,19 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
 
     tracks_node: Optional[Tag] = soup.find(attrs={"class": "tracks"})  # type: ignore[assignment]
     if not tracks_node:
-        logger.debug("parse_redeye_tracks: .tracks не найден")
+        _log_redeye_tracks_event(
+            logging.DEBUG,
+            "tracks_missing",
+            "Блок .tracks не найден на странице Redeye.",
+            has_audio_previews=has_audio_previews,
+        )
         if has_audio_previews:
             synthesized = _synthesize_from_player(sample_buttons)
-            logger.debug(
-                "parse_redeye_tracks: синтезировано %d треков по кнопкам плеера (нет .tracks)",
-                len(synthesized),
+            _log_redeye_tracks_event(
+                logging.DEBUG,
+                "tracks_synthesized",
+                "Треклист синтезирован по кнопкам плеера: отсутствует блок .tracks.",
+                tracks_total=len(synthesized),
             )
             return synthesized
         return []
@@ -250,12 +276,19 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
     items = _html_lines_to_tracks(html_fragment)
 
     if not items:
-        logger.debug("parse_redeye_tracks: .tracks пуст после нормализации")
+        _log_redeye_tracks_event(
+            logging.DEBUG,
+            "tracks_empty",
+            "Блок .tracks пуст после нормализации.",
+            has_audio_previews=has_audio_previews,
+        )
         if has_audio_previews:
             synthesized = _synthesize_from_player(sample_buttons)
-            logger.debug(
-                "parse_redeye_tracks: синтезировано %d треков по кнопкам плеера (пустой .tracks)",
-                len(synthesized),
+            _log_redeye_tracks_event(
+                logging.DEBUG,
+                "tracks_synthesized",
+                "Треклист синтезирован по кнопкам плеера: блок .tracks пуст.",
+                tracks_total=len(synthesized),
             )
             return synthesized
         return []
@@ -274,13 +307,20 @@ def parse_redeye_tracks(soup_or_html: Union[BeautifulSoup, str]) -> List[TrackPa
         titles = [track.get("title") or "" for track in items]
         if titles and all(_is_empty_title(t) for t in titles):
             synthesized = _synthesize_from_player(sample_buttons)
-            logger.debug(
-                "parse_redeye_tracks: все названия пустые — синтезировано %d треков по кнопкам",
-                len(synthesized),
+            _log_redeye_tracks_event(
+                logging.DEBUG,
+                "tracks_synthesized",
+                "Треклист синтезирован по кнопкам плеера: названия треков пустые.",
+                tracks_total=len(synthesized),
             )
             return synthesized
 
-    logger.debug("parse_redeye_tracks: распознано %d треков", len(items))
+    _log_redeye_tracks_event(
+        logging.DEBUG,
+        "tracks_parsed",
+        "Треклист Redeye успешно распознан.",
+        tracks_total=len(items),
+    )
     return items
 
 

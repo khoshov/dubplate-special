@@ -5,9 +5,27 @@ from typing import Any, Dict, List, Optional
 import discogs_client
 from rest_framework import status
 
+from config.logging import NOTICE_LEVEL, log_event
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+_DISCOGS_SERVICE_COMPONENT = "discogs_service"
+
+
+def _log_discogs_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: Any,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_DISCOGS_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class DiscogsServiceError(Exception):
@@ -96,7 +114,13 @@ class DiscogsService:
         try:
             self._make_request(search_result.refresh)
         except DiscogsServiceError as e:
-            logger.warning("Discogs: не удалось refresh search result: %s", e)
+            _log_discogs_event(
+                logging.WARNING,
+                "search_refresh_failed",
+                "Не удалось обновить результат поиска Discogs.",
+                barcode=barcode,
+                error=str(e),
+            )
 
         return search_result
 
@@ -125,19 +149,23 @@ class DiscogsService:
         try:
             self._make_request(search_result.refresh)
         except DiscogsNotFoundError as e:
-            logger.info(
-                "Discogs: поиск по catalog_number=%s вернул невалидный/удалённый релиз: %s",
-                catalog_number,
-                e,
+            _log_discogs_event(
+                NOTICE_LEVEL,
+                "catalog_search_invalid_release",
+                "Поиск Discogs по каталожному номеру вернул невалидный или удалённый релиз.",
+                catalog_number=catalog_number,
+                error=str(e),
             )
             raise DiscogsNotFoundError(
                 "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
             ) from e
         except DiscogsServiceError as e:
-            logger.info(
-                "Discogs: refresh search result завершился ошибкой для catalog_number=%s: %s",
-                catalog_number,
-                e,
+            _log_discogs_event(
+                logging.WARNING,
+                "catalog_search_refresh_failed",
+                "Не удалось обновить результат поиска Discogs по каталожному номеру.",
+                catalog_number=catalog_number,
+                error=str(e),
             )
             raise DiscogsApiError(
                 "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
@@ -175,8 +203,12 @@ class DiscogsService:
                     {"title": video.title, "url": video.url} for video in release.videos
                 ]
         except DiscogsServiceError as e:
-            logger.error(
-                "Discogs: не удалось получить видео для релиза %s: %s", discogs_id, e
+            _log_discogs_event(
+                logging.ERROR,
+                "release_videos_failed",
+                "Не удалось получить видео релиза из Discogs.",
+                discogs_id=discogs_id,
+                error=str(e),
             )
         return []
 
@@ -208,12 +240,14 @@ class DiscogsService:
         # Извлечение barcode
         data["barcode"] = self._extract_barcode(release)
 
-        logger.debug(
-            f"Extracted from Discogs - "
-            f"ID: {data['discogs_id']}, "
-            f"Title: {data['title']}, "
-            f"Barcode: {data.get('barcode', 'None')}, "
-            f"Catalog: {data.get('catalog_number', 'None')}"
+        _log_discogs_event(
+            logging.DEBUG,
+            "release_data_extracted",
+            "Из объекта Discogs извлечены данные релиза.",
+            discogs_id=data["discogs_id"],
+            title=data["title"],
+            barcode=data.get("barcode", "—"),
+            catalog_number=data.get("catalog_number", "—"),
         )
 
         return data
@@ -274,7 +308,12 @@ class DiscogsService:
                         ):
                             return str(identifier.value).strip()
             except Exception as e:
-                logger.debug(f"Failed to extract from identifiers: {e}")
+                _log_discogs_event(
+                    logging.DEBUG,
+                    "barcode_extract_failed",
+                    "Не удалось извлечь штрих-код из списка идентификаторов Discogs.",
+                    error=str(e),
+                )
 
         return None
 
@@ -351,7 +390,12 @@ class DiscogsService:
             elif e.status_code == status.HTTP_404_NOT_FOUND:
                 raise DiscogsNotFoundError("Релиз не найден в Discogs.") from e
             elif e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
-                logger.warning("Discogs: превышен rate limit, повтор через ожидание...")
+                _log_discogs_event(
+                    logging.WARNING,
+                    "rate_limit_retry",
+                    "Превышен rate limit Discogs. Будет выполнен повтор после ожидания.",
+                    wait_seconds=self.RATE_LIMIT_WAIT_TIME,
+                )
                 time.sleep(self.RATE_LIMIT_WAIT_TIME)
                 return self._make_request(func, *args, **kwargs)
             raise DiscogsApiError(

@@ -7,12 +7,30 @@ from typing import Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString
+from config.logging import log_event
 
 from .helpers import parse_expected_date_parts_from_text
 from .helpers import text_join, page_text, normalize_abs_url
 from .redeye_tracks_parser import parse_redeye_tracks, TrackPayload
 
 logger = logging.getLogger(__name__)
+_REDEYE_PRODUCT_PARSER_COMPONENT = "redeye_product_parser"
+
+
+def _log_redeye_product_parser_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_PRODUCT_PARSER_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class RedeyeProductParser:
@@ -61,16 +79,19 @@ class RedeyeProductParser:
             else None
         )
 
-        logger.info(
-            "[Redeye] page parsed: title='%s' artists=%s label='%s' cat='%s' price=%s avail=%s img=%s has_audio_previews=%s",
-            record_title or title_text,
-            artists,
-            label_name,
-            catalog_number,
-            price,
-            availability,
-            bool(image_url),
-            has_audio_previews,
+        _log_redeye_product_parser_event(
+            logging.INFO,
+            "product_parsed",
+            "Карточка Redeye успешно разобрана.",
+            title=record_title or title_text,
+            artists=", ".join(artists) if artists else "—",
+            label=label_name or "—",
+            catalog_number=catalog_number or "—",
+            price_gbp=price,
+            availability=availability or "—",
+            has_image=bool(image_url),
+            has_audio_previews=has_audio_previews,
+            tracks_total=len(tracks),
         )
 
         return {

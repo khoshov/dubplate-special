@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 import requests
+from config.logging import NOTICE_LEVEL, log_event
 
 from records.constants import (
     REDEYE_HTTP_TIMEOUT,
@@ -20,6 +21,23 @@ from records.constants import (
 )
 
 logger = logging.getLogger(__name__)
+_REDEYE_HTTP_COMPONENT = "redeye_http"
+
+
+def _log_redeye_http_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_HTTP_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class RedeyeHTTPClient:
@@ -79,31 +97,41 @@ class RedeyeHTTPClient:
 
                 if 500 <= status < 600:
                     backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                    logger.warning(
-                        "[redeye:http] %s for %s (attempt %s/%s) backoff=%.1fs",
-                        status,
-                        url,
-                        attempt,
-                        self.max_retries,
-                        backoff,
+                    _log_redeye_http_event(
+                        logging.WARNING,
+                        "retry_server_error",
+                        "Redeye вернул серверную ошибку. Будет выполнен повтор запроса.",
+                        source=url,
+                        status=status,
+                        attempt=attempt,
+                        max_retries=self.max_retries,
+                        backoff_seconds=round(backoff, 1),
                     )
                     time.sleep(backoff)
                     continue
 
                 if status in (403, 429):
-                    logger.warning(
-                        "[redeye:http] possible block %s for %s → cooldown %ss (attempt %s/%s)",
-                        status,
-                        url,
-                        self.cooldown_sec,
-                        attempt,
-                        self.max_retries,
+                    _log_redeye_http_event(
+                        NOTICE_LEVEL,
+                        "cooldown_after_block",
+                        "Redeye вернул признак блокировки. Включён cooldown перед повтором.",
+                        source=url,
+                        status=status,
+                        attempt=attempt,
+                        max_retries=self.max_retries,
+                        cooldown_seconds=self.cooldown_sec,
                     )
                     time.sleep(self.cooldown_sec)
                     if attempt == self.max_retries:
                         if self.stop_on_block:
                             raise requests.HTTPError(f"blocked: {status} {url}")
-                        logger.warning("[redeye:http] skip blocked page: %s", url)
+                        _log_redeye_http_event(
+                            logging.WARNING,
+                            "blocked_page_skipped",
+                            "Страница Redeye пропущена после серии блокировок.",
+                            source=url,
+                            status=status,
+                        )
                         break
                     continue
 
@@ -112,13 +140,15 @@ class RedeyeHTTPClient:
             except requests.RequestException as e:
                 last_exc = e
                 backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.8)
-                logger.warning(
-                    "[redeye:http] request error for %s: %s (attempt %s/%s) backoff=%.1fs",
-                    url,
-                    e,
-                    attempt,
-                    self.max_retries,
-                    backoff,
+                _log_redeye_http_event(
+                    logging.WARNING,
+                    "request_retry",
+                    "Ошибка HTTP-запроса к Redeye. Будет выполнен повтор.",
+                    source=url,
+                    error=str(e),
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    backoff_seconds=round(backoff, 1),
                 )
                 time.sleep(backoff)
 
