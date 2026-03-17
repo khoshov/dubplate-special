@@ -23,13 +23,31 @@ import re
 from typing import Any, Iterable, List, Mapping
 
 from django.db import transaction
+from config.logging import log_event
 
 from records.models import Record, Track
 
 logger = logging.getLogger(__name__)
+_TRACKLIST_WRITER_COMPONENT = "tracklist_writer"
 _TRACK_KEY_NON_WORD_RE = re.compile(r"[^\w]+", flags=re.UNICODE)
 
 TrackInput = Mapping[str, Any]
+
+
+def _log_tracklist_writer_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_TRACKLIST_WRITER_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _normalize_input_row(data: TrackInput) -> dict:
@@ -121,7 +139,13 @@ def create_tracks_for_record(
             )
 
     if not items:
-        logger.info("create_tracks_for_record(%s): входной список пуст.", record.pk)
+        _log_tracklist_writer_event(
+            logging.INFO,
+            "tracklist_input_empty",
+            "Создание треклиста пропущено: входной список пуст.",
+            record_id=record.pk,
+            replace=replace,
+        )
         if replace:
             Track.objects.filter(record=record).delete()
         return []
@@ -136,10 +160,12 @@ def create_tracks_for_record(
     if replace:
         deleted = Track.objects.filter(record=record).delete()[0]
         if deleted:
-            logger.debug(
-                "create_tracks_for_record(%s): удалено старых треков: %d",
-                record.pk,
-                deleted,
+            _log_tracklist_writer_event(
+                logging.DEBUG,
+                "old_tracks_deleted",
+                "Перед созданием нового треклиста удалены существующие треки записи.",
+                record_id=record.pk,
+                deleted_tracks=deleted,
             )
 
     to_create: List[Track] = []
@@ -162,15 +188,24 @@ def create_tracks_for_record(
         )
 
     if not to_create:
-        logger.info(
-            "create_tracks_for_record(%s): отсутствуют валидные элементы после нормализации.",
-            record.pk,
+        _log_tracklist_writer_event(
+            logging.INFO,
+            "tracklist_normalized_empty",
+            "Создание треклиста пропущено: после нормализации не осталось валидных треков.",
+            record_id=record.pk,
+            source_rows=len(items),
         )
         return []
 
     Track.objects.bulk_create(to_create)
-    logger.info(
-        "create_tracks_for_record(%s): создано треков: %d", record.pk, len(to_create)
+    _log_tracklist_writer_event(
+        logging.INFO,
+        "tracklist_created",
+        "Треклист записи сохранён.",
+        record_id=record.pk,
+        created_tracks=len(to_create),
+        replace=replace,
+        preserve_existing_audio_previews=preserve_existing_audio_previews,
     )
     return to_create
 

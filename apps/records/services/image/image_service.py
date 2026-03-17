@@ -3,11 +3,29 @@ import logging
 import requests
 
 from django.core.files.base import ContentFile
+from config.logging import log_event
 
 from records.models import Record
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+_IMAGE_SERVICE_COMPONENT = "image_service"
+
+
+def _log_image_service_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_IMAGE_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class ImageService:
@@ -39,7 +57,12 @@ class ImageService:
             False в противном случае.
         """
         if record.cover_image:
-            logger.info(f"Record {record.id} already has cover")
+            _log_image_service_event(
+                logging.INFO,
+                "cover_skip",
+                "Загрузка обложки пропущена: файл уже существует.",
+                record_id=record.id,
+            )
             return False
 
         try:
@@ -50,15 +73,34 @@ class ImageService:
 
             filename = f"cover_{record.discogs_id or record.id}.jpeg"
             record.cover_image.save(filename, ContentFile(response.content))
-            logger.info(f"Cover downloaded for record {record.id}")
+            _log_image_service_event(
+                logging.INFO,
+                "cover_downloaded",
+                "Обложка сохранена для записи.",
+                record_id=record.id,
+                image_url=image_url,
+                file_name=filename,
+            )
             return True
 
-        except requests.RequestException as e:
-            logger.error(f"Failed to download cover for record {record.id}: {e}")
+        except requests.RequestException as exc:
+            _log_image_service_event(
+                logging.ERROR,
+                "cover_download_failed",
+                "Не удалось скачать обложку записи.",
+                record_id=record.id,
+                image_url=image_url,
+                error=str(exc),
+            )
             return False
-        except Exception as e:
-            logger.error(
-                f"Unexpected error downloading cover for record {record.id}: {e}"
+        except Exception as exc:  # noqa: BLE001
+            _log_image_service_event(
+                logging.ERROR,
+                "cover_download_failed",
+                "Произошла непредвиденная ошибка при загрузке обложки записи.",
+                record_id=record.id,
+                image_url=image_url,
+                error=str(exc),
             )
             return False
 
@@ -79,8 +121,19 @@ class ImageService:
 
         try:
             record.cover_image.delete(save=True)
-            logger.info(f"Cover deleted for record {record.id}")
+            _log_image_service_event(
+                logging.INFO,
+                "cover_deleted",
+                "Обложка удалена у записи.",
+                record_id=record.id,
+            )
             return True
-        except Exception as e:
-            logger.error(f"Failed to delete cover for record {record.id}: {e}")
+        except Exception as exc:  # noqa: BLE001
+            _log_image_service_event(
+                logging.ERROR,
+                "cover_delete_failed",
+                "Не удалось удалить обложку записи.",
+                record_id=record.id,
+                error=str(exc),
+            )
             return False

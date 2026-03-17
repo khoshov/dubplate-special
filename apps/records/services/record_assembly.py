@@ -38,6 +38,7 @@ import re
 from typing import Mapping, Sequence
 
 from django.db import transaction
+from config.logging import NOTICE_LEVEL, log_event
 
 from records.models import (
     Artist,
@@ -52,6 +53,7 @@ from records.models import (
 from records.services.tracklist_writer import create_tracks_for_record
 
 logger = logging.getLogger(__name__)
+_RECORD_ASSEMBLY_COMPONENT = "record_assembly"
 _INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
 _DEFAULT_LEGACY_FORMAT_NAME = FormatChoices.NOT_SPECIFIED
 _ALLOWED_LEGACY_FORMAT_NAMES = tuple(choice.value for choice in FormatChoices)
@@ -62,6 +64,22 @@ STRUCTURED_FORMAT_INCOMPLETE_ERROR = (
     "Либо очистите поля структурированного формата и выберите значение "
     "в стандартном справочнике форматов."
 )
+
+
+def _log_record_assembly_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_ASSEMBLY_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def build_record_from_payload(data: Mapping[str, object]) -> Record:
@@ -113,8 +131,12 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
         sync_format_state(record, data, preserve_existing_legacy_formats=False)
         create_tracklist(record, tracks_payload, replace=True)
 
-    logger.info(
-        "Создана запись Record (pk=%s, CAT=%s)", record.pk, record.catalog_number or "—"
+    _log_record_assembly_event(
+        logging.INFO,
+        "record_created",
+        "Создана запись Record из нормализованного payload.",
+        record_id=record.pk,
+        catalog_number=record.catalog_number or "—",
     )
     return record
 
@@ -171,10 +193,12 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
         preserve_existing_audio_previews=True,
     )
 
-    logger.info(
-        "Запись обновлена из нормализованных данных (pk=%s, CAT=%s)",
-        record.pk,
-        record.catalog_number or "—",
+    _log_record_assembly_event(
+        logging.INFO,
+        "record_updated",
+        "Запись обновлена из нормализованного payload.",
+        record_id=record.pk,
+        catalog_number=record.catalog_number or "—",
     )
     return record
 
@@ -258,7 +282,15 @@ def create_tracklist(
         preserve_existing_audio_previews=preserve_existing_audio_previews,
     )
     created_count = len(created_tracks)
-    logger.info("Создан треклист (%d треков) для записи %s", created_count, record.pk)
+    _log_record_assembly_event(
+        logging.INFO,
+        "tracklist_created",
+        "Создан треклист записи.",
+        record_id=record.pk,
+        created_tracks=created_count,
+        replace=replace,
+        preserve_existing_audio_previews=preserve_existing_audio_previews,
+    )
     return created_count
 
 
@@ -394,10 +426,12 @@ def replace_structured_format_rows(
         [int(row["variant_of_format"]) for row in normalized_rows],
     )
 
-    logger.info(
-        "Синхронизированы structured formats для записи %s: %d строк",
-        record.pk,
-        len(objects),
+    _log_record_assembly_event(
+        logging.INFO,
+        "structured_formats_synced",
+        "Синхронизированы structured format-строки записи.",
+        record_id=record.pk,
+        structured_rows=len(objects),
     )
     return objects
 
@@ -463,9 +497,11 @@ def ensure_legacy_formats(record: Record) -> None:
         normalized_names.append(canonical_name)
 
     if normalized_names and normalized_names == current_names:
-        logger.info(
-            "Legacy formats сохранены без изменений для записи %s: значения уже заданы.",
-            record.pk,
+        _log_record_assembly_event(
+            logging.INFO,
+            "legacy_formats_unchanged",
+            "Legacy format-проекция сохранена без изменений.",
+            record_id=record.pk,
         )
         return
 
@@ -491,9 +527,12 @@ def replace_legacy_formats(record: Record, format_names: Sequence[str]) -> None:
         seen.add(normalized_key)
         obj = Format.objects.filter(name__iexact=name).first()
         if obj is None:
-            logger.info(
-                "Legacy format '%s' отсутствует в справочнике, значение заменено на дефолт.",
-                name,
+            _log_record_assembly_event(
+                NOTICE_LEVEL,
+                "legacy_format_replaced_with_default",
+                "Значение legacy format отсутствует в справочнике и заменено на дефолт.",
+                record_id=record.pk,
+                format_name=name,
             )
             continue
         objects.append(obj)
@@ -503,10 +542,12 @@ def replace_legacy_formats(record: Record, format_names: Sequence[str]) -> None:
         objects = [default_obj]
 
     record.formats.set(objects)
-    logger.info(
-        "Обновлена legacy format-проекция для записи %s: %d значений",
-        record.pk,
-        len(objects),
+    _log_record_assembly_event(
+        logging.INFO,
+        "legacy_formats_synced",
+        "Обновлена legacy format-проекция записи.",
+        record_id=record.pk,
+        legacy_formats_count=len(objects),
     )
 
 

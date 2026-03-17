@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 from django.db import IntegrityError, transaction
 from playwright.sync_api import Browser
 from discogs_client.exceptions import HTTPError
+from config.logging import NOTICE_LEVEL, log_event
 
 from records.models import (
     AudioEnrichmentJob,
@@ -55,8 +56,25 @@ from records.services.record_assembly import (
 from records.services.tasks import run_youtube_enrichment_job
 
 logger = logging.getLogger(__name__)
+_RECORD_SERVICE_COMPONENT = "record_service"
 
 DEFAULT_NAME = "not specified"
+
+
+def _log_record_service_event(
+    level: int,
+    event: str,
+    message: str,
+    **context,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _get_or_create_default(model_cls):
@@ -122,11 +140,14 @@ class RecordService:
         Returns:
             (record, created): created=True — создана новая запись; False — возвращена существующая.
         """
-        logger.info(
-            "Discogs import started: discogs_id=%s, barcode=%s, catalog_number=%s",
-            discogs_id,
-            barcode,
-            catalog_number,
+        _log_record_service_event(
+            logging.INFO,
+            "discogs_import_start",
+            "Запущен импорт записи из Discogs.",
+            discogs_id=discogs_id,
+            barcode=barcode or "—",
+            catalog_number=catalog_number or "—",
+            requested_by_user_id=requested_by_user_id,
         )
         normalized_barcode = self._normalize_barcode(barcode)
         normalized_catalog_number = self._normalize_catalog_number(catalog_number)
@@ -137,7 +158,15 @@ class RecordService:
             catalog_number=normalized_catalog_number,
         )
         if existing:
-            logger.info("Discogs import: найдена существующая запись: %s", existing.id)
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "discogs_import_existing_record",
+                "Импорт из Discogs остановлен: найдена существующая запись.",
+                record_id=existing.id,
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+            )
             self._update_missing_identifiers(
                 existing,
                 barcode=normalized_barcode,
@@ -160,22 +189,54 @@ class RecordService:
                     "Нужно указать discogs_id, barecode или catalog_number для импорта из Discogs."
                 )
         except DiscogsConfigError as exc:
-            logger.info("Discogs import failed: config error: %s", exc)
+            _log_record_service_event(
+                logging.WARNING,
+                "discogs_import_failed",
+                "Импорт из Discogs не выполнен: ошибка конфигурации.",
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+                error=str(exc),
+            )
             raise ValueError(str(exc)) from exc
         except DiscogsAuthError as exc:
-            logger.info("Discogs import failed: auth error: %s", exc)
+            _log_record_service_event(
+                logging.WARNING,
+                "discogs_import_failed",
+                "Импорт из Discogs не выполнен: ошибка авторизации.",
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+                error=str(exc),
+            )
             raise ValueError(
                 "Не удалось авторизоваться в Discogs. Проверьте API-ключ."
             ) from exc
         except DiscogsNotFoundError as exc:
-            logger.info("Discogs import failed: release not found: %s", exc)
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "discogs_import_failed",
+                "Импорт из Discogs не выполнен: релиз не найден.",
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+                error=str(exc),
+            )
             if discogs_id:
                 raise ValueError(
                     "Релиз с таким Discogs ID не найден. Попробуйте добавить по barecode."
                 ) from exc
             raise ValueError(str(exc) or "Релиз не найден в Discogs.") from exc
         except DiscogsApiError as exc:
-            logger.info("Discogs import failed: API error: %s", exc)
+            _log_record_service_event(
+                logging.ERROR,
+                "discogs_import_failed",
+                "Импорт из Discogs не выполнен: ошибка Discogs API.",
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+                error=str(exc),
+            )
             if normalized_catalog_number:
                 raise ValueError(
                     "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
@@ -188,7 +249,15 @@ class RecordService:
                 "Ошибка обращения к Discogs API. Попробуйте позже."
             ) from exc
         except HTTPError as exc:
-            logger.info("Discogs import failed: raw HTTPError: %s", exc)
+            _log_record_service_event(
+                logging.ERROR,
+                "discogs_import_failed",
+                "Импорт из Discogs не выполнен: HTTP-ошибка провайдера.",
+                discogs_id=discogs_id,
+                barcode=normalized_barcode or "—",
+                catalog_number=normalized_catalog_number or "—",
+                error=str(exc),
+            )
             if normalized_catalog_number:
                 raise ValueError(
                     "Ошибка при импорте по каталожному номеру. Попробуйте добавить по barecode или по Discogs ID."
@@ -221,9 +290,14 @@ class RecordService:
             catalog_number=payload_catalog_number,
         )
         if existing:
-            logger.info(
-                "Discogs import: найдена существующая запись по payload (record_id=%s).",
-                existing.id,
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "discogs_import_existing_record",
+                "Импорт из Discogs остановлен: запись уже существует по данным payload.",
+                record_id=existing.id,
+                discogs_id=payload_discogs_id,
+                barcode=payload_barcode or "—",
+                catalog_number=payload_catalog_number or "—",
             )
             self._update_missing_identifiers(
                 existing,
@@ -244,8 +318,13 @@ class RecordService:
                     first = release.images[0]
                     uri = first.get("uri") if isinstance(first, dict) else None
                     if uri and self.image_service.download_cover(record, uri):
-                        logger.info(
-                            "Обложка скачана для записи %s (Discogs)", record.id
+                        _log_record_service_event(
+                            logging.INFO,
+                            "discogs_cover_downloaded",
+                            "Обложка записи скачана из Discogs.",
+                            record_id=record.id,
+                            discogs_id=record.discogs_id,
+                            image_url=uri,
                         )
                 enrichment_job = self.enqueue_discogs_audio_enrichment(
                     record=record,
@@ -259,10 +338,15 @@ class RecordService:
                 catalog_number=payload_catalog_number,
             )
             if existing:
-                logger.info(
-                    "Discogs import: duplicate key на сохранении, возвращаю существующую запись %s: %s",
-                    existing.id,
-                    exc,
+                _log_record_service_event(
+                    NOTICE_LEVEL,
+                    "discogs_import_duplicate",
+                    "Импорт из Discogs завершён возвратом существующей записи после duplicate key.",
+                    record_id=existing.id,
+                    discogs_id=payload_discogs_id,
+                    barcode=payload_barcode or "—",
+                    catalog_number=payload_catalog_number or "—",
+                    error=str(exc),
                 )
                 self._update_missing_identifiers(
                     existing,
@@ -274,10 +358,14 @@ class RecordService:
                 return existing, False
             raise
 
-        logger.info(
-            "Discogs import succeeded: record_id=%s, discogs_id=%s",
-            record.id,
-            record.discogs_id,
+        _log_record_service_event(
+            logging.INFO,
+            "discogs_import_success",
+            "Импорт записи из Discogs завершён успешно.",
+            record_id=record.id,
+            discogs_id=record.discogs_id,
+            barcode=record.barcode or "—",
+            catalog_number=record.catalog_number or "—",
         )
         return record, True
 
@@ -291,29 +379,59 @@ class RecordService:
                 "Для обновления из Discogs у записи должен быть discogs_id."
             )
 
-        logger.info(
-            "Начато обновление из Discogs для записи %s (Discogs ID: %s, Barcode: '%s', Catalog: '%s')",
-            record.id,
-            record.discogs_id,
-            record.barcode,
-            record.catalog_number,
+        _log_record_service_event(
+            logging.INFO,
+            "discogs_update_start",
+            "Запущено обновление записи из Discogs.",
+            record_id=record.id,
+            discogs_id=record.discogs_id,
+            barcode=record.barcode or "—",
+            catalog_number=record.catalog_number or "—",
         )
 
         try:
             release = self.discogs_service.get_release(record.discogs_id)
         except DiscogsConfigError as exc:
-            logger.warning("Discogs config error on update: %s", exc)
+            _log_record_service_event(
+                logging.WARNING,
+                "discogs_update_failed",
+                "Обновление из Discogs не выполнено: ошибка конфигурации.",
+                record_id=record.id,
+                discogs_id=record.discogs_id,
+                error=str(exc),
+            )
             raise ValueError(str(exc)) from exc
         except DiscogsAuthError as exc:
-            logger.warning("Discogs auth error on update: %s", exc)
+            _log_record_service_event(
+                logging.WARNING,
+                "discogs_update_failed",
+                "Обновление из Discogs не выполнено: ошибка авторизации.",
+                record_id=record.id,
+                discogs_id=record.discogs_id,
+                error=str(exc),
+            )
             raise ValueError(
                 "Не удалось авторизоваться в Discogs. Проверьте API-ключ."
             ) from exc
         except DiscogsNotFoundError as exc:
-            logger.info("Discogs release not found on update: %s", exc)
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "discogs_update_failed",
+                "Обновление из Discogs не выполнено: релиз не найден.",
+                record_id=record.id,
+                discogs_id=record.discogs_id,
+                error=str(exc),
+            )
             raise ValueError(f"Релиз {record.discogs_id} не найден в Discogs.") from exc
         except DiscogsApiError as exc:
-            logger.error("Discogs API error on update: %s", exc)
+            _log_record_service_event(
+                logging.ERROR,
+                "discogs_update_failed",
+                "Обновление из Discogs не выполнено: ошибка Discogs API.",
+                record_id=record.id,
+                discogs_id=record.discogs_id,
+                error=str(exc),
+            )
             raise ValueError(
                 "Ошибка обращения к Discogs API. Попробуйте позже."
             ) from exc
@@ -335,9 +453,24 @@ class RecordService:
                 first = release.images[0]
                 uri = first.get("uri") if isinstance(first, dict) else None
                 if uri and self.image_service.download_cover(record, uri):
-                    logger.info("Обновлена обложка для записи %s", record.id)
+                    _log_record_service_event(
+                        logging.INFO,
+                        "discogs_cover_downloaded",
+                        "Обложка записи обновлена из Discogs.",
+                        record_id=record.id,
+                        discogs_id=record.discogs_id,
+                        image_url=uri,
+                    )
 
-        logger.info("Обновление из Discogs завершено: %s", record.id)
+        _log_record_service_event(
+            logging.INFO,
+            "discogs_update_success",
+            "Обновление записи из Discogs завершено.",
+            record_id=record.id,
+            discogs_id=record.discogs_id,
+            barcode=record.barcode or "—",
+            catalog_number=record.catalog_number or "—",
+        )
         return record
 
     def enqueue_discogs_audio_enrichment(
@@ -414,12 +547,16 @@ class RecordService:
         transaction.on_commit(
             lambda: run_youtube_enrichment_job.delay(payload)  # noqa: B023
         )
-        logger.info(
-            "YouTube enrichment enqueue: source=%s, job_id=%s, records=%s, overwrite=%s",
-            source,
-            job.id,
-            normalized_record_ids,
-            overwrite_existing,
+        _log_record_service_event(
+            logging.INFO,
+            "youtube_audio_job_enqueued",
+            "Поставлена в очередь задача обновления аудио из YouTube.",
+            job_id=job.id,
+            source=source,
+            overwrite=overwrite_existing,
+            records_total=len(normalized_record_ids),
+            record_ids=",".join(str(record_id) for record_id in normalized_record_ids),
+            requested_by_user_id=requested_by_user_id,
         )
         return job
 
@@ -462,9 +599,12 @@ class RecordService:
             catalog_number__iexact=normalized_catalog_number
         ).first()
         if existing:
-            logger.info(
-                "Найдена существующая запись по каталожному номеру (Redeye): %s",
-                existing.id,
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "redeye_import_existing_record",
+                "Импорт из Redeye остановлен: найдена существующая запись по каталожному номеру.",
+                record_id=existing.id,
+                catalog_number=normalized_catalog_number,
             )
             ensure_legacy_formats(existing)
             if download_audio_decision:
@@ -476,9 +616,13 @@ class RecordService:
                         existing, force=False, page_url=resolved_page_url
                     )
                 except Exception as err:  # noqa: BLE001 — логируем любую ошибку привязки
-                    logger.warning(
-                        "Докачка аудио для существующей записи завершилась с ошибкой: %s",
-                        err,
+                    _log_record_service_event(
+                        logging.WARNING,
+                        "redeye_audio_attach_failed",
+                        "Докачка аудио из Redeye для существующей записи завершилась с ошибкой.",
+                        record_id=existing.id,
+                        catalog_number=normalized_catalog_number,
+                        error=str(err),
                     )
             return existing, False
 
@@ -503,7 +647,14 @@ class RecordService:
                 cover_url = raw_payload.get("image_url")
                 if save_image_decision and cover_url:
                     if self.image_service.download_cover(record, cover_url):
-                        logger.info("Обложка скачана для записи %s (Redeye)", record.id)
+                        _log_record_service_event(
+                            logging.INFO,
+                            "redeye_cover_downloaded",
+                            "Обложка записи скачана из Redeye.",
+                            record_id=record.id,
+                            catalog_number=normalized_catalog_number,
+                            image_url=str(cover_url),
+                        )
 
                 # URL источника: приоритет у явно переданного source_url (bulk), затем payload, затем result.source_url
                 raw_source = raw_payload.get("source")
@@ -528,17 +679,25 @@ class RecordService:
                             can_fetch_audio=True,
                         )
                     except ValueError as ve:
-                        logger.warning(
-                            "Валидация URL источника Redeye не пройдена: %s", ve
+                        _log_record_service_event(
+                            logging.WARNING,
+                            "redeye_source_invalid",
+                            "URL источника Redeye не прошёл валидацию.",
+                            record_id=record.id,
+                            catalog_number=normalized_catalog_number,
+                            error=str(ve),
                         )
         except IntegrityError:
             existing = Record.objects.filter(
                 catalog_number__iexact=normalized_catalog_number
             ).first()
             if existing:
-                logger.warning(
-                    "Запись с каталожным номером уже существует (Redeye): %s",
-                    existing.id,
+                _log_record_service_event(
+                    NOTICE_LEVEL,
+                    "redeye_import_duplicate",
+                    "Импорт из Redeye завершён возвратом существующей записи после duplicate key.",
+                    record_id=existing.id,
+                    catalog_number=normalized_catalog_number,
                 )
                 ensure_legacy_formats(existing)
                 return existing, False
@@ -548,13 +707,22 @@ class RecordService:
             try:
                 self.attach_audio_from_redeye(record, force=False)
             except Exception as err:  # noqa: BLE001
-                logger.warning(
-                    "Докачка аудио завершилась с ошибкой для записи %s: %s",
-                    record.pk,
-                    err,
+                _log_record_service_event(
+                    logging.WARNING,
+                    "redeye_audio_attach_failed",
+                    "Докачка аудио из Redeye завершилась с ошибкой.",
+                    record_id=record.pk,
+                    catalog_number=normalized_catalog_number,
+                    error=str(err),
                 )
 
-        logger.info("Импорт из Redeye завершён успешно: %s", record.id)
+        _log_record_service_event(
+            logging.INFO,
+            "redeye_import_success",
+            "Импорт записи из Redeye завершён успешно.",
+            record_id=record.id,
+            catalog_number=record.catalog_number or normalized_catalog_number,
+        )
         return record, True
 
     def attach_audio_from_redeye(
@@ -589,10 +757,12 @@ class RecordService:
             try:
                 validate_redeye_product_url(resolved_page_url)
             except ValueError:
-                logger.info(
-                    "Передан невалидный URL Redeye для записи %s: %s",
-                    record.pk,
-                    resolved_page_url,
+                _log_record_service_event(
+                    logging.WARNING,
+                    "redeye_source_invalid",
+                    "Переданный URL Redeye не прошёл валидацию и будет проигнорирован.",
+                    record_id=record.pk,
+                    source_url=resolved_page_url,
                 )
                 resolved_page_url = None
 
@@ -622,10 +792,12 @@ class RecordService:
                             can_fetch_audio=True,
                         )
                 except ValueError:
-                    logger.info(
-                        "Сохранённый URL Redeye невалиден для записи %s: %s",
-                        record.pk,
-                        existing_source_url,
+                    _log_record_service_event(
+                        logging.WARNING,
+                        "redeye_source_invalid",
+                        "Сохранённый URL Redeye не прошёл валидацию и будет проигнорирован.",
+                        record_id=record.pk,
+                        source_url=existing_source_url or "—",
                     )
                     normalized_source_url = None
             resolved_page_url = normalized_source_url
@@ -649,11 +821,13 @@ class RecordService:
                     "Обновление из Redeye невозможно: у записи отсутствует "
                     "каталожный номер."
                 )
-            logger.info(
-                "Redeye update aborted: record_id=%s, catalog_number=%s, reason=%s",
-                record.pk,
-                normalized_catalog_number or "—",
-                reason,
+            _log_record_service_event(
+                NOTICE_LEVEL,
+                "redeye_update_aborted",
+                "Обновление аудио из Redeye остановлено: источник не найден.",
+                record_id=record.pk,
+                catalog_number=normalized_catalog_number or "—",
+                reason=reason,
             )
             raise ValueError(reason)
 
@@ -664,10 +838,13 @@ class RecordService:
             per_click_timeout_sec=per_click_timeout_sec,
             browser=browser,
         )
-        logger.info(
-            "Завершено прикрепление аудио из Redeye: обновлено %d треков (record=%s)",
-            updated,
-            record.pk,
+        _log_record_service_event(
+            logging.INFO,
+            "redeye_audio_attach_finished",
+            "Завершено прикрепление аудио из Redeye.",
+            record_id=record.pk,
+            updated_tracks=updated,
+            overwrite=force,
         )
         return updated
 
@@ -804,11 +981,15 @@ class RecordService:
             normalized["formats"] = self._record_legacy_formats_or_default(record)
         else:
             normalized["formats"] = [FormatChoices.NOT_SPECIFIED]
-        logger.info(
-            "Discogs payload prepared: record_id=%s, structured_formats=%d, legacy_formats=%d",
-            getattr(record, "pk", None) or "new",
-            self._payload_list_length(normalized, "structured_formats"),
-            self._payload_list_length(normalized, "formats"),
+        _log_record_service_event(
+            logging.DEBUG,
+            "discogs_payload_prepared",
+            "Подготовлен payload Discogs для сборки записи.",
+            record_id=getattr(record, "pk", None) or "new",
+            structured_formats=self._payload_list_length(
+                normalized, "structured_formats"
+            ),
+            legacy_formats=self._payload_list_length(normalized, "formats"),
         )
         return normalized
 
@@ -827,19 +1008,23 @@ class RecordService:
         structured_count = self._payload_list_length(normalized, "structured_formats")
         if structured_count == 0:
             normalized.pop("structured_formats", None)
-            logger.info(
-                "%s payload prepared without structured_formats: catalog_number=%s, legacy_formats=%d",
-                source_name,
-                catalog_number or "—",
-                self._payload_list_length(normalized, "formats"),
+            _log_record_service_event(
+                logging.DEBUG,
+                "provider_payload_prepared",
+                "Подготовлен payload провайдера без structured_formats.",
+                source=source_name,
+                catalog_number=catalog_number or "—",
+                legacy_formats=self._payload_list_length(normalized, "formats"),
             )
             return normalized
 
-        logger.info(
-            "%s payload includes optional structured_formats: catalog_number=%s, structured_formats=%d",
-            source_name,
-            catalog_number or "—",
-            structured_count,
+        _log_record_service_event(
+            logging.DEBUG,
+            "provider_payload_prepared",
+            "Подготовлен payload провайдера со structured_formats.",
+            source=source_name,
+            catalog_number=catalog_number or "—",
+            structured_formats=structured_count,
         )
         return normalized
 
