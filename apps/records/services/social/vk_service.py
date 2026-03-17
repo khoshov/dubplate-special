@@ -13,10 +13,12 @@ import vk_api
 from django.conf import settings
 from vk_api.exceptions import ApiError
 
+from config.logging import NOTICE_LEVEL, build_log_extra, log_event
 from records.models import AvailableChoices, Record
 from records.services.record_assembly import get_structured_format_incomplete_error
 
 logger = logging.getLogger(__name__)
+_VK_SERVICE_COMPONENT = "vk_service"
 _VINYL_SIZE_FORMATS = {'7"', '10"', '12"'}
 
 
@@ -124,14 +126,37 @@ def _get_release_date(record: Any) -> date | None:
     try:
         value = record.get_release_date()
     except AttributeError:
-        logger.warning("VK: record не имеет get_release_date()")
+        log_event(
+            logger,
+            logging.WARNING,
+            "Запись не имеет get_release_date().",
+            component=_VK_SERVICE_COMPONENT,
+            event="release_date_missing_method",
+            record_id=getattr(record, "pk", None),
+        )
         return None
     except (TypeError, ValueError) as exc:
-        logger.debug("VK: get_release_date() вернуло неверные данные: %s", exc)
+        log_event(
+            logger,
+            logging.DEBUG,
+            "get_release_date() вернул некорректные данные.",
+            component=_VK_SERVICE_COMPONENT,
+            event="release_date_invalid",
+            record_id=getattr(record, "pk", None),
+            error=str(exc),
+        )
         return None
 
     if not isinstance(value, date):
-        logger.debug("VK: get_release_date() вернуло не date: %r", value)
+        log_event(
+            logger,
+            logging.DEBUG,
+            "get_release_date() вернул не date.",
+            component=_VK_SERVICE_COMPONENT,
+            event="release_date_not_date",
+            record_id=getattr(record, "pk", None),
+            value=value,
+        )
         return None
 
     return value
@@ -203,7 +228,15 @@ def _format_record_format(record: Any) -> str | None:
             elif hasattr(fm, "all"):
                 names = [getattr(f, "name", "") for f in fm.all()]
         except (AttributeError, TypeError) as exc:
-            logger.debug("VK: не удалось получить список форматов: %s", exc)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "Не удалось получить список форматов записи.",
+                component=_VK_SERVICE_COMPONENT,
+                event="record_formats_failed",
+                record_id=getattr(record, "pk", None),
+                error=str(exc),
+            )
             names = []
 
     # выкидываем пустые и Not specified
@@ -462,10 +495,14 @@ class VKService:
         all_attachments = self._collect_release_attachments(record, with_audio=True)
 
         logger.info(
-            "VK: публикую релиз (record_id=%s) с %d вложениями: %s",
-            getattr(record, "pk", None),
-            len(all_attachments),
-            ",".join(all_attachments) if all_attachments else "—",
+            "VK: публикую релиз.",
+            extra=build_log_extra(
+                component=_VK_SERVICE_COMPONENT,
+                event="post_start",
+                record_id=getattr(record, "pk", None),
+                attachments_total=len(all_attachments),
+                attachments=",".join(all_attachments) if all_attachments else "—",
+            ),
         )
         publish_date_ts = int(publish_at.timestamp()) if publish_at else None
         return self._wall_post(
@@ -520,9 +557,13 @@ class VKService:
                 attachments.append(photo)
         else:
             logger.warning(
-                "VK: для записи #%s обложка недоступна (файл отсутствует). "
+                "VK: для записи отсутствует обложка. "
                 "Если будут аудио-вложения, они будут удалены из-за требований VK.",
-                getattr(record, "pk", None),
+                extra=build_log_extra(
+                    component=_VK_SERVICE_COMPONENT,
+                    event="cover_missing",
+                    record_id=getattr(record, "pk", None),
+                ),
             )
 
         if not with_audio:
@@ -554,17 +595,24 @@ class VKService:
                         audio_attachments.append(att)
                 else:
                     logger.warning(
-                        "VK: у записи #%s отсутствует mp3-файл на диске для трека #%s — трек пропущен.",
-                        getattr(record, "pk", None),
-                        getattr(track, "pk", None),
+                        "VK: у записи отсутствует mp3-файл на диске — трек пропущен.",
+                        extra=build_log_extra(
+                            component=_VK_SERVICE_COMPONENT,
+                            event="track_audio_missing",
+                            record_id=getattr(record, "pk", None),
+                            track_id=getattr(track, "pk", None),
+                        ),
                     )
 
         # 3) требование VK: если есть аудио — обязано быть фото
         if audio_attachments and not attachments:
             logger.warning(
-                "VK: у записи #%s есть аудио-вложения, но нет фото — аудио будут удалены из публикации "
-                "(требование VK: нужна хотя бы одна фотография для аудио).",
-                getattr(record, "pk", None),
+                "VK: у записи есть аудио-вложения, но нет фото — аудио удалены (требование VK).",
+                extra=build_log_extra(
+                    component=_VK_SERVICE_COMPONENT,
+                    event="audio_without_photo",
+                    record_id=getattr(record, "pk", None),
+                ),
             )
             audio_attachments.clear()
 
@@ -602,7 +650,14 @@ class VKService:
         try:
             url = self._get_wall_upload_url()
         except ApiError as e:
-            logger.error("VK: не удалось получить upload_url для фото: %s", e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "Не удалось получить upload_url для фото VK.",
+                component=_VK_SERVICE_COMPONENT,
+                event="photo_upload_url_failed",
+                error=str(e),
+            )
             return None
 
         try:
@@ -613,14 +668,28 @@ class VKService:
                 resp.raise_for_status()
             upload_resp = resp.json()
         except requests.RequestException as e:
-            logger.exception("VK: ошибка HTTP при загрузке фото: %s", e)
+            logger.exception(
+                "Ошибка HTTP при загрузке фото VK.",
+                extra=build_log_extra(
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_upload_http_failed",
+                    error=str(e),
+                ),
+            )
             return None
 
         try:
             saved = self._save_wall_photo(upload_resp)
             return f"photo{saved['owner_id']}_{saved['id']}"
         except ApiError as e:
-            logger.error("VK: ошибка сохранения фото (photos.saveWallPhoto): %s", e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "Ошибка сохранения фото VK (photos.saveWallPhoto).",
+                component=_VK_SERVICE_COMPONENT,
+                event="photo_save_failed",
+                error=str(e),
+            )
             return None
 
     def _get_audio_upload_url(self) -> str:
@@ -652,11 +721,22 @@ class VKService:
         except ApiError as e:
             code = getattr(e, "code", None)
             if code == 270:
-                logger.warning(
-                    "VK: Audio API отключён для приложения (код 270). Аудио пропущено."
+                log_event(
+                    logger,
+                    NOTICE_LEVEL,
+                    "Audio API отключён для приложения (код 270). Аудио пропущено.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="audio_api_disabled",
                 )
             else:
-                logger.warning("VK: не удалось получить upload_url для аудио: %s", e)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "Не удалось получить upload_url для аудио VK.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="audio_upload_url_failed",
+                    error=str(e),
+                )
             return None
 
         try:
@@ -667,14 +747,28 @@ class VKService:
                 resp.raise_for_status()
             upload_resp = resp.json()
         except requests.RequestException as e:
-            logger.exception("VK: ошибка HTTP при загрузке аудио: %s", e)
+            logger.exception(
+                "Ошибка HTTP при загрузке аудио VK.",
+                extra=build_log_extra(
+                    component=_VK_SERVICE_COMPONENT,
+                    event="audio_upload_http_failed",
+                    error=str(e),
+                ),
+            )
             return None
 
         try:
             saved = self._save_audio(upload_resp, artist, title)
             return f"audio{saved['owner_id']}_{saved['id']}"
         except ApiError as e:
-            logger.warning("VK: ошибка audio.save, аудио пропущено: %s", e)
+            log_event(
+                logger,
+                logging.WARNING,
+                "Ошибка audio.save — аудио пропущено.",
+                component=_VK_SERVICE_COMPONENT,
+                event="audio_save_failed",
+                error=str(e),
+            )
             return None
 
     def _wall_post(
@@ -706,14 +800,25 @@ class VKService:
 
         post_id_raw = resp.get("post_id")
         if not isinstance(post_id_raw, int):
-            logger.error(
-                "VK: wall.post вернул неожиданный post_id: %r, ответ: %r",
-                post_id_raw,
-                resp,
+            log_event(
+                logger,
+                logging.ERROR,
+                "wall.post вернул неожиданный post_id.",
+                component=_VK_SERVICE_COMPONENT,
+                event="post_id_invalid",
+                post_id=post_id_raw,
+                response=resp,
             )
             raise ValueError(
                 f"VK: wall.post вернул некорректный post_id: {post_id_raw!r}"
             )
 
-        logger.info("VK: запись опубликована, post_id=%s.", post_id_raw)
+        log_event(
+            logger,
+            logging.INFO,
+            "Запись опубликована в VK.",
+            component=_VK_SERVICE_COMPONENT,
+            event="post_published",
+            post_id=post_id_raw,
+        )
         return post_id_raw

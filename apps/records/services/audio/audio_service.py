@@ -5,6 +5,7 @@ from typing import Optional
 
 from playwright.sync_api import Browser
 
+from config.logging import log_event
 from records.models import (
     AudioEnrichmentJob,
     AudioEnrichmentJobRecord,
@@ -33,6 +34,23 @@ from records.constants import (
 )
 
 logger = logging.getLogger(__name__)
+_AUDIO_SERVICE_COMPONENT = "audio_service"
+
+
+def _log_audio_service_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_AUDIO_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class AudioService:
@@ -75,11 +93,13 @@ class AudioService:
             Количество треков, у которых аудио появилось или обновилось.
         """
 
-        logger.info(
-            "Старт прикрепления аудио из Redeye: record=%s, force=%s, click_timeout=%s",
-            record.pk,
-            force,
-            per_click_timeout_sec,
+        _log_audio_service_event(
+            logging.INFO,
+            "redeye_attach_start",
+            "Старт прикрепления аудио из Redeye.",
+            record_id=getattr(record, "pk", None),
+            overwrite=force,
+            click_timeout_sec=per_click_timeout_sec,
         )
 
         updated = attach_audio_from_redeye_player(
@@ -90,10 +110,12 @@ class AudioService:
             browser=browser,
         )
 
-        logger.info(
-            "Завершено прикрепление аудио из Redeye: record=%s, обновлено=%d",
-            record.pk,
-            updated,
+        _log_audio_service_event(
+            logging.INFO,
+            "redeye_attach_finish",
+            "Завершено прикрепление аудио из Redeye.",
+            record_id=getattr(record, "pk", None),
+            updated_count=updated,
         )
         return updated
 
