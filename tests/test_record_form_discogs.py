@@ -72,11 +72,14 @@ class RecordFormDiscogsDuplicateFieldTests(TestCase):
 
         assert not form.is_valid()
         assert "discogs_id" in form.errors
-        assert "Укажите Discogs ID в формате 1724093 или [r1724093]." in form.errors[
-            "discogs_id"
-        ][0]
+        assert (
+            "Укажите Discogs ID в формате 1724093 или [r1724093]."
+            in form.errors["discogs_id"][0]
+        )
 
-    def test_duplicate_catalog_number_does_not_add_identifiers_required_error(self) -> None:
+    def test_duplicate_catalog_number_does_not_add_identifiers_required_error(
+        self,
+    ) -> None:
         Record.objects.create(title="Bleach", catalog_number="SP34")
 
         form = RecordForm(

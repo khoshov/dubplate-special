@@ -125,7 +125,9 @@ class RedeyeService:
             href = (link.get("href", "") or "").strip()
             if not href:
                 continue
-            abs_url = href if href.startswith("http") else urljoin(REDEYE_BASE_URL, href)
+            abs_url = (
+                href if href.startswith("http") else urljoin(REDEYE_BASE_URL, href)
+            )
             abs_url = normalize_abs_url(abs_url)
             if abs_url in seen:
                 continue

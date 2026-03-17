@@ -29,8 +29,7 @@ def test_fetch_by_catalog_number_uses_exact_match_from_candidates():
     http = DummyHTTPClient(
         {
             search_url: (
-                '<a href="/vinyl/111-first">One</a>'
-                '<a href="/vinyl/222-second">Two</a>'
+                '<a href="/vinyl/111-first">One</a><a href="/vinyl/222-second">Two</a>'
             ),
             first_url: "<html></html>",
             second_url: "<html></html>",

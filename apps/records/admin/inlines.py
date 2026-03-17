@@ -68,7 +68,9 @@ class StructuredFormatInlineForm(forms.ModelForm):
         quantity = cleaned.get("quantity")
 
         # Полностью пустая строка считается очищенной и не создаёт новый вариант.
-        is_effectively_empty = not any((carrier, format_name, details)) and quantity in (
+        is_effectively_empty = not any(
+            (carrier, format_name, details)
+        ) and quantity in (
             None,
             1,
         )
@@ -100,7 +102,9 @@ class StructuredFormatInlineFormSet(BaseInlineFormSet):
             if self.can_delete and self._should_delete_form(form):
                 continue
 
-            variant_of_format = getattr(form.instance, "variant_of_format", None) or index
+            variant_of_format = (
+                getattr(form.instance, "variant_of_format", None) or index
+            )
             if variant_of_format != active_variant:
                 continue
 
@@ -115,7 +119,9 @@ class StructuredFormatInlineFormSet(BaseInlineFormSet):
             return
 
     def _selected_variant_of_format(self) -> int | None:
-        raw_variant = str(self.data.get("active_structured_format_variant") or "").strip()
+        raw_variant = str(
+            self.data.get("active_structured_format_variant") or ""
+        ).strip()
         if raw_variant.isdigit():
             selected_variant = int(raw_variant)
             if selected_variant > 0:

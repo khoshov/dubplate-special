@@ -105,7 +105,9 @@ def _batch_update(
         )
     if fail:
         if show_fail_summary:
-            admin_obj.message_user(request, fail_msg.format(n=fail), level=messages.ERROR)
+            admin_obj.message_user(
+                request, fail_msg.format(n=fail), level=messages.ERROR
+            )
         failed_lines_html = format_html_join(
             "",
             "<br>&nbsp;&nbsp;&bull; {}",

@@ -121,9 +121,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             self.fields.pop("source_url", None)
             if "active_structured_format_variant" in self.fields:
                 self.fields["active_structured_format_variant"].required = False
-                self.fields["active_structured_format_variant"].widget = (
-                    forms.HiddenInput()
-                )
+                self.fields[
+                    "active_structured_format_variant"
+                ].widget = forms.HiddenInput()
 
     def _setup_fields_for_new_record(self, _current_source: str) -> None:
         """Убирает поля, не участвующие в импорте при создании записи."""
