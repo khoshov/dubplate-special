@@ -20,6 +20,9 @@ from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
 from records.forms import RecordForm
 from records.models import (
     Artist,
+    AudioEnrichmentJob,
+    AudioEnrichmentJobRecord,
+    AudioEnrichmentTrackResult,
     Format,
     Genre,
     Record,
@@ -39,15 +42,21 @@ from records.services.record_service import RecordService
 from records.services.social.publication_log import register_vk_publication_event
 from records.services.social.schedule import build_even_schedule
 from records.services.social.vk_service import VKService
-from .actions import update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk
+from .actions import (
+    post_to_vk,
+    schedule_to_vk,
+    update_audio_from_youtube,
+    update_from_discogs,
+    update_from_redeye,
+)
 from .inlines import StructuredFormatInline, TrackInline
-from .mixins import RedeyeAudioRefreshMixin
+from .mixins import RedeyeAudioRefreshMixin, YouTubeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
 
 
 @admin.register(Record)
-class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
+class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.ModelAdmin):
     """Административный интерфейс для записей.
 
     Интегрирован с Discogs для импорта и обновления данных.
@@ -58,7 +67,13 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
     form = RecordForm
     autocomplete_fields = ("artists",)
     inlines = [StructuredFormatInline, TrackInline]
-    actions = [update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk]
+    actions = [
+        update_from_discogs,
+        update_audio_from_youtube,
+        update_from_redeye,
+        post_to_vk,
+        schedule_to_vk,
+    ]
     vk_service: VKService
     fieldsets = (
         (
@@ -707,6 +722,18 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 f"Запись с каталожным номером {obj.catalog_number!s} уже существует. "
                 "Создание пропущено, открыта существующая запись.",
             )
+        job_id = getattr(obj, "_discogs_enrichment_job_id", None)
+        if job_id:
+            report_url = reverse(
+                "admin:records_audioenrichmentjob_change", args=[job_id]
+            )
+            messages.info(
+                request,
+                format_html(
+                    'Поставлена в очередь задача YouTube enrichment: <a href="{}">Открыть job report</a>.',
+                    report_url,
+                ),
+            )
         return super().response_add(request, obj, post_url_continue=post_url_continue)
 
     def save_related(self, request, form, formsets, change) -> None:
@@ -851,6 +878,111 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
         "planned_publish_at",
         "effective_publish_at",
         "vk_post_id",
+        "error_message",
+        "created",
+        "modified",
+    )
+
+
+@admin.register(AudioEnrichmentJob)
+class AudioEnrichmentJobAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "source",
+        "status",
+        "requested_by_user",
+        "overwrite_existing",
+        "total_records",
+        "total_tracks",
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "created",
+        "started_at",
+        "finished_at",
+    )
+    list_filter = ("source", "status", "overwrite_existing", "created")
+    search_fields = ("id", "requested_by_user__username")
+    ordering = ("-created",)
+    readonly_fields = (
+        "id",
+        "source",
+        "status",
+        "requested_by_user",
+        "overwrite_existing",
+        "total_records",
+        "total_tracks",
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+
+
+@admin.register(AudioEnrichmentJobRecord)
+class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "job",
+        "record",
+        "status",
+        "reason_code",
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "created",
+        "started_at",
+        "finished_at",
+    )
+    list_filter = ("status", "reason_code", "created")
+    search_fields = ("id", "job__id", "record__title", "record__catalog_number")
+    ordering = ("-created",)
+    autocomplete_fields = ("job", "record")
+    readonly_fields = (
+        "id",
+        "job",
+        "record",
+        "status",
+        "reason_code",
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+
+
+@admin.register(AudioEnrichmentTrackResult)
+class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "job_record",
+        "track",
+        "status",
+        "reason_code",
+        "attempts",
+        "previous_audio_present",
+        "created",
+    )
+    list_filter = ("status", "reason_code", "attempts", "created")
+    search_fields = ("id", "track__title", "job_record__id")
+    ordering = ("-created",)
+    autocomplete_fields = ("job_record",)
+    raw_id_fields = ("track",)
+    readonly_fields = (
+        "id",
+        "job_record",
+        "track",
+        "status",
+        "reason_code",
+        "attempts",
+        "previous_audio_present",
+        "final_audio_name",
         "error_message",
         "created",
         "modified",

@@ -260,6 +260,58 @@ def update_from_discogs(
     )
 
 
+@admin.action(description="Обновить треки из YouTube")
+def update_audio_from_youtube(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
+    """Ставит массовую YouTube-задачу в очередь с overwrite=true."""
+    total = queryset.count()
+    if total == 0:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для обновления треков из YouTube.",
+            level=messages.WARNING,
+        )
+        return
+
+    record_ids = list(queryset.values_list("pk", flat=True))
+    try:
+        job = admin_obj.record_service.enqueue_manual_youtube_audio_enrichment(
+            record_ids=record_ids,
+            requested_by_user_id=getattr(request.user, "id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Ошибка запуска YouTube enrichment (records=%s): %s",
+            record_ids,
+            exc,
+        )
+        admin_obj.message_user(
+            request,
+            f"Не удалось запустить обновление треков из YouTube: {exc!s}",
+            level=messages.ERROR,
+        )
+        return
+
+    report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    admin_obj.message_user(
+        request,
+        (
+            f"Поставлена в очередь задача обновления треков из YouTube "
+            f"для {total} записей."
+        ),
+        level=messages.SUCCESS,
+    )
+    admin_obj.message_user(
+        request,
+        format_html(
+            'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+            report_url,
+        ),
+        level=messages.INFO,
+    )
+
+
 @admin.action(description="Обновить из Redeye")
 def update_from_redeye(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]

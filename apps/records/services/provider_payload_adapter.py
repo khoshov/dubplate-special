@@ -40,6 +40,7 @@ _TRACK_VIDEO_EXTRA_MARKERS = {
     "bonus",
     "exclusive",
 }
+_TRACK_VIDEO_DASH_SPLIT_RE = re.compile(r"\s+-\s+", flags=re.UNICODE)
 _TRACK_VIDEO_SPLIT_ARTIST_RE = re.compile(r"^\s*[^-]+-\s*(.+)$")
 _TRACK_VIDEO_FEAT_SPLIT_RE = re.compile(
     r"\b(?:ft|feat|featuring)\.?\b",
@@ -262,8 +263,117 @@ def _discogs_video_track_core(value: Any) -> str:
     return _normalize_discogs_title_for_match(core)
 
 
-def _is_discogs_single_track_video_title(value: Any) -> bool:
-    normalized = _discogs_video_track_core(value)
+def _discogs_video_side_core(value: Any) -> str:
+    raw = _to_str(value)
+    if not raw:
+        return ""
+    core = _TRACK_VIDEO_FEAT_SPLIT_RE.split(raw, maxsplit=1)[0]
+    core = _TRACK_VIDEO_NOISE_SUFFIX_RE.sub("", core)
+    return _normalize_discogs_title_for_match(core)
+
+
+def _extract_discogs_release_artist_clues(release: Any) -> List[Dict[str, Any]]:
+    clues: List[Dict[str, Any]] = []
+    seen_bases: set[str] = set()
+    for artist_obj in getattr(release, "artists", []) or []:
+        if isinstance(artist_obj, Mapping):
+            artist_name = _normalize_discogs_entity_name(artist_obj.get("name"))
+        else:
+            artist_name = _normalize_discogs_entity_name(
+                getattr(artist_obj, "name", None)
+            )
+        if not artist_name:
+            continue
+        base_title = _discogs_base_title(artist_name)
+        if not base_title or base_title in seen_bases:
+            continue
+        seen_bases.add(base_title)
+        clues.append(
+            {
+                "base_title": base_title,
+                "tokens": _discogs_match_tokens(artist_name),
+            }
+        )
+    return clues
+
+
+def _score_discogs_video_artist_side(
+    core_value: str,
+    release_artist_clues: List[Dict[str, Any]],
+) -> int:
+    if not core_value or not release_artist_clues:
+        return 0
+
+    base_title = _discogs_base_title(core_value)
+    tokens = _discogs_match_tokens(core_value)
+    score = 0
+    for clue in release_artist_clues:
+        clue_base_title = _to_str(clue.get("base_title"))
+        clue_tokens = clue.get("tokens")
+        if base_title and base_title == clue_base_title:
+            score = max(score, 10)
+            continue
+        if (
+            isinstance(clue_tokens, set)
+            and clue_tokens
+            and tokens
+            and clue_tokens.issubset(tokens)
+        ):
+            score = max(score, len(clue_tokens))
+    return score
+
+
+def _discogs_video_track_core_candidates(
+    value: Any,
+    *,
+    release_artist_clues: List[Dict[str, Any]],
+) -> List[str]:
+    raw = _to_str(value)
+    if not raw:
+        return []
+
+    split_parts = [part.strip() for part in _TRACK_VIDEO_DASH_SPLIT_RE.split(raw, 1)]
+    candidates: List[str]
+    if len(split_parts) == 2:
+        left_core = _discogs_video_side_core(split_parts[0])
+        right_core = _discogs_video_side_core(split_parts[1])
+        left_score = _score_discogs_video_artist_side(
+            left_core,
+            release_artist_clues,
+        )
+        right_score = _score_discogs_video_artist_side(
+            right_core,
+            release_artist_clues,
+        )
+        if left_score > right_score:
+            candidates = [right_core, left_core]
+        elif right_score > left_score:
+            candidates = [left_core, right_core]
+        else:
+            candidates = [right_core, left_core]
+    else:
+        candidates = [_discogs_video_track_core(raw)]
+
+    seen_candidates: set[str] = set()
+    result: List[str] = []
+    for candidate in candidates:
+        if not candidate or candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _is_discogs_single_track_video_title(
+    value: Any,
+    *,
+    release_artist_clues: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    normalized_candidates = _discogs_video_track_core_candidates(
+        value,
+        release_artist_clues=release_artist_clues or [],
+    )
+    normalized = normalized_candidates[0] if normalized_candidates else ""
     if not normalized:
         return False
     if any(marker in normalized for marker in _TRACK_VIDEO_EXTRA_MARKERS):
@@ -328,6 +438,7 @@ def _extract_discogs_track_type(track_obj: Any) -> str:
 
 def _extract_discogs_video_rows(release: Any) -> List[Dict[str, Any]]:
     raw_videos = getattr(release, "videos", None) or []
+    release_artist_clues = _extract_discogs_release_artist_clues(release)
     rows: List[Dict[str, Any]] = []
     seen_video_keys: set[tuple[str, str]] = set()
     for video in raw_videos:
@@ -348,16 +459,33 @@ def _extract_discogs_video_rows(release: Any) -> List[Dict[str, Any]]:
             continue
         seen_video_keys.add(video_key)
 
-        core_title = _discogs_video_track_core(title)
+        core_candidates = _discogs_video_track_core_candidates(
+            title,
+            release_artist_clues=release_artist_clues,
+        )
+        primary_core_title = core_candidates[0] if core_candidates else ""
         rows.append(
             {
                 "title": title,
                 "url": url,
                 "normalized_title": normalized_title,
-                "base_title": _discogs_base_title(core_title),
+                "base_title": _discogs_base_title(primary_core_title),
+                "base_titles": {
+                    _discogs_base_title(candidate)
+                    for candidate in core_candidates
+                    if _discogs_base_title(candidate)
+                },
                 "tokens": _discogs_match_tokens(title),
-                "core_tokens": _discogs_match_tokens(core_title),
-                "is_single_track": _is_discogs_single_track_video_title(title),
+                "core_tokens": _discogs_match_tokens(primary_core_title),
+                "core_token_sets": [
+                    _discogs_match_tokens(candidate)
+                    for candidate in core_candidates
+                    if _discogs_match_tokens(candidate)
+                ],
+                "is_single_track": _is_discogs_single_track_video_title(
+                    title,
+                    release_artist_clues=release_artist_clues,
+                ),
                 "part_number": _extract_discogs_part_number(title),
                 "position_markers": _extract_discogs_position_markers(title),
             }
@@ -396,7 +524,11 @@ def _match_discogs_video_url_for_track(
     for index, video in enumerate(videos):
         if index in used_indexes:
             continue
-        if video.get("base_title") != track_base:
+        base_titles = video.get("base_titles")
+        if isinstance(base_titles, set):
+            if track_base not in base_titles:
+                continue
+        elif video.get("base_title") != track_base:
             continue
         candidates.append((index, video))
     if not candidates:
@@ -404,10 +536,22 @@ def _match_discogs_video_url_for_track(
         for index, video in enumerate(videos):
             if index in used_indexes:
                 continue
-            video_tokens = video.get("core_tokens")
-            if not isinstance(video_tokens, set):
-                continue
-            if track_tokens and track_tokens.issubset(video_tokens):
+            video_token_sets = video.get("core_token_sets")
+            token_sets: List[set[str]] = []
+            if isinstance(video_token_sets, list):
+                token_sets = [
+                    token_set
+                    for token_set in video_token_sets
+                    if isinstance(token_set, set)
+                ]
+            else:
+                video_tokens = video.get("core_tokens")
+                if isinstance(video_tokens, set):
+                    token_sets = [video_tokens]
+
+            if track_tokens and any(
+                track_tokens.issubset(token_set) for token_set in token_sets
+            ):
                 fuzzy_candidates.append((index, video))
         fuzzy_candidates = _prioritize_by_position(fuzzy_candidates)
         if len(fuzzy_candidates) == 1 and bool(

@@ -5,9 +5,24 @@ from typing import Optional
 
 from playwright.sync_api import Browser
 
-from records.models import Record, Track
+from records.models import (
+    AudioEnrichmentJob,
+    AudioEnrichmentJobRecord,
+    Record,
+    Track,
+)
 from records.services.audio.common.downloader import (
     download_audio_to_track as _download_audio_to_track,
+)
+from records.services.audio.providers.youtube_audio_enrichment import (
+    ProcessRecordPayload,
+    RunJobPayload,
+    YouTubeAudioEnrichmentProvider,
+)
+from records.services.audio.providers.youtube_session import (
+    YouTubeSessionLoginResult,
+    YouTubeSessionRefreshResult,
+    YouTubeSessionService,
 )
 from records.services.audio.providers.redeye.redeye_audio_player import (
     attach_audio_from_redeye_player,
@@ -116,4 +131,82 @@ class AudioService:
             max_bytes=max_bytes,
             overwrite=overwrite,
             referer=referer,
+        )
+
+    @staticmethod
+    def download_audio_from_youtube(
+        track: Track,
+        *,
+        overwrite: bool = False,
+    ) -> Optional[str]:
+        """Скачивает mp3 из `track.youtube_url` через YouTube provider."""
+        return YouTubeAudioEnrichmentProvider.download_audio_to_track(
+            track=track,
+            overwrite=overwrite,
+        )
+
+    @staticmethod
+    def bootstrap_youtube_session() -> YouTubeSessionRefreshResult:
+        """Создаёт persistent browser profile из текущего cookies.txt."""
+        return YouTubeSessionService.bootstrap_from_cookie_file()
+
+    @staticmethod
+    def refresh_youtube_session() -> YouTubeSessionRefreshResult:
+        """Обновляет persistent browser profile для YouTube."""
+        return YouTubeSessionService.refresh_profile()
+
+    @staticmethod
+    def login_youtube_session(
+        *, timeout_ms: int | None = None
+    ) -> YouTubeSessionLoginResult:
+        """Открывает интерактивный логин в persistent browser profile YouTube."""
+        return YouTubeSessionService.interactive_login(timeout_ms=timeout_ms)
+
+    @staticmethod
+    def parse_run_job_payload(payload: dict[str, object]) -> RunJobPayload:
+        """Валидирует payload запуска async job."""
+        return RunJobPayload.from_dict(payload)
+
+    @staticmethod
+    def parse_process_record_payload(
+        payload: dict[str, object],
+    ) -> ProcessRecordPayload:
+        """Валидирует payload обработки одной записи."""
+        return ProcessRecordPayload.from_dict(payload)
+
+    @staticmethod
+    def acquire_youtube_record_lock(
+        *,
+        job: AudioEnrichmentJob,
+        record: Record,
+    ) -> tuple[AudioEnrichmentJobRecord, bool]:
+        """Захватывает обработку записи для YouTube enrichment."""
+        return YouTubeAudioEnrichmentProvider.acquire_record_lock(
+            job=job,
+            record=record,
+        )
+
+    @staticmethod
+    def mark_youtube_record_running(job_record: AudioEnrichmentJobRecord) -> None:
+        """Переводит job-record в состояние running."""
+        YouTubeAudioEnrichmentProvider.mark_record_running(job_record)
+
+    @staticmethod
+    def mark_youtube_record_finished(
+        *,
+        job_record: AudioEnrichmentJobRecord,
+        updated_count: int,
+        skipped_count: int,
+        error_count: int,
+        force_failed: bool = False,
+        reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+    ) -> AudioEnrichmentJobRecord:
+        """Фиксирует итог обработки записи в рамках YouTube job."""
+        return YouTubeAudioEnrichmentProvider.mark_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            force_failed=force_failed,
+            reason_code=reason_code,
         )

@@ -417,6 +417,46 @@ def test_adapt_discogs_release_matches_remastered_titles_and_skips_full_album_vi
     assert payload["tracks"][3]["youtube_url"] is None
 
 
+def test_adapt_discogs_release_matches_track_video_when_discogs_title_uses_track_dash_artist():
+    release = DummyRelease(
+        release_id=534020,
+        year=2000,
+        released="2000-10-24",
+        videos=[
+            DummyVideo(
+                "Papercut [Official HD Music Video] - Linkin Park",
+                "https://www.youtube.com/watch?v=vjVkXlxsO8Q",
+            ),
+            DummyVideo(
+                "One Step Closer [Official HD Music Video] - Linkin Park",
+                "https://www.youtube.com/watch?v=4qlCC1GOwFw",
+            ),
+            DummyVideo(
+                "Linkin Park - Hybrid Theory (Full Album)",
+                "https://www.youtube.com/watch?v=D2ts2GWOSv8",
+            ),
+        ],
+    )
+    release.artists = [DummyArtist("Linkin Park")]
+    release.tracklist = [
+        DummyTrack("Papercut", "A1", "3:05"),
+        DummyTrack("One Step Closer", "A2", "2:35"),
+        DummyTrack("With You", "A3", "3:23"),
+    ]
+
+    payload = adapt_discogs_release(release)
+
+    assert (
+        payload["tracks"][0]["youtube_url"]
+        == "https://www.youtube.com/watch?v=vjVkXlxsO8Q"
+    )
+    assert (
+        payload["tracks"][1]["youtube_url"]
+        == "https://www.youtube.com/watch?v=4qlCC1GOwFw"
+    )
+    assert payload["tracks"][2]["youtube_url"] is None
+
+
 def test_adapt_discogs_release_prefers_single_track_video_for_the_mountain_and_keeps_orange_county_empty():
     release = DummyRelease(
         release_id=36594097,
