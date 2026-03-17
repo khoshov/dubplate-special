@@ -48,8 +48,8 @@
               <td colspan="{% if inline_admin_formset.formset.total_form_count > 1 %}{{ inline_admin_form|cell_count|add:'1' }}{% else %}{{ inline_admin_form|cell_count }}{% endif %}">{{ inline_admin_form.form.non_field_errors }}</td>
             </tr>
           {% endif %}
-          <tr class="form-row {% if inline_admin_form.original or inline_admin_form.show_url %}has_original{% endif %}"
-              id="{{ inline_admin_formset.formset.prefix }}-{{ forloop.counter0 }}"
+          <tr class="form-row {% if inline_admin_form.original or inline_admin_form.show_url %}has_original{% endif %}{% if forloop.last and inline_admin_formset.has_add_permission %} empty-form{% endif %}"
+              id="{{ inline_admin_formset.formset.prefix }}-{% if forloop.last and inline_admin_formset.has_add_permission %}empty{% else %}{{ forloop.counter0 }}{% endif %}"
               data-structured-format-variant="{{ inline_admin_form.form.instance.variant_of_format|default:forloop.counter }}">
             <td class="original">
               {% if inline_admin_form.original %}<p>{{ inline_admin_form.original }}</p>{% endif %}

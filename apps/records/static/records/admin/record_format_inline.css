@@ -11,6 +11,12 @@
   overflow-x: auto;
 }
 
+/* Structured-format block stays non-managed in UI: no add/remove row controls. */
+.inline-group .structured-format-inline .add-row,
+.inline-group .structured-format-inline .inline-deletelink {
+  display: none !important;
+}
+
 .inline-group .structured-format-inline table {
   width: 100%;
   table-layout: fixed;
