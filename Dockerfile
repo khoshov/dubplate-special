@@ -18,13 +18,19 @@ ENV PYTHONUNBUFFERED=1 \
 # - gettext: for Django translation utilities
 # - ffmpeg: required by yt-dlp post-processing into mp3
 # - nodejs: runtime required by Playwright tooling
+# - xvfb/fluxbox/x11vnc/novnc/websockify: required for interactive browser login via noVNC
 # - unzip: required by Deno installer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     curl \
     gettext \
     ffmpeg \
+    fluxbox \
     nodejs \
+    novnc \
+    websockify \
+    x11vnc \
+    xvfb \
     unzip && \
     rm -rf /var/lib/apt/lists/*
 

@@ -12,7 +12,12 @@ from django.test import RequestFactory
 
 from records.admin.actions import update_audio_from_youtube
 from records.admin.record_admin import RecordAdmin
-from records.models import Record
+from records.models import Record, YouTubeSessionState
+from records.services.tasks import (
+    login_youtube_session_profile,
+    refresh_youtube_session_profile,
+)
+from records.templatetags.records_admin import youtube_session_banner
 
 
 class FakeAdmin:
@@ -28,6 +33,9 @@ class FakeUser:
     def __init__(self, user_id: int = 501):
         self.id = user_id
         self.username = "youtube-admin"
+        self.is_active = True
+        self.is_staff = True
+        self.is_authenticated = True
 
 
 class RecordingListActionService:
@@ -143,3 +151,116 @@ def test_record_admin_youtube_refresh_view_enqueues_single_record_job(monkeypatc
         f"/admin/records/audioenrichmentjob/{job_id}/change/" in msg
         for msg in rendered_messages
     )
+
+
+@pytest.mark.django_db
+def test_record_admin_youtube_session_refresh_view_enqueues_task(monkeypatch):
+    admin = RecordAdmin(Record, AdminSite())
+    queued: list[str] = []
+    monkeypatch.setattr(
+        refresh_youtube_session_profile,
+        "delay",
+        lambda: queued.append("refresh"),
+    )
+
+    request = RequestFactory().post("/admin/records/record/youtube-session/refresh/")
+    request.user = FakeUser()
+    request.META["HTTP_REFERER"] = "/admin/records/record/"
+    _attach_session_and_messages(request)
+
+    response = admin._refresh_youtube_session_view(request)
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+
+    assert response.status_code == 302
+    assert response["Location"] == "/admin/records/record/"
+    assert queued == ["refresh"]
+    assert any(
+        "Поставлена в очередь задача обновления YouTube-сессии." in msg
+        for msg in rendered_messages
+    )
+
+
+@pytest.mark.django_db
+def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, settings):
+    admin = RecordAdmin(Record, AdminSite())
+    queued: list[int] = []
+    settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"
+    settings.YOUTUBE_SESSION_LOGIN_TIMEOUT_MS = 120_000
+    monkeypatch.setattr(
+        login_youtube_session_profile,
+        "delay",
+        lambda **kwargs: queued.append(kwargs["timeout_sec"]),
+    )
+
+    request = RequestFactory().post("/admin/records/record/youtube-session/login/")
+    request.user = FakeUser()
+    request.META["HTTP_REFERER"] = "/admin/records/record/"
+    _attach_session_and_messages(request)
+
+    response = admin._login_youtube_session_view(request)
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+
+    assert response.status_code == 302
+    assert response["Location"] == "/admin/records/record/"
+    assert queued == [120]
+    assert any(
+        "Запущена интерактивная авторизация YouTube-сессии." in msg
+        for msg in rendered_messages
+    )
+    assert any("http://localhost:6080/vnc.html" in msg for msg in rendered_messages)
+
+
+@pytest.mark.django_db
+def test_record_admin_youtube_session_recover_view_renders_page(settings):
+    admin = RecordAdmin(Record, AdminSite())
+    settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"
+
+    request = RequestFactory().get(
+        "/admin/records/record/youtube-session/recover/",
+        {"next": "/admin/records/record/"},
+    )
+    request.user = FakeUser()
+    _attach_session_and_messages(request)
+
+    response = admin._recover_youtube_session_view(request)
+    rendered = response.render().content.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Открыть окно авторизации вручную" in rendered
+    assert "Запустить авторизацию вручную" in rendered
+    assert "http://localhost:6080/vnc.html" in rendered
+    assert "/admin/records/record/" in rendered
+
+
+@pytest.mark.django_db
+def test_youtube_session_banner_shows_auth_state(settings):
+    state = YouTubeSessionState.get_solo()
+    state.status = YouTubeSessionState.Status.AUTH_REQUIRED
+    state.status_message = "Требуется повторный вход."
+    state.save()
+
+    request = RequestFactory().get("/admin/")
+    request.user = FakeUser()
+    context = {"request": request}
+
+    banner = youtube_session_banner(context)
+
+    assert banner["show_banner"] is True
+    assert banner["state"].status == YouTubeSessionState.Status.AUTH_REQUIRED
+    assert banner["banner_level"] == "warning"
+
+
+@pytest.mark.django_db
+def test_youtube_session_banner_hides_healthy_and_unknown_states():
+    request = RequestFactory().get("/admin/")
+    request.user = FakeUser()
+    context = {"request": request}
+
+    state = YouTubeSessionState.get_solo()
+    state.status = YouTubeSessionState.Status.UNKNOWN
+    state.save()
+    assert youtube_session_banner(context)["show_banner"] is False
+
+    state.status = YouTubeSessionState.Status.HEALTHY
+    state.save()
+    assert youtube_session_banner(context)["show_banner"] is False

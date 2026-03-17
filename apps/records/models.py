@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django_ckeditor_5.fields import CKEditor5Field
 from django_extensions.db.models import TimeStampedModel
+from solo.models import SingletonModel
 from sorl.thumbnail import ImageField
 
 from apps.records.utils.storage_paths import PathByInstance as _PathByInstance
@@ -836,6 +837,66 @@ class AudioEnrichmentTrackResult(TimeStampedModel):
             f"AudioTrackResult job_record={self.job_record_id} "
             f"track={self.track_id} [{self.status}]"
         )
+
+
+class YouTubeSessionState(SingletonModel, TimeStampedModel):
+    """Текущее состояние YouTube-сессии для фоновой загрузки аудио."""
+
+    class Status(models.TextChoices):
+        UNKNOWN = "unknown", _("Unknown")
+        HEALTHY = "healthy", _("Healthy")
+        AUTH_REQUIRED = "auth_required", _("Authorization required")
+        LOGIN_IN_PROGRESS = "login_in_progress", _("Login in progress")
+
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.UNKNOWN,
+        db_index=True,
+        verbose_name=_("Status"),
+    )
+    status_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Status message"),
+    )
+    last_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Last checked at"),
+    )
+    last_authenticated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Last authenticated at"),
+    )
+    last_error_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Last error at"),
+    )
+    last_login_started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Last login started at"),
+    )
+    last_login_finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Last login finished at"),
+    )
+
+    class Meta:
+        verbose_name = _("YouTube session state")
+        verbose_name_plural = _("YouTube session state")
+
+    def __str__(self) -> str:
+        return f"YouTube session [{self.status}]"
 
 
 class Track(TimeStampedModel):

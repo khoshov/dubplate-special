@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 
 from records.models import (
     AudioEnrichmentJob,
@@ -18,6 +19,11 @@ from records.services.audio.audio_service import AudioService
 from records.services.audio.providers.youtube_audio_enrichment import (
     YouTubeAuthenticationRequiredError,
     YouTubeAudioEnrichmentProvider,
+)
+from records.services.audio.providers.youtube_session import (
+    YouTubeSessionLoginResult,
+    YouTubeSessionRefreshResult,
+    YouTubeSessionService,
 )
 from records.services.record_service import RecordService
 
@@ -423,6 +429,10 @@ def test_youtube_provider_builds_ydl_options_with_cookie_runtime_and_remote_comp
             "records.services.audio.providers.youtube_audio_enrichment.shutil.which",
             lambda name: "/usr/bin/node" if name == "node" else "",
         )
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
+            lambda: None,
+        )
 
         options = YouTubeAudioEnrichmentProvider._build_ydl_options(str(runtime_dir))
     finally:
@@ -435,6 +445,140 @@ def test_youtube_provider_builds_ydl_options_with_cookie_runtime_and_remote_comp
     assert options["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
     assert options["remote_components"] == ["ejs:github", "ejs:npm"]
     assert options["cachedir"] == str(cache_dir)
+
+
+def test_youtube_provider_prefers_browser_profile_over_cookie_file(
+    settings, monkeypatch
+):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    cookie_file = runtime_dir / "test-youtube-cookies.txt"
+    try:
+        cookie_file.write_text("# Netscape HTTP Cookie File", encoding="utf-8")
+        settings.YOUTUBE_COOKIE_FILE = str(cookie_file)
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
+            lambda: ("chromium", "/tmp/youtube-profile", "BASICTEXT", None),
+        )
+
+        options = YouTubeAudioEnrichmentProvider._build_ydl_options(str(runtime_dir))
+    finally:
+        if cookie_file.exists():
+            cookie_file.unlink()
+
+    assert options["cookiesfrombrowser"] == (
+        "chromium",
+        "/tmp/youtube-profile",
+        "BASICTEXT",
+        None,
+    )
+    assert "cookiefile" not in options
+
+
+def test_youtube_session_service_resolves_browser_profile(settings):
+    runtime_dir = Path("runtime")
+    profile_dir = runtime_dir / "test-youtube-browser-profile"
+    default_dir = profile_dir / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    cookies_db = default_dir / "Cookies"
+    try:
+        cookies_db.write_text("", encoding="utf-8")
+        settings.YOUTUBE_BROWSER_PROFILE_DIR = str(profile_dir)
+        settings.YOUTUBE_BROWSER_NAME = "chromium"
+        settings.YOUTUBE_BROWSER_KEYRING = "BASICTEXT"
+
+        option = YouTubeSessionService.resolve_cookies_from_browser()
+    finally:
+        if cookies_db.exists():
+            cookies_db.unlink()
+        if default_dir.exists():
+            default_dir.rmdir()
+        if profile_dir.exists():
+            profile_dir.rmdir()
+
+    assert option == ("chromium", str(profile_dir), "BASICTEXT", None)
+
+
+def test_youtube_session_service_detects_authenticated_cookies():
+    cookies = [
+        {"name": "VISITOR_INFO1_LIVE", "domain": ".youtube.com"},
+        {"name": "SAPISID", "domain": ".youtube.com"},
+    ]
+
+    assert YouTubeSessionService.has_authenticated_session_cookies(cookies) is True
+
+
+def test_youtube_session_service_rejects_anonymous_cookie_set():
+    cookies = [
+        {"name": "VISITOR_INFO1_LIVE", "domain": ".youtube.com"},
+        {"name": "YSC", "domain": ".youtube.com"},
+    ]
+
+    assert YouTubeSessionService.has_authenticated_session_cookies(cookies) is False
+
+
+@pytest.mark.django_db
+def test_process_track_for_youtube_enrichment_recovers_after_session_refresh(
+    settings, monkeypatch
+):
+    settings.YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED = True
+    record = Record.objects.create(title="Recovery Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Recovery Track",
+        youtube_url="https://www.youtube.com/watch?v=recovery-track",
+    )
+    attempts = {"download": 0, "refresh": 0}
+
+    def _download(track, overwrite=False):  # noqa: ARG001
+        attempts["download"] += 1
+        if attempts["download"] == 1:
+            raise YouTubeAuthenticationRequiredError("cookies required")
+        return "records/track/audio_preview/1/recovered.mp3"
+
+    def _refresh():
+        attempts["refresh"] += 1
+        return YouTubeSessionRefreshResult(
+            refreshed=True,
+            profile_ready=True,
+            seeded_from_cookie_file=False,
+            message="session refreshed",
+        )
+
+    monkeypatch.setattr(
+        AudioService, "download_audio_from_youtube", staticmethod(_download)
+    )
+    monkeypatch.setattr(AudioService, "refresh_youtube_session", staticmethod(_refresh))
+
+    payload = tasks_module._process_track_for_youtube_enrichment(
+        track=track,
+        overwrite_existing=True,
+    )
+
+    assert payload["status"] == AudioEnrichmentTrackResult.Status.UPDATED
+    assert payload["attempts"] == 2
+    assert attempts == {"download": 2, "refresh": 1}
+
+
+def test_login_youtube_session_command_reports_success(monkeypatch, capsys):
+    monkeypatch.setattr(
+        AudioService,
+        "login_youtube_session",
+        staticmethod(
+            lambda timeout_ms=None: YouTubeSessionLoginResult(
+                logged_in=True,
+                profile_ready=True,
+                message="ok",
+            )
+        ),
+    )
+
+    call_command("login_youtube_session", "--timeout-sec", "5")
+    output = capsys.readouterr().out
+
+    assert "Авторизованная YouTube-сессия сохранена" in output
 
 
 def test_enqueue_manual_youtube_audio_enrichment_requires_non_empty_record_ids():

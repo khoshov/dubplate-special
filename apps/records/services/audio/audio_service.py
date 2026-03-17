@@ -19,6 +19,11 @@ from records.services.audio.providers.youtube_audio_enrichment import (
     RunJobPayload,
     YouTubeAudioEnrichmentProvider,
 )
+from records.services.audio.providers.youtube_session import (
+    YouTubeSessionLoginResult,
+    YouTubeSessionRefreshResult,
+    YouTubeSessionService,
+)
 from records.services.audio.providers.redeye.redeye_audio_player import (
     attach_audio_from_redeye_player,
 )
@@ -139,6 +144,23 @@ class AudioService:
             track=track,
             overwrite=overwrite,
         )
+
+    @staticmethod
+    def bootstrap_youtube_session() -> YouTubeSessionRefreshResult:
+        """Создаёт persistent browser profile из текущего cookies.txt."""
+        return YouTubeSessionService.bootstrap_from_cookie_file()
+
+    @staticmethod
+    def refresh_youtube_session() -> YouTubeSessionRefreshResult:
+        """Обновляет persistent browser profile для YouTube."""
+        return YouTubeSessionService.refresh_profile()
+
+    @staticmethod
+    def login_youtube_session(
+        *, timeout_ms: int | None = None
+    ) -> YouTubeSessionLoginResult:
+        """Открывает интерактивный логин в persistent browser profile YouTube."""
+        return YouTubeSessionService.interactive_login(timeout_ms=timeout_ms)
 
     @staticmethod
     def parse_run_job_payload(payload: dict[str, object]) -> RunJobPayload:

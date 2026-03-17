@@ -1,0 +1,81 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <div class="module aligned">
+    <h1>Авторизация YouTube-сессии</h1>
+    <p>
+      Сейчас будет открыто окно YouTube session UI.
+      Через 2 секунды автоматически запустится задача интерактивной авторизации.
+    </p>
+    <p id="youtube-session-status">
+      Ожидание запуска окна авторизации...
+    </p>
+
+    <div style="margin: 16px 0;">
+      <a id="youtube-session-ui-link" href="{{ ui_url }}" target="_blank" rel="noopener" class="button">
+        Открыть окно авторизации вручную
+      </a>
+    </div>
+
+    <form
+      id="youtube-session-login-form"
+      action="{{ login_url }}"
+      method="post"
+      target="youtube-session-login-target"
+      style="margin: 16px 0;"
+    >
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <button type="submit" class="button default">Запустить авторизацию вручную</button>
+    </form>
+
+    <iframe
+      name="youtube-session-login-target"
+      title="YouTube session login target"
+      style="display:none;"
+    ></iframe>
+
+    <p>
+      После входа в Google/YouTube вернитесь в админку и повторите загрузку аудио.
+    </p>
+  </div>
+
+  <script>
+    (function() {
+      const statusNode = document.getElementById("youtube-session-status");
+      const loginForm = document.getElementById("youtube-session-login-form");
+      const uiUrl = "{{ ui_url|escapejs }}";
+      const launchDelayMs = {{ launch_delay_ms|default:2000 }};
+
+      function setStatus(text) {
+        if (statusNode) {
+          statusNode.textContent = text;
+        }
+      }
+
+      if (!uiUrl) {
+        setStatus("URL YouTube session UI не настроен. Откройте окно вручную после настройки YOUTUBE_SESSION_UI_URL.");
+        return;
+      }
+
+      try {
+        const uiWindow = window.open(uiUrl, "_blank", "noopener");
+        if (uiWindow) {
+          setStatus("Окно авторизации открыто. Запуск задачи через 2 секунды...");
+        } else {
+          setStatus("Браузер заблокировал popup. Откройте окно вручную и запустите авторизацию.");
+        }
+      } catch (error) {
+        setStatus("Не удалось открыть окно автоматически. Откройте его вручную и запустите авторизацию.");
+      }
+
+      window.setTimeout(function() {
+        setStatus("Задача авторизации запущена. Проверьте окно YouTube session UI.");
+        if (loginForm) {
+          loginForm.submit();
+        }
+      }, launchDelayMs);
+    })();
+  </script>
+{% endblock %}

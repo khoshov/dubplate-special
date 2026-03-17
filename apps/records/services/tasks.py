@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from celery import shared_task
+from django.conf import settings
 from django.db.models import Count, Sum
 from django.utils import timezone
 
@@ -21,6 +22,46 @@ from records.services.audio.providers.youtube_audio_enrichment import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_refresh_youtube_session(
+    *,
+    track: Track,
+    overwrite_existing: bool,
+    audio_service: AudioService,
+) -> tuple[str | None, int, Exception | None]:
+    if not bool(getattr(settings, "YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED", True)):
+        return None, 0, None
+
+    refresh_result = audio_service.refresh_youtube_session()
+    logger.info(
+        "YouTube session recovery: refreshed=%s profile_ready=%s waited=%s seeded=%s message=%s",
+        refresh_result.refreshed,
+        refresh_result.profile_ready,
+        refresh_result.waited_for_existing_refresh,
+        refresh_result.seeded_from_cookie_file,
+        refresh_result.message or "—",
+    )
+    if not (refresh_result.refreshed or refresh_result.waited_for_existing_refresh):
+        return (
+            None,
+            0,
+            RuntimeError(
+                refresh_result.message or "Не удалось обновить YouTube-сессию."
+            ),
+        )
+
+    def _download_after_refresh() -> str | None:
+        return audio_service.download_audio_from_youtube(
+            track=track,
+            overwrite=overwrite_existing,
+        )
+
+    return YouTubeAudioEnrichmentProvider.download_with_retry(
+        operation=_download_after_refresh,
+        max_attempts=1,
+        base_delay_sec=0,
+    )
 
 
 def _process_track_for_youtube_enrichment(
@@ -93,6 +134,23 @@ def _process_track_for_youtube_enrichment(
         max_attempts=3,
         base_delay_sec=1.0,
     )
+    if final_audio_name is None and isinstance(
+        last_error, YouTubeAuthenticationRequiredError
+    ):
+        refreshed_audio_name, refresh_attempts, refresh_error = (
+            _maybe_refresh_youtube_session(
+                track=track,
+                overwrite_existing=overwrite_existing,
+                audio_service=audio_service,
+            )
+        )
+        attempts += refresh_attempts
+        if refreshed_audio_name:
+            final_audio_name = refreshed_audio_name
+            last_error = None
+        elif refresh_error is not None:
+            last_error = refresh_error
+
     if final_audio_name:
         payload = provider.serialize_track_result(
             status=AudioEnrichmentTrackResult.Status.UPDATED,
@@ -334,4 +392,30 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
         "updated_count": refreshed_job_record.updated_count,
         "skipped_count": refreshed_job_record.skipped_count,
         "error_count": refreshed_job_record.error_count,
+    }
+
+
+@shared_task(name="records.youtube_session.refresh", queue="youtube_session")
+def refresh_youtube_session_profile() -> dict[str, Any]:
+    """Обновляет persistent browser profile для YouTube."""
+    result = AudioService.refresh_youtube_session()
+    return {
+        "refreshed": result.refreshed,
+        "profile_ready": result.profile_ready,
+        "waited_for_existing_refresh": result.waited_for_existing_refresh,
+        "seeded_from_cookie_file": result.seeded_from_cookie_file,
+        "message": result.message,
+    }
+
+
+@shared_task(name="records.youtube_session.login", queue="youtube_session_login")
+def login_youtube_session_profile(timeout_sec: int = 600) -> dict[str, Any]:
+    """Запускает интерактивную авторизацию YouTube в headful browser profile."""
+    result = AudioService.login_youtube_session(timeout_ms=max(1, timeout_sec) * 1000)
+    return {
+        "logged_in": result.logged_in,
+        "profile_ready": result.profile_ready,
+        "waited_for_existing_refresh": result.waited_for_existing_refresh,
+        "timed_out": result.timed_out,
+        "message": result.message,
     }

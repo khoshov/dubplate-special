@@ -26,6 +26,7 @@ from records.models import (
     Record,
     Track,
 )
+from records.services.audio.providers.youtube_session import YouTubeSessionService
 
 logger = logging.getLogger(__name__)
 
@@ -402,6 +403,12 @@ class YouTubeAudioEnrichmentProvider:
         return None
 
     @classmethod
+    def _resolve_cookies_from_browser(
+        cls,
+    ) -> tuple[str, str, str | None, None] | None:
+        return YouTubeSessionService.resolve_cookies_from_browser()
+
+    @classmethod
     def _resolve_js_runtimes(cls) -> dict[str, dict[str, str]]:
         runtime_name = (
             str(getattr(settings, "YOUTUBE_JS_RUNTIME", "") or "").strip().lower()
@@ -472,9 +479,13 @@ class YouTubeAudioEnrichmentProvider:
             ],
         }
 
-        cookie_file = cls._resolve_cookie_file()
-        if cookie_file:
-            options["cookiefile"] = cookie_file
+        cookies_from_browser = cls._resolve_cookies_from_browser()
+        if cookies_from_browser:
+            options["cookiesfrombrowser"] = cookies_from_browser
+        else:
+            cookie_file = cls._resolve_cookie_file()
+            if cookie_file:
+                options["cookiefile"] = cookie_file
 
         js_runtimes = cls._resolve_js_runtimes()
         if js_runtimes:
@@ -495,15 +506,19 @@ class YouTubeAudioEnrichmentProvider:
         configured_path = str(
             getattr(settings, "YOUTUBE_COOKIE_FILE", "") or ""
         ).strip()
+        profile_dir = str(
+            getattr(settings, "YOUTUBE_BROWSER_PROFILE_DIR", "") or ""
+        ).strip()
         if configured_path:
             message = (
                 "YouTube потребовал cookies для доступа к ролику. "
-                f"Проверьте файл cookies.txt: {configured_path}."
+                f"Проверьте профиль браузера {profile_dir or '—'} "
+                f"или файл cookies.txt: {configured_path}."
             )
         else:
             message = (
                 "YouTube потребовал cookies для доступа к ролику. "
-                "Укажите путь через YOUTUBE_COOKIE_FILE."
+                "Укажите путь к browser profile или к YOUTUBE_COOKIE_FILE."
             )
         return YouTubeAuthenticationRequiredError(message)
 
@@ -531,6 +546,7 @@ class YouTubeAudioEnrichmentProvider:
             except DownloadError as exc:
                 error_text = str(exc)
                 if "Sign in to confirm you" in error_text:
+                    YouTubeSessionService.mark_state_auth_required(error_text)
                     raise cls._build_authentication_error() from exc
                 raise RuntimeError(f"yt-dlp не смог скачать аудио: {exc}") from exc
             except FileNotFoundError as exc:
@@ -544,6 +560,9 @@ class YouTubeAudioEnrichmentProvider:
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()
+            YouTubeSessionService.mark_state_healthy(
+                "YouTube-сессия подтверждена успешной загрузкой аудио."
+            )
             if overwrite and old_name and old_name != saved_name:
                 try:
                     track.audio_preview.storage.delete(old_name)
