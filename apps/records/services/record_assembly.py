@@ -34,6 +34,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Mapping, Sequence
 
 from django.db import transaction
@@ -54,8 +55,9 @@ logger = logging.getLogger(__name__)
 _INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
 _DEFAULT_LEGACY_FORMAT_NAME = FormatChoices.NOT_SPECIFIED
 _ALLOWED_LEGACY_FORMAT_NAMES = tuple(choice.value for choice in FormatChoices)
+_DISCOGS_DISAMBIGUATION_SUFFIX_RE = re.compile(r"\s*\(\d+\)\s*$")
 STRUCTURED_FORMAT_INCOMPLETE_ERROR = (
-    'Поля структурированного формата заполнен не полностью. '
+    "Поля структурированного формата заполнен не полностью. "
     'Обязательны к заполнению: "Носитель", "Количество" и "Формат". '
     "Либо очистите поля структурированного формата и выберите значение "
     "в стандартном справочнике форматов."
@@ -156,6 +158,9 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
     record.save()
 
     # связи и треклист — одинаково для всех источников
+    # Для update из Discogs artists должны отражать актуальный состав, без накопления старых связей.
+    if "artists" in data:
+        record.artists.clear()
     attach_relations(record, data)
     sync_format_state(record, data, preserve_existing_legacy_formats=True)
     tracks_payload = _seq_of_maps(data.get("tracks"))
@@ -187,16 +192,16 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
         name = _clean_or_none(raw)
         if not name:
             continue
-        artist = Artist.objects.filter(name__iexact=name).first()
+        artist = _find_or_create_entity_by_name(Artist, name)
         if artist is None:
-            artist = Artist.objects.create(name=name)
+            continue
         record.artists.add(artist)
 
     label_name = _clean_or_none(data.get("label"))
     if label_name:
-        label = Label.objects.filter(name__iexact=label_name).first()
+        label = _find_or_create_entity_by_name(Label, label_name)
         if label is None:
-            label = Label.objects.create(name=label_name)
+            return
         if record.label_id != label.id:
             record.label = label
             record.save(update_fields=["label"])
@@ -408,7 +413,9 @@ def _sync_active_structured_format_variant(
     selected_variant: int | None = None
     if variants:
         current_variant = record.active_structured_format_variant
-        selected_variant = current_variant if current_variant in variants else variants[0]
+        selected_variant = (
+            current_variant if current_variant in variants else variants[0]
+        )
 
     if record.active_structured_format_variant == selected_variant:
         return
@@ -552,6 +559,37 @@ def _int_or_none(value: object) -> int | None:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_entity_name_for_match(value: object) -> str:
+    text = _clean_or_none(value) or ""
+    normalized = _DISCOGS_DISAMBIGUATION_SUFFIX_RE.sub("", text).strip()
+    return normalized
+
+
+def _find_or_create_entity_by_name(model_cls: type[Artist] | type[Label], name: str):
+    exact = model_cls.objects.filter(name__iexact=name).first()
+    if exact is not None:
+        return exact
+
+    normalized_name = _normalize_entity_name_for_match(name)
+    if not normalized_name:
+        return None
+
+    prefix = normalized_name[:255]
+    candidates = model_cls.objects.filter(name__istartswith=prefix).only("id", "name")
+    for candidate in candidates:
+        if (
+            _normalize_entity_name_for_match(candidate.name).casefold()
+            != normalized_name.casefold()
+        ):
+            continue
+        if candidate.name != normalized_name:
+            candidate.name = normalized_name
+            candidate.save(update_fields=["name", "modified"])
+        return candidate
+
+    return model_cls.objects.create(name=normalized_name)
 
 
 def _positive_int_or_default(value: object, *, default: int) -> int:

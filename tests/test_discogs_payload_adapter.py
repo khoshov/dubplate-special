@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from records.services.provider_payload_adapter import adapt_discogs_release
+from records.services.provider_payload_adapter import (
+    adapt_discogs_payload,
+    adapt_discogs_release,
+)
 
 
 class DummyArtist:
@@ -195,3 +198,32 @@ def test_adapt_discogs_release_preserves_rare_carrier_values_and_discogs_text():
             "details": "Single Sided, Hand-numbered",
         }
     ]
+
+
+def test_adapt_discogs_release_strips_disambiguation_suffixes_from_artist_and_label():
+    release = DummyRelease(
+        release_id=36594097,
+        year=2025,
+        released="2025-09-26",
+        labels=[DummyLabel("Kong (7)", "KONG001LPI")],
+    )
+    release.artists = [DummyArtist("Jerome (24)")]
+
+    payload = adapt_discogs_release(release)
+
+    assert payload["artists"] == ["Jerome"]
+    assert payload["label"] == "Kong"
+
+
+def test_adapt_discogs_payload_strips_disambiguation_suffixes_from_artist_and_label():
+    payload = adapt_discogs_payload(
+        {
+            "title": "Test",
+            "artists": ["Jerome (24)"],
+            "label": "Kong (7)",
+            "tracks": [],
+        }
+    )
+
+    assert payload["artists"] == ["Jerome"]
+    assert payload["label"] == "Kong"

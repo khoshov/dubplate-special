@@ -1,6 +1,6 @@
 import pytest
 
-from records.models import Format, Record, RecordSource
+from records.models import Artist, Format, Label, Record, RecordSource
 from records.services import record_service as record_service_module
 from records.services.record_service import RecordService
 
@@ -306,3 +306,59 @@ def test_update_from_discogs_rebuilds_structured_formats_and_preserves_legacy_wh
     assert updated_record.structured_formats.count() == 0
     assert updated_record.active_structured_format_variant is None
     assert list(updated_record.formats.values_list("name", flat=True)) == ['12" Vinyl']
+
+
+@pytest.mark.django_db
+def test_update_from_discogs_reuses_existing_suffixed_artist_label_and_does_not_create_duplicates(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        record_service_module,
+        "adapt_discogs_release",
+        lambda _release: {
+            "title": "Updated from Discogs",
+            "discogs_id": 990,
+            "label": "Kong",
+            "artists": ["Jerome"],
+            "release_year": 2025,
+            "release_month": 9,
+            "release_day": 26,
+            "structured_formats": [],
+            "tracks": [],
+        },
+    )
+
+    legacy_artist = Artist.objects.create(name="Jerome (24)")
+    legacy_label = Label.objects.create(name="Kong (7)")
+    stale_artist = Artist.objects.create(name="Stale Artist")
+    record = Record.objects.create(
+        title="Initial Title",
+        discogs_id=990,
+        label=legacy_label,
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    record.artists.add(legacy_artist, stale_artist)
+
+    service = RecordService(
+        discogs_service=DiscogsUpdateStub(
+            DummyRelease(release_id=990, data={"id": 990})
+        ),
+        redeye_service=DummyRedeyeService(),
+        image_service=DummyImageService(),
+        audio_service=DummyAudioService(),
+    )
+
+    updated_record = service.update_from_discogs(record, update_image=False)
+    updated_record.refresh_from_db()
+
+    assert Label.objects.count() == 1
+    assert Artist.objects.count() == 2
+    assert Label.objects.filter(name="Kong").exists()
+    assert Artist.objects.filter(name="Jerome").exists()
+    assert not Label.objects.filter(name="Kong (7)").exists()
+    assert not Artist.objects.filter(name="Jerome (24)").exists()
+    assert updated_record.label is not None
+    assert updated_record.label.name == "Kong"
+    assert list(updated_record.artists.values_list("name", flat=True)) == ["Jerome"]

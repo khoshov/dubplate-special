@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ _CANONICAL_CARRIERS = {
     "CD": "CD",
     "CASSETTE": "Cassette",
 }
+_DISCOGS_DISAMBIGUATION_SUFFIX_RE = re.compile(r"\s*\(\d+\)\s*$")
 
 
 def _to_str(value: Any) -> str:
@@ -168,6 +170,14 @@ def _normalize_catalog_number_or_none(value: Any) -> Optional[str]:
     if text.strip().upper() in _INVALID_CATALOG_VALUES:
         return None
     return text
+
+
+def _normalize_discogs_entity_name(value: Any) -> Optional[str]:
+    text = _to_optional_str(value)
+    if not text:
+        return None
+    normalized = _DISCOGS_DISAMBIGUATION_SUFFIX_RE.sub("", text).strip()
+    return normalized or None
 
 
 def _normalize_common_fields(dst: Dict[str, Any], src: Mapping[str, Any]) -> None:
@@ -395,7 +405,7 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
 
     # Артисты
     for artist_obj in getattr(release, "artists", []) or []:
-        name = _to_str(getattr(artist_obj, "name", ""))
+        name = _normalize_discogs_entity_name(getattr(artist_obj, "name", ""))
         if name:
             src["artists"].append(name)
 
@@ -404,10 +414,12 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     if labels:
         first_label = labels[0]
         if isinstance(first_label, Mapping):
-            src["label"] = _to_optional_str(first_label.get("name"))
+            src["label"] = _normalize_discogs_entity_name(first_label.get("name"))
             catno = _to_optional_str(first_label.get("catno"))
         else:
-            src["label"] = _to_optional_str(getattr(first_label, "name", None))
+            src["label"] = _normalize_discogs_entity_name(
+                getattr(first_label, "name", None)
+            )
             catno = _to_optional_str(getattr(first_label, "catno", None))
         if not src["catalog_number"]:
             src["catalog_number"] = catno
@@ -457,6 +469,15 @@ def adapt_discogs_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     DiscogsService.extract_release_data(...), к формату сборки записи.
     """
     src: Dict[str, Any] = dict(raw_payload)
+    src["label"] = _normalize_discogs_entity_name(src.get("label"))
+    src["artists"] = [
+        name
+        for name in (
+            _normalize_discogs_entity_name(item)
+            for item in _to_str_list(src.get("artists"))
+        )
+        if name
+    ]
     formats_value = src.get("formats")
     if isinstance(formats_value, list) and any(
         isinstance(item, Mapping) for item in formats_value
