@@ -16,6 +16,7 @@ from typing import Dict, Iterator, Optional
 
 from django.db import transaction
 
+from config.logging import NOTICE_LEVEL, log_event
 from records.models import Genre, Record, Style
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
@@ -24,6 +25,23 @@ from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
+_REDEYE_BULK_COMPONENT = "redeye_bulk_import"
+
+
+def _log_redeye_bulk_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_BULK_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 @dataclass
@@ -75,7 +93,15 @@ class RedeyeBulkImporter:
         """
         from records.scrapers.redeye_listing import RedeyeListingScraper
 
-        logger.info("[%s] %s", category_name, listing_url)
+        _log_redeye_bulk_event(
+            logging.INFO,
+            "crawl_start",
+            "Запущен обход категории Redeye.",
+            category=category_name,
+            source=listing_url,
+            limit=limit,
+            save=save,
+        )
 
         scraper = RedeyeListingScraper()
 
@@ -84,7 +110,12 @@ class RedeyeBulkImporter:
 
         for product_url in scraper.iter_product_urls(listing_url):
             if limit is not None and processed >= limit:
-                logger.info("limit reached: %s items", limit)
+                _log_redeye_bulk_event(
+                    NOTICE_LEVEL,
+                    "limit_reached",
+                    "Достигнут лимит обработки карточек Redeye.",
+                    limit=limit,
+                )
                 break
 
             try:
@@ -98,7 +129,12 @@ class RedeyeBulkImporter:
                 summary = self._summary_from_payload(raw_payload)
 
                 if not catalog_number:
-                    logger.warning("Пропуск: нет каталожного номера → %s", product_url)
+                    _log_redeye_bulk_event(
+                        NOTICE_LEVEL,
+                        "catalog_missing",
+                        "Карточка Redeye пропущена: нет каталожного номера.",
+                        source=product_url,
+                    )
                     processed += 1
                     yield BulkResult(
                         url=product_url,
@@ -109,10 +145,12 @@ class RedeyeBulkImporter:
                     continue
 
                 if not save:
-                    logger.info(
-                        "Parsed only (no save): %s (CAT=%s)",
-                        product_url,
-                        catalog_number,
+                    _log_redeye_bulk_event(
+                        logging.INFO,
+                        "parsed_only",
+                        "Карточка Redeye обработана без сохранения.",
+                        source=product_url,
+                        catalog_number=catalog_number,
                     )
                     processed += 1
                     yield BulkResult(url=product_url, ok=True, summary=summary)
@@ -156,17 +194,30 @@ class RedeyeBulkImporter:
                 )
 
             except Exception as e:
-                logger.error("Failed to import %s :: %s", product_url, e)
+                _log_redeye_bulk_event(
+                    logging.ERROR,
+                    "import_failed",
+                    "Ошибка импорта карточки Redeye.",
+                    source=product_url,
+                    error=str(e),
+                )
                 processed += 1
                 yield BulkResult(url=product_url, ok=False, error=str(e))
 
-        logger.info("Готово. Обработано: %s", processed)
+        _log_redeye_bulk_event(
+            logging.INFO,
+            "crawl_finish",
+            "Обход категории Redeye завершён.",
+            processed=processed,
+        )
         if duplicate_catalog_numbers:
-            logger.info(
-                "Пропущено дублей (catalog_number уже есть в БД): %s",
-                len(duplicate_catalog_numbers),
+            _log_redeye_bulk_event(
+                NOTICE_LEVEL,
+                "duplicates_detected",
+                "Пропущены дубли Redeye (catalog_number уже есть в БД).",
+                duplicates_total=len(duplicate_catalog_numbers),
+                catalog_numbers=", ".join(duplicate_catalog_numbers),
             )
-            logger.info("CAT дублей: %s", ", ".join(duplicate_catalog_numbers))
 
     @staticmethod
     def _summary_from_payload(payload: Dict) -> Dict:

@@ -10,9 +10,11 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
+from config.logging import NOTICE_LEVEL, log_event
 from records.services.providers.redeye.http import RedeyeHTTPClient
 
 logger = logging.getLogger(__name__)
+_REDEYE_LISTING_COMPONENT = "redeye_listing"
 
 _PRODUCT_HREF_PATTERNS = (
     re.compile(r"/vinyl/\d+[-a-z0-9]+", re.IGNORECASE),
@@ -78,11 +80,25 @@ class RedeyeListingScraper:
         current_page_num = self._extract_page_number(current_url) or 1
 
         while current_url:
-            logger.info("fetch listing page %s: %s", current_page_num, current_url)
+            log_event(
+                logger,
+                logging.INFO,
+                "Запрошена страница листинга Redeye.",
+                component=_REDEYE_LISTING_COMPONENT,
+                event="page_fetch",
+                page=current_page_num,
+                source=current_url,
+            )
             html = self._fetch(current_url)
             if not html:
-                logger.warning(
-                    "skip page %s (no HTML / bad response)", current_page_num
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "Страница листинга Redeye пропущена (нет HTML/ошибка ответа).",
+                    component=_REDEYE_LISTING_COMPONENT,
+                    event="page_fetch_failed",
+                    page=current_page_num,
+                    source=current_url,
                 )
                 break
 
@@ -96,26 +112,52 @@ class RedeyeListingScraper:
                     continue
                 seen_keys.add(key)
 
-                logger.debug("product url: %s", abs_url)
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "Найдена карточка Redeye.",
+                    component=_REDEYE_LISTING_COMPONENT,
+                    event="product_found",
+                    source=abs_url,
+                )
                 yield abs_url
 
                 page_count += 1
                 emitted += 1
                 if limit is not None and emitted >= limit:
-                    logger.info("limit reached: %s items", emitted)
+                    log_event(
+                        logger,
+                        NOTICE_LEVEL,
+                        "Достигнут лимит ссылок Redeye.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="limit_reached",
+                        emitted=emitted,
+                        limit=limit,
+                    )
                     return
 
-            logger.info(
-                "page %s: collected %s items (total %s)",
-                current_page_num,
-                page_count,
-                emitted,
+            log_event(
+                logger,
+                logging.INFO,
+                "Страница листинга обработана.",
+                component=_REDEYE_LISTING_COMPONENT,
+                event="page_processed",
+                page=current_page_num,
+                page_count=page_count,
+                total=emitted,
             )
 
             decision = self._next_via_pagelinks(soup, current_url, origin)
             if decision.has_pagelinks:
                 if not decision.next_absolute_url:
-                    logger.info("pagination finished by #pageLinks: last page reached")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "Пагинация завершена: #pageLinks указал последнюю страницу.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="pagination_finished",
+                        page=current_page_num,
+                    )
                     break
                 current_url = decision.next_absolute_url
                 current_page_num = self._extract_page_number(current_url) or (
@@ -134,7 +176,14 @@ class RedeyeListingScraper:
             else:
                 guess = self._guess_next_page_path(current_url, current_page_num)
                 if guess:
-                    logger.debug("no explicit pager, try guessed next page: %s", guess)
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "Не найден явный pager. Пробуем следующую страницу по эвристике.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="pagination_guess",
+                        source=guess,
+                    )
                     html_next = self._fetch(guess)
                     if html_next and self._page_has_products(html_next):
                         next_abs = (
@@ -150,11 +199,23 @@ class RedeyeListingScraper:
                 )
             else:
                 if page_count == 0:
-                    logger.info(
-                        "pagination finished: no products on page (likely beyond last)"
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "Пагинация завершена: нет карточек на странице.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="pagination_finished",
+                        page=current_page_num,
                     )
                 else:
-                    logger.info("pagination finished: no next page detected")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "Пагинация завершена: следующая страница не найдена.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="pagination_finished",
+                        page=current_page_num,
+                    )
                 break
 
     def _fetch(self, url: str, *, referer: Optional[str] = None) -> Optional[str]:
@@ -171,7 +232,15 @@ class RedeyeListingScraper:
         try:
             html_text = self.http.get_text(url, referer=referer, slow=True)
         except Exception as exc:
-            logger.warning("fetch failed for %s: %s", url, exc)
+            log_event(
+                logger,
+                logging.WARNING,
+                "Ошибка загрузки страницы листинга Redeye.",
+                component=_REDEYE_LISTING_COMPONENT,
+                event="fetch_failed",
+                source=url,
+                error=str(exc),
+            )
             return None
 
         return html_text or None
@@ -301,7 +370,14 @@ class RedeyeListingScraper:
             href = (button_next.get("href") or "").strip()
             if href:
                 next_abs = href if self._is_absolute(href) else urljoin(origin, href)
-                logger.debug("pageLinks: next via button -> %s", next_abs)
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "Следующая страница найдена через кнопку pageLinks.",
+                    component=_REDEYE_LISTING_COMPONENT,
+                    event="pagelinks_next",
+                    source=next_abs,
+                )
                 return _PagerDecision(True, next_abs)
 
         select = page_links.find("select", id="pageNumber")
@@ -326,10 +402,23 @@ class RedeyeListingScraper:
                         if self._is_absolute(next_value)
                         else urljoin(origin, next_value)
                     )
-                    logger.debug("pageLinks: next via select -> %s", next_abs)
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "Следующая страница найдена через select pageLinks.",
+                        component=_REDEYE_LISTING_COMPONENT,
+                        event="pagelinks_next",
+                        source=next_abs,
+                    )
                     return _PagerDecision(True, next_abs)
 
-        logger.debug("pageLinks: no next page (last page reached)")
+        log_event(
+            logger,
+            logging.DEBUG,
+            "Следующая страница в pageLinks не найдена.",
+            component=_REDEYE_LISTING_COMPONENT,
+            event="pagelinks_end",
+        )
         return _PagerDecision(True, None)
 
     @staticmethod
@@ -380,4 +469,11 @@ def _cli() -> None:
     for link in scraper.iter_product_urls(args.url, limit=args.limit):
         print(link)
         count += 1
-    logger.info("Готово. Всего ссылок: %s", count)
+    log_event(
+        logger,
+        logging.INFO,
+        "Сбор ссылок Redeye завершён.",
+        component=_REDEYE_LISTING_COMPONENT,
+        event="cli_finish",
+        total=count,
+    )
