@@ -14,8 +14,10 @@ from django.conf import settings
 from vk_api.exceptions import ApiError
 
 from records.models import AvailableChoices, Record
+from records.services.record_assembly import get_structured_format_incomplete_error
 
 logger = logging.getLogger(__name__)
+_VINYL_SIZE_FORMATS = {'7"', '10"', '12"'}
 
 
 # =============================================================================
@@ -147,12 +149,50 @@ def _format_release_date(record: Any) -> str | None:
 
 def _format_record_format(record: Any) -> str | None:
     """
-    Формирует строку «Format» по record.formats:
-      • если встречается 7"/10"/12" — '<size> Vinyl';
-      • иначе берём первые 1–2 уникальных названия, склеенных « / ».
+    Формирует строку «Format»:
+      • в первую очередь по structured-format строкам конкретного релиза;
+      • если structured rows отсутствуют — по legacy record.formats.
 
     Если выбран 'Not specified' — считаем, что формата нет.
     """
+    structured_variant = _record_active_structured_format(record)
+    if structured_variant is not None:
+        carrier = (getattr(structured_variant, "carrier", "") or "").strip()
+        format_name = (getattr(structured_variant, "format_name", "") or "").strip()
+        details = (getattr(structured_variant, "details", "") or "").strip()
+        quantity_raw = getattr(structured_variant, "quantity", 1)
+        try:
+            quantity = int(quantity_raw)
+        except (TypeError, ValueError):
+            quantity = 1
+
+        incomplete_error = get_structured_format_incomplete_error(
+            carrier=carrier,
+            quantity=quantity,
+            format_name=format_name,
+            details=details,
+        )
+        if incomplete_error is not None:
+            raise ValueError(incomplete_error)
+
+        if any((carrier, format_name, details)):
+            if carrier == "Vinyl" and format_name in _VINYL_SIZE_FORMATS:
+                base = (
+                    f"{quantity}x{format_name} Vinyl"
+                    if quantity > 1
+                    else f"{format_name} Vinyl"
+                )
+            else:
+                base = f"{carrier} {format_name}"
+                if quantity > 1:
+                    base = f"{quantity}x {base}"
+
+            if details:
+                base = f"{base} ({details})" if base else details
+
+            if base:
+                return base
+
     names: list[str] = []
     fm = getattr(record, "formats", None)
 
@@ -169,18 +209,46 @@ def _format_record_format(record: Any) -> str | None:
     # выкидываем пустые и Not specified
     names = [n for n in names if n and not _is_not_specified_value(n)]
 
-    size = next((n for n in names if n in {'7"', '10"', '12"'}), None)
-    if size:
-        return f"{size} Vinyl"
-
     if names:
         uniq: list[str] = []
         for n in names:
             if n not in uniq:
                 uniq.append(n)
-        return " / ".join(uniq[:2])
+        return " / ".join(uniq)
 
     return None
+
+
+def _record_active_structured_format(record: Any) -> Any | None:
+    """Возвращает активный structured-format вариант записи."""
+    related = getattr(record, "structured_formats", None)
+    if related is None:
+        return None
+
+    try:
+        active_variant = getattr(record, "active_structured_format_variant", None)
+        if hasattr(related, "all"):
+            queryset = related.all().order_by("variant_of_format", "id")
+            if active_variant is not None:
+                selected = queryset.filter(variant_of_format=active_variant).first()
+                if selected is not None:
+                    return selected
+            return queryset.first()
+        variants = list(related)
+        if not variants:
+            return None
+        if active_variant is None:
+            return variants[0]
+        return next(
+            (
+                variant
+                for variant in variants
+                if getattr(variant, "variant_of_format", None) == active_variant
+            ),
+            variants[0],
+        )
+    except (AttributeError, TypeError):
+        return None
 
 
 def _normalize_hashtag_slug(text: str) -> str:

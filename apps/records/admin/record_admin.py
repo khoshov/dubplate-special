@@ -17,17 +17,28 @@ from vk_api.exceptions import ApiError
 from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
 from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
 from records.forms import RecordForm
-from records.models import Artist, Format, Genre, Record, Style, VKPublicationLog
+from records.models import (
+    Artist,
+    Format,
+    Genre,
+    Record,
+    Style,
+    VKPublicationLog,
+)
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
+from records.services.record_assembly import (
+    ensure_active_structured_format_variant,
+    ensure_legacy_formats,
+)
 from records.services.record_service import RecordService
 from records.services.social.publication_log import register_vk_publication_event
-from records.services.social.vk_service import VKService
 from records.services.social.schedule import build_even_schedule
+from records.services.social.vk_service import VKService
 from .actions import update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk
-from .inlines import TrackInline
+from .inlines import StructuredFormatInline, TrackInline
 from .mixins import RedeyeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
@@ -44,7 +55,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
 
     form = RecordForm
     autocomplete_fields = ("artists",)
-    inlines = [TrackInline]
+    inlines = [StructuredFormatInline, TrackInline]
     actions = [update_from_discogs, update_from_redeye, post_to_vk, schedule_to_vk]
     vk_service: VKService
     fieldsets = (
@@ -63,8 +74,10 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
-        ("Детали", {"fields": ("genres", "styles", "formats", "condition")}),
-        ("Склад и цены", {"fields": ("stock", "availability_status", "price")}),
+        (
+            "Склад и цены",
+            {"fields": ("stock", "availability_status", "price", "condition")},
+        ),
         (
             "Дополнительно",
             {
@@ -72,6 +85,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "classes": ("collapse",),
             },
         ),
+        ("Детали", {"fields": ("genres", "styles", "formats")}),
     )
 
     list_display = (
@@ -158,10 +172,14 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 self.message_user(request, error_message, level=messages.ERROR)
 
             source = (
-                request.POST.get("source")
-                or request.GET.get("source")
-                or SOURCE_REDEYE
-            ).strip().lower()
+                (
+                    request.POST.get("source")
+                    or request.GET.get("source")
+                    or SOURCE_REDEYE
+                )
+                .strip()
+                .lower()
+            )
             if source not in {SOURCE_REDEYE, SOURCE_DISCOGS}:
                 source = SOURCE_REDEYE
 
@@ -527,9 +545,7 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "RecordAdmin.get_fieldsets(add): источник=Discogs → URL Redeye скрыт."
             )
             add_import_fields = ("source", "discogs_id", "catalog_number", "barcode")
-            description = (
-                "Импорт из Discogs поддерживает discogs_id, barecode или catalog_number."
-            )
+            description = "Импорт из Discogs поддерживает discogs_id, barecode или catalog_number."
         else:
             logger.debug(
                 "RecordAdmin.get_fieldsets(add): источник=Redeye → barcode скрыт."
@@ -579,7 +595,9 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         Базовые поля только для чтения дополняем служебными.
         """
         base = tuple(super().get_readonly_fields(request, obj))
-        extra = ("discogs_id", "created", "modified") if obj else ("created", "modified")
+        extra = (
+            ("discogs_id", "created", "modified") if obj else ("created", "modified")
+        )
 
         readonly_list = list(base)
         for field_name in extra:
@@ -641,6 +659,50 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
                 "Создание пропущено, открыта существующая запись.",
             )
         return super().response_add(request, obj, post_url_continue=post_url_continue)
+
+    def save_related(self, request, form, formsets, change) -> None:
+        """
+        После сохранения M2M и inline-групп гарантирует дефолт legacy-формата.
+
+        Structured rows больше не пересчитывают legacy-формат автоматически:
+        legacy-блок живёт как независимый fallback-слой.
+        """
+        super().save_related(request, form, formsets, change)
+        self._persist_requested_active_structured_format_variant(
+            request=request,
+            record=form.instance,
+        )
+        ensure_active_structured_format_variant(form.instance)
+        ensure_legacy_formats(form.instance)
+
+    @staticmethod
+    def _persist_requested_active_structured_format_variant(
+        *, request: HttpRequest, record: Record
+    ) -> None:
+        """Сохраняет выбранный в UI вариант structured format, если он валиден."""
+        if not getattr(record, "pk", None):
+            return
+
+        raw_variant = str(
+            request.POST.get("active_structured_format_variant") or ""
+        ).strip()
+        if not raw_variant.isdigit():
+            return
+
+        requested_variant = int(raw_variant)
+        if requested_variant < 1:
+            return
+
+        if not record.structured_formats.filter(
+            variant_of_format=requested_variant
+        ).exists():
+            return
+
+        if record.active_structured_format_variant == requested_variant:
+            return
+
+        record.active_structured_format_variant = requested_variant
+        record.save(update_fields=["active_structured_format_variant", "modified"])
 
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}

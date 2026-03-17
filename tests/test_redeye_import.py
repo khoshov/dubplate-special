@@ -86,6 +86,49 @@ def test_import_from_redeye_integrity_error_returns_existing(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_import_from_redeye_strips_empty_structured_formats_from_payload(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_adapt(_raw_payload):
+        return {
+            "title": "Redeye import",
+            "formats": ["CD"],
+            "structured_formats": [],
+        }
+
+    def fake_build(payload):
+        captured["payload"] = dict(payload)
+        return Record.objects.create(
+            title=payload["title"],
+            catalog_number=payload["catalog_number"],
+        )
+
+    monkeypatch.setattr(record_service_module, "adapt_redeye_payload", fake_adapt)
+    monkeypatch.setattr(record_service_module, "build_record_from_payload", fake_build)
+
+    service = RecordService(
+        discogs_service=DummyDiscogsService(),
+        redeye_service=DummyRedeyeService(),
+        image_service=DummyImageService(),
+        audio_service=DummyAudioService(),
+    )
+
+    record, created = service.import_from_redeye(
+        catalog_number="RT900",
+        raw_payload={},
+        download_audio_decision=False,
+    )
+
+    assert created is True
+    assert record.catalog_number == "RT900"
+    assert captured["payload"] == {
+        "title": "Redeye import",
+        "formats": ["Not specified"],
+        "catalog_number": "RT900",
+    }
+
+
+@pytest.mark.django_db
 def test_import_from_redeye_existing_record_resolves_source_and_downloads_audio():
     existing = Record.objects.create(title="R1", catalog_number="RT123")
     audio = RecordingAudioService(updated_count=2)
@@ -177,7 +220,9 @@ def test_attach_audio_from_redeye_raises_when_strict_source_required():
 def test_attach_audio_from_redeye_ignores_none_like_catalog_number_in_strict_mode():
     record = Record.objects.create(title="R1", catalog_number=" none ")
     audio = RecordingAudioService(updated_count=3)
-    redeye = DummyRedeyeService(source_url="www.redeyerecords.co.uk/vinyl/191836-test-release")
+    redeye = DummyRedeyeService(
+        source_url="www.redeyerecords.co.uk/vinyl/191836-test-release"
+    )
 
     service = RecordService(
         discogs_service=DummyDiscogsService(),

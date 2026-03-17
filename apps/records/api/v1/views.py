@@ -16,6 +16,7 @@ class RecordViewSet(viewsets.ReadOnlyModelViewSet):
             "tracks",
             "genres",
             "styles",
+            "structured_formats",
         )
         .distinct()
     )

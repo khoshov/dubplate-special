@@ -24,6 +24,7 @@ from playwright.sync_api import Browser
 from discogs_client.exceptions import HTTPError
 
 from records.models import (
+    FormatChoices,
     Record,
     RecordSource,
 )
@@ -45,8 +46,11 @@ from records.services.providers.redeye.helpers import (
     validate_redeye_product_url,
 )
 from records.services.providers.redeye.redeye_service import RedeyeService
-from records.services.record_assembly import build_record_from_payload
-from records.services.record_assembly import update_record_from_payload
+from records.services.record_assembly import (
+    build_record_from_payload,
+    ensure_legacy_formats,
+    update_record_from_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +140,7 @@ class RecordService:
                 barcode=normalized_barcode,
                 catalog_number=normalized_catalog_number,
             )
+            ensure_legacy_formats(existing)
             return existing, False
 
         try:
@@ -176,7 +181,9 @@ class RecordService:
                 raise ValueError(
                     "Ошибка при импорте по Discogs ID. Попробуйте добавить по barecode."
                 ) from exc
-            raise ValueError("Ошибка обращения к Discogs API. Попробуйте позже.") from exc
+            raise ValueError(
+                "Ошибка обращения к Discogs API. Попробуйте позже."
+            ) from exc
         except HTTPError as exc:
             logger.info("Discogs import failed: raw HTTPError: %s", exc)
             if normalized_catalog_number:
@@ -187,9 +194,11 @@ class RecordService:
                 raise ValueError(
                     "Релиз с таким Discogs ID не найден. Попробуйте добавить по barecode."
                 ) from exc
-            raise ValueError("Ошибка обращения к Discogs API. Попробуйте позже.") from exc
+            raise ValueError(
+                "Ошибка обращения к Discogs API. Попробуйте позже."
+            ) from exc
 
-        payload = adapt_discogs_release(release)
+        payload = self._prepare_discogs_payload(adapt_discogs_release(release))
         if normalized_barcode and not payload.get("barcode"):
             payload["barcode"] = normalized_barcode
         if normalized_catalog_number and not payload.get("catalog_number"):
@@ -219,6 +228,7 @@ class RecordService:
                 barcode=payload_barcode,
                 catalog_number=payload_catalog_number,
             )
+            ensure_legacy_formats(existing)
             return existing, False
 
         try:
@@ -231,7 +241,9 @@ class RecordService:
                     first = release.images[0]
                     uri = first.get("uri") if isinstance(first, dict) else None
                     if uri and self.image_service.download_cover(record, uri):
-                        logger.info("Обложка скачана для записи %s (Discogs)", record.id)
+                        logger.info(
+                            "Обложка скачана для записи %s (Discogs)", record.id
+                        )
         except IntegrityError as exc:
             existing = self._find_existing_record(
                 discogs_id=payload_discogs_id,
@@ -250,6 +262,7 @@ class RecordService:
                     barcode=payload_barcode,
                     catalog_number=payload_catalog_number,
                 )
+                ensure_legacy_formats(existing)
                 return existing, False
             raise
 
@@ -297,7 +310,10 @@ class RecordService:
                 "Ошибка обращения к Discogs API. Попробуйте позже."
             ) from exc
 
-        payload = adapt_discogs_release(release)
+        payload = self._prepare_discogs_payload(
+            adapt_discogs_release(release),
+            record=record,
+        )
 
         with transaction.atomic():
             update_record_from_payload(record, payload)
@@ -343,7 +359,9 @@ class RecordService:
         Returns:
             (record, created): created=True при создании, False — если запись уже существовала.
         """
-        normalized_catalog_number = self._normalize_redeye_catalog_number(catalog_number)
+        normalized_catalog_number = self._normalize_redeye_catalog_number(
+            catalog_number
+        )
         if not normalized_catalog_number:
             raise ValueError(
                 "Не указан каталожный номер (catalog_number) для импорта из Redeye."
@@ -357,6 +375,7 @@ class RecordService:
                 "Найдена существующая запись по каталожному номеру (Redeye): %s",
                 existing.id,
             )
+            ensure_legacy_formats(existing)
             if download_audio_decision:
                 try:
                     resolved_page_url = self._ensure_redeye_source_for_record(
@@ -379,7 +398,11 @@ class RecordService:
             )
             raw_payload = result.payload or {}
 
-        payload = adapt_redeye_payload(raw_payload)
+        payload = self._prepare_non_discogs_payload(
+            adapt_redeye_payload(raw_payload),
+            source_name="Redeye import",
+            catalog_number=normalized_catalog_number,
+        )
         payload["catalog_number"] = normalized_catalog_number
 
         try:
@@ -426,6 +449,7 @@ class RecordService:
                     "Запись с каталожным номером уже существует (Redeye): %s",
                     existing.id,
                 )
+                ensure_legacy_formats(existing)
                 return existing, False
             raise
 
@@ -615,12 +639,16 @@ class RecordService:
                     existing_source_url,
                 )
 
-        normalized_catalog_number = self._normalize_redeye_catalog_number(catalog_number)
+        normalized_catalog_number = self._normalize_redeye_catalog_number(
+            catalog_number
+        )
         if not normalized_catalog_number:
             return None
 
         try:
-            result = self.redeye_service.fetch_by_catalog_number(normalized_catalog_number)
+            result = self.redeye_service.fetch_by_catalog_number(
+                normalized_catalog_number
+            )
         except Exception as exc:  # noqa: BLE001
             logger.info(
                 "Не удалось получить карточку Redeye по CAT=%s для записи %s: %s",
@@ -661,6 +689,73 @@ class RecordService:
             can_fetch_audio=True,
         )
         return source_url
+
+    @staticmethod
+    def _payload_list_length(payload: dict[str, object], key: str) -> int:
+        value = payload.get(key)
+        return len(value) if isinstance(value, list) else 0
+
+    def _prepare_discogs_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        record: Record | None = None,
+    ) -> dict[str, object]:
+        """
+        Делает structured format contract Discogs явным.
+
+        Для импорта/обновления из Discogs structured_formats всегда должны быть
+        переданы дальше в сборщик, даже если список пустой.
+        """
+        normalized = dict(payload)
+        normalized.setdefault("structured_formats", [])
+        if record is not None:
+            normalized["formats"] = self._record_legacy_formats_or_default(record)
+        else:
+            normalized["formats"] = [FormatChoices.NOT_SPECIFIED]
+        logger.info(
+            "Discogs payload prepared: record_id=%s, structured_formats=%d, legacy_formats=%d",
+            getattr(record, "pk", None) or "new",
+            self._payload_list_length(normalized, "structured_formats"),
+            self._payload_list_length(normalized, "formats"),
+        )
+        return normalized
+
+    def _prepare_non_discogs_payload(
+        self,
+        payload: dict[str, object],
+        *,
+        source_name: str,
+        catalog_number: str | None,
+    ) -> dict[str, object]:
+        """
+        Гарантирует, что не-Discogs payload не активирует structured-mode пустым ключом.
+        """
+        normalized = dict(payload)
+        normalized["formats"] = [FormatChoices.NOT_SPECIFIED]
+        structured_count = self._payload_list_length(normalized, "structured_formats")
+        if structured_count == 0:
+            normalized.pop("structured_formats", None)
+            logger.info(
+                "%s payload prepared without structured_formats: catalog_number=%s, legacy_formats=%d",
+                source_name,
+                catalog_number or "—",
+                self._payload_list_length(normalized, "formats"),
+            )
+            return normalized
+
+        logger.info(
+            "%s payload includes optional structured_formats: catalog_number=%s, structured_formats=%d",
+            source_name,
+            catalog_number or "—",
+            structured_count,
+        )
+        return normalized
+
+    @staticmethod
+    def _record_legacy_formats_or_default(record: Record) -> list[str]:
+        names = list(record.formats.values_list("name", flat=True))
+        return names or [FormatChoices.NOT_SPECIFIED]
 
     @staticmethod
     def _is_empty_identifier(value: Optional[str]) -> bool:
@@ -727,9 +822,9 @@ class RecordService:
                 return existing
 
         if catalog_number:
-            existing = (
-                Record.objects.filter(catalog_number__iexact=catalog_number).first()
-            )
+            existing = Record.objects.filter(
+                catalog_number__iexact=catalog_number
+            ).first()
             if existing:
                 return existing
 
@@ -744,15 +839,24 @@ class RecordService:
         catalog_number: str | None = None,
     ) -> bool:
         """Проверяет, занят ли идентификатор другой записью."""
-        if discogs_id is not None and Record.objects.filter(discogs_id=discogs_id).exclude(
-            pk=record.pk
-        ).exists():
+        if (
+            discogs_id is not None
+            and Record.objects.filter(discogs_id=discogs_id)
+            .exclude(pk=record.pk)
+            .exists()
+        ):
             return True
-        if barcode and Record.objects.filter(barcode=barcode).exclude(pk=record.pk).exists():
+        if (
+            barcode
+            and Record.objects.filter(barcode=barcode).exclude(pk=record.pk).exists()
+        ):
             return True
-        if catalog_number and Record.objects.filter(
-            catalog_number__iexact=catalog_number
-        ).exclude(pk=record.pk).exists():
+        if (
+            catalog_number
+            and Record.objects.filter(catalog_number__iexact=catalog_number)
+            .exclude(pk=record.pk)
+            .exists()
+        ):
             return True
         return False
 

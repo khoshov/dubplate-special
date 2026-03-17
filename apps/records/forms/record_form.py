@@ -119,6 +119,11 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         else:
             self.fields.pop("source", None)
             self.fields.pop("source_url", None)
+            if "active_structured_format_variant" in self.fields:
+                self.fields["active_structured_format_variant"].required = False
+                self.fields["active_structured_format_variant"].widget = (
+                    forms.HiddenInput()
+                )
 
     def _setup_fields_for_new_record(self, _current_source: str) -> None:
         """Убирает поля, не участвующие в импорте при создании записи."""
@@ -228,9 +233,8 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                     raise ValidationError({"source_url": str(err)})
             if source_url and not catalog_number:
                 try:
-                    prefetched_payload = (
+                    prefetched_payload = self._sanitize_optional_structured_payload(
                         self.record_service.parse_redeye_product_by_url(source_url)
-                        or {}
                     )
                 except ValueError:
                     raise ValidationError(
@@ -310,14 +314,11 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 normalized_source_url = (source_url or "").strip()
                 fallback_catalog_number = (catalog_number or "").strip().upper()
                 if normalized_source_url and not fallback_catalog_number:
-                    raw_payload = (
+                    raw_payload = self._sanitize_optional_structured_payload(
                         self._prefetched_redeye_payload
                         if self._prefetched_redeye_payload is not None
-                        else (
-                            self.record_service.parse_redeye_product_by_url(
-                                normalized_source_url
-                            )
-                            or {}
+                        else self.record_service.parse_redeye_product_by_url(
+                            normalized_source_url
                         )
                     )
                     parsed_catalog_number = (
@@ -378,6 +379,8 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             self._apply_scalar_fields(record=record)
             record.save()
             self._apply_m2m_fields(record=record)
+            self.instance = record
+            self._log_import_result(record=record, source=source)
             return record
 
         except ValueError as err:
@@ -393,6 +396,40 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             raise ValidationError(
                 {error_field: f"Не удалось импортировать из {source}: {err}"}
             )
+
+    @staticmethod
+    def _sanitize_optional_structured_payload(payload: dict | None) -> dict:
+        """
+        Очищает пустой structured_formats у не-Discogs payload, чтобы он не
+        активировал structured-flow без реальных строк формата.
+        """
+        normalized = dict(payload or {})
+        if not normalized.get("structured_formats"):
+            normalized.pop("structured_formats", None)
+        return normalized
+
+    def _log_import_result(self, *, record: Record, source: str) -> None:
+        structured_count = 0
+        structured_manager = getattr(record, "structured_formats", None)
+        if getattr(record, "pk", None) and structured_manager is not None:
+            counter = getattr(structured_manager, "count", None)
+            if callable(counter):
+                structured_count = counter()
+
+        if source != SOURCE_DISCOGS and structured_count == 0:
+            logger.info(
+                "Импорт из %s завершён без structured_formats для записи %s: это допустимо для не-Discogs источника.",
+                source,
+                record.pk,
+            )
+            return
+
+        logger.info(
+            "Импорт из %s завершён: record_id=%s, structured_formats=%d",
+            source,
+            record.pk,
+            structured_count,
+        )
 
     class Media:
         """live-переключение полей при выборе источника в create-форме."""

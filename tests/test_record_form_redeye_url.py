@@ -34,7 +34,7 @@ class RecordFormRedeyeImportTests(SimpleTestCase):
 
     def test_save_redeye_uses_parse_and_import_by_url(self) -> None:
         source_url = "https://www.redeyerecords.co.uk/vinyl/12345-test-release"
-        payload = {"catalog_number": "RT999"}
+        payload = {"catalog_number": "RT999", "structured_formats": []}
         record = DummyRecord(pk=77)
 
         form = RecordForm()
@@ -63,7 +63,7 @@ class RecordFormRedeyeImportTests(SimpleTestCase):
         parse_mock.assert_called_once_with(source_url)
         import_mock.assert_called_once_with(
             catalog_number="RT999",
-            raw_payload=payload,
+            raw_payload={"catalog_number": "RT999"},
             source_url=source_url,
         )
 

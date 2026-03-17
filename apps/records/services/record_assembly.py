@@ -18,6 +18,12 @@
    discogs_id: int | None
    release_year, release_month, release_day: int | None
   genres, styles, formats: list[str] (опционально)
+  structured_formats: последовательность словарей с ключами:
+      - variant_of_format: int
+      - carrier: str | None
+      - quantity: int
+      - format_name: str | None
+      - details: str | None
   tracks: последовательность словарей c ключами:
       - title: str
       - duration: str | None
@@ -32,11 +38,28 @@ from typing import Mapping, Sequence
 
 from django.db import transaction
 
-from records.models import Artist, Format, Genre, Label, Record, Style
+from records.models import (
+    Artist,
+    Format,
+    FormatChoices,
+    Genre,
+    Label,
+    Record,
+    Style,
+    StructuredFormat,
+)
 from records.services.tracklist_writer import create_tracks_for_record
 
 logger = logging.getLogger(__name__)
 _INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
+_DEFAULT_LEGACY_FORMAT_NAME = FormatChoices.NOT_SPECIFIED
+_ALLOWED_LEGACY_FORMAT_NAMES = tuple(choice.value for choice in FormatChoices)
+STRUCTURED_FORMAT_INCOMPLETE_ERROR = (
+    'Поля структурированного формата заполнен не полностью. '
+    'Обязательны к заполнению: "Носитель", "Количество" и "Формат". '
+    "Либо очистите поля структурированного формата и выберите значение "
+    "в стандартном справочнике форматов."
+)
 
 
 def build_record_from_payload(data: Mapping[str, object]) -> Record:
@@ -85,6 +108,7 @@ def build_record_from_payload(data: Mapping[str, object]) -> Record:
             release_day=release_day,
         )
         attach_relations(record, data)
+        sync_format_state(record, data, preserve_existing_legacy_formats=False)
         create_tracklist(record, tracks_payload, replace=True)
 
     logger.info(
@@ -133,6 +157,7 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
 
     # связи и треклист — одинаково для всех источников
     attach_relations(record, data)
+    sync_format_state(record, data, preserve_existing_legacy_formats=True)
     tracks_payload = _seq_of_maps(data.get("tracks"))
     create_tracklist(record, tracks_payload, replace=True)
 
@@ -194,15 +219,6 @@ def attach_relations(record: Record, data: Mapping[str, object]) -> None:
         )
         record.styles.add(obj)
 
-    for raw in _list_of_str(data.get("formats")):
-        name = _clean_or_none(raw)
-        if not name:
-            continue
-        obj = Format.objects.filter(name__iexact=name).first() or Format.objects.create(
-            name=name
-        )
-        record.formats.add(obj)
-
 
 def create_tracklist(
     record: Record,
@@ -228,6 +244,281 @@ def create_tracklist(
     created_count = len(created_tracks)
     logger.info("Создан треклист (%d треков) для записи %s", created_count, record.pk)
     return created_count
+
+
+def sync_format_state(
+    record: Record,
+    data: Mapping[str, object],
+    *,
+    preserve_existing_legacy_formats: bool,
+) -> None:
+    """
+    Синхронизирует structured-format слой и временную legacy-проекцию.
+
+    Правила:
+      - structured rows и legacy `Record.formats` живут независимо;
+      - если в payload есть `structured_formats`, они полностью заменяют structured-слой;
+      - если в payload есть `formats`, они заменяют legacy M2M;
+      - если `formats` не переданы:
+          * при preserve_existing_legacy_formats=True сохраняем текущее значение
+            или выставляем дефолт `Not specified`, если значение отсутствует;
+          * иначе выставляем дефолт `Not specified`.
+    """
+    if "structured_formats" in data:
+        normalized_rows = normalize_structured_format_rows(
+            _seq_of_maps(data.get("structured_formats"))
+        )
+        replace_structured_format_rows(record, normalized_rows)
+
+    if "formats" in data:
+        replace_legacy_formats(record, _list_of_str(data.get("formats")))
+        return
+
+    if preserve_existing_legacy_formats:
+        ensure_legacy_formats(record)
+        return
+
+    replace_legacy_formats(record, [])
+
+
+def normalize_structured_format_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """
+    Приводит structured rows к стабильному контракту хранения.
+
+    Отбрасывает полностью пустые строки, заполняет `quantity=1` по умолчанию
+    и выставляет `variant_of_format`, если он не был задан.
+    """
+    normalized: list[dict[str, object]] = []
+    for default_order, row in enumerate(rows, start=1):
+        carrier = _clean_or_none(row.get("carrier"))
+        format_name = _clean_or_none(row.get("format_name"))
+        details = _clean_or_none(row.get("details"))
+        if not any((carrier, format_name, details)):
+            continue
+
+        quantity = _positive_int_or_default(row.get("quantity"), default=1)
+        variant_of_format = _positive_int_or_default(
+            row.get("variant_of_format") or row.get("sort_order"),
+            default=default_order,
+        )
+        normalized.append(
+            {
+                "variant_of_format": variant_of_format,
+                "carrier": carrier or "",
+                "quantity": quantity,
+                "format_name": format_name or "",
+                "details": details or "",
+            }
+        )
+    return normalized
+
+
+def get_structured_format_incomplete_error(
+    *,
+    carrier: object,
+    quantity: object,
+    format_name: object,
+    details: object,
+) -> str | None:
+    """
+    Возвращает текст ошибки, если structured format заполнен частично.
+
+    Пустая строка допускается. Для полностью заполненного structured format
+    обязательны carrier, quantity и format_name.
+    """
+    normalized_carrier = _clean_or_none(carrier) or ""
+    normalized_format_name = _clean_or_none(format_name) or ""
+    normalized_details = _clean_or_none(details) or ""
+    normalized_quantity = _int_or_none(quantity)
+
+    if not any((normalized_carrier, normalized_format_name, normalized_details)):
+        if normalized_quantity in (None, 1):
+            return None
+        return STRUCTURED_FORMAT_INCOMPLETE_ERROR
+
+    if (
+        normalized_carrier
+        and normalized_format_name
+        and normalized_quantity is not None
+        and normalized_quantity > 0
+    ):
+        return None
+
+    return STRUCTURED_FORMAT_INCOMPLETE_ERROR
+
+
+def replace_structured_format_rows(
+    record: Record,
+    rows: Sequence[Mapping[str, object]],
+) -> list[StructuredFormat]:
+    """
+    Полностью заменяет structured-format строки записи на новый набор.
+    """
+    normalized_rows = normalize_structured_format_rows(rows)
+    record.structured_formats.all().delete()
+
+    objects = [
+        StructuredFormat(
+            record=record,
+            variant_of_format=int(row["variant_of_format"]),
+            carrier=str(row["carrier"]),
+            quantity=int(row["quantity"]),
+            format_name=str(row["format_name"]),
+            details=str(row["details"]),
+        )
+        for row in normalized_rows
+    ]
+    if objects:
+        StructuredFormat.objects.bulk_create(objects)
+
+    _sync_active_structured_format_variant(
+        record,
+        [int(row["variant_of_format"]) for row in normalized_rows],
+    )
+
+    logger.info(
+        "Синхронизированы structured formats для записи %s: %d строк",
+        record.pk,
+        len(objects),
+    )
+    return objects
+
+
+def ensure_active_structured_format_variant(record: Record) -> None:
+    """Гарантирует, что активный вариант указывает на существующий structured format."""
+    if not getattr(record, "pk", None):
+        return
+
+    variants = list(
+        record.structured_formats.order_by("variant_of_format", "id").values_list(
+            "variant_of_format",
+            flat=True,
+        )
+    )
+    _sync_active_structured_format_variant(record, variants)
+
+
+def _sync_active_structured_format_variant(
+    record: Record,
+    variants: Sequence[int],
+) -> None:
+    """Сохраняет на записи активный вариант формата."""
+    selected_variant: int | None = None
+    if variants:
+        current_variant = record.active_structured_format_variant
+        selected_variant = current_variant if current_variant in variants else variants[0]
+
+    if record.active_structured_format_variant == selected_variant:
+        return
+
+    record.active_structured_format_variant = selected_variant
+    record.save(update_fields=["active_structured_format_variant", "modified"])
+
+
+def ensure_legacy_formats(record: Record) -> None:
+    """
+    Гарантирует, что у записи всегда есть хотя бы один legacy-формат.
+
+    Если выбран валидный формат из библиотеки, состояние не меняется.
+    Если формат не выбран или содержит неканонические значения,
+    запись приводится к библиотеке или получает дефолт `Not specified`.
+    """
+    if not getattr(record, "pk", None):
+        return
+
+    current_names = list(record.formats.values_list("name", flat=True))
+    normalized_names: list[str] = []
+    seen: set[str] = set()
+
+    for raw_name in current_names:
+        canonical_name = _canon_legacy_format(raw_name)
+        if not canonical_name:
+            normalized_names = []
+            break
+
+        canonical_key = canonical_name.casefold()
+        if canonical_key in seen:
+            continue
+        seen.add(canonical_key)
+        normalized_names.append(canonical_name)
+
+    if normalized_names and normalized_names == current_names:
+        logger.info(
+            "Legacy formats сохранены без изменений для записи %s: значения уже заданы.",
+            record.pk,
+        )
+        return
+
+    replace_legacy_formats(record, normalized_names)
+
+
+def replace_legacy_formats(record: Record, format_names: Sequence[str]) -> None:
+    """
+    Полностью заменяет legacy M2M `Record.formats`.
+
+    Если входные значения пустые или не входят в библиотеку допустимых форматов,
+    выставляется дефолт `Not specified`.
+    """
+    objects: list[Format] = []
+    seen: set[str] = set()
+    for raw in format_names:
+        name = _canon_legacy_format(raw)
+        if not name:
+            continue
+        normalized_key = name.casefold()
+        if normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        obj = Format.objects.filter(name__iexact=name).first()
+        if obj is None:
+            logger.info(
+                "Legacy format '%s' отсутствует в справочнике, значение заменено на дефолт.",
+                name,
+            )
+            continue
+        objects.append(obj)
+
+    if not objects:
+        default_obj = _get_default_legacy_format()
+        objects = [default_obj]
+
+    record.formats.set(objects)
+    logger.info(
+        "Обновлена legacy format-проекция для записи %s: %d значений",
+        record.pk,
+        len(objects),
+    )
+
+
+def _get_default_legacy_format() -> Format:
+    default_obj = Format.objects.filter(
+        name__iexact=_DEFAULT_LEGACY_FORMAT_NAME
+    ).first()
+    if default_obj is not None:
+        return default_obj
+
+    return Format.objects.create(name=_DEFAULT_LEGACY_FORMAT_NAME)
+
+
+def _canon_legacy_format(value: object) -> str:
+    """
+    Канонизирует значение legacy-формата к фиксированной библиотеке.
+    """
+    raw = _clean_or_none(value)
+    if not raw:
+        return ""
+
+    key = _norm_vocab_key(raw)
+    if key in {"not specified", "не указан", "не указано"}:
+        return _DEFAULT_LEGACY_FORMAT_NAME
+
+    for allowed_name in _ALLOWED_LEGACY_FORMAT_NAMES:
+        if key == _norm_vocab_key(allowed_name):
+            return allowed_name
+
+    return ""
 
 
 def _clean_or_none(value: object) -> str | None:
@@ -261,6 +552,14 @@ def _int_or_none(value: object) -> int | None:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _positive_int_or_default(value: object, *, default: int) -> int:
+    """Возвращает положительное целое число или default."""
+    result = _int_or_none(value)
+    if result is None or result < 1:
+        return default
+    return result
 
 
 def _list_of_str(value: object) -> list[str]:

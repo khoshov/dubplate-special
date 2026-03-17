@@ -1,6 +1,6 @@
 import pytest
 
-from records.models import Record, RecordSource
+from records.models import Format, Record, RecordSource
 from records.services import record_service as record_service_module
 from records.services.record_service import RecordService
 
@@ -56,6 +56,15 @@ def test_import_from_discogs_creates_discogs_record_source(monkeypatch):
             "release_year": 2025,
             "release_month": 9,
             "release_day": 26,
+            "structured_formats": [
+                {
+                    "variant_of_format": 1,
+                    "carrier": "Vinyl",
+                    "quantity": 1,
+                    "format_name": '12"',
+                    "details": "Album",
+                }
+            ],
             "tracks": [],
         },
     )
@@ -86,6 +95,13 @@ def test_import_from_discogs_creates_discogs_record_source(monkeypatch):
     assert record.release_year == 2025
     assert record.release_month == 9
     assert record.release_day == 26
+    assert list(
+        record.structured_formats.values_list(
+            "variant_of_format", "carrier", "quantity", "format_name", "details"
+        )
+    ) == [(1, "Vinyl", 1, '12"', "Album")]
+    assert record.active_structured_format_variant == 1
+    assert list(record.formats.values_list("name", flat=True)) == ["Not specified"]
     assert source.url == "https://api.discogs.com/releases/321"
     assert source.can_fetch_audio is False
 
@@ -101,6 +117,15 @@ def test_update_from_discogs_updates_source_with_release_id_fallback(monkeypatch
             "release_year": 2025,
             "release_month": 9,
             "release_day": 26,
+            "structured_formats": [
+                {
+                    "variant_of_format": 1,
+                    "carrier": "CD",
+                    "quantity": 1,
+                    "format_name": "Album",
+                    "details": "Reissue",
+                }
+            ],
             "tracks": [],
         },
     )
@@ -142,6 +167,15 @@ def test_update_from_discogs_updates_source_with_release_id_fallback(monkeypatch
     assert updated_record.release_year == 2025
     assert updated_record.release_month == 9
     assert updated_record.release_day == 26
+    assert list(
+        updated_record.structured_formats.values_list(
+            "variant_of_format", "carrier", "quantity", "format_name", "details"
+        )
+    ) == [(1, "CD", 1, "Album", "Reissue")]
+    assert updated_record.active_structured_format_variant == 1
+    assert list(updated_record.formats.values_list("name", flat=True)) == [
+        "Not specified"
+    ]
 
 
 @pytest.mark.django_db
@@ -156,6 +190,7 @@ def test_import_from_discogs_does_not_store_none_like_catalog_number(monkeypatch
             "release_year": 2025,
             "release_month": 9,
             "release_day": 26,
+            "structured_formats": [],
             "tracks": [],
         },
     )
@@ -194,6 +229,7 @@ def test_update_from_discogs_does_not_overwrite_catalog_number_with_none_like_va
             "release_year": 2025,
             "release_month": 9,
             "release_day": 26,
+            "structured_formats": [],
             "tracks": [],
         },
     )
@@ -219,3 +255,54 @@ def test_update_from_discogs_does_not_overwrite_catalog_number_with_none_like_va
     updated_record = service.update_from_discogs(record, update_image=False)
 
     assert updated_record.catalog_number == "SP34"
+
+
+@pytest.mark.django_db
+def test_update_from_discogs_rebuilds_structured_formats_and_preserves_legacy_when_payload_empty(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        record_service_module,
+        "adapt_discogs_release",
+        lambda _release: {
+            "title": "Updated from Discogs",
+            "discogs_id": 888,
+            "release_year": 2025,
+            "release_month": 9,
+            "release_day": 26,
+            "structured_formats": [],
+            "tracks": [],
+        },
+    )
+
+    record = Record.objects.create(
+        title="Initial Title",
+        discogs_id=888,
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    format_obj, _ = Format.objects.get_or_create(name='12" Vinyl')
+    record.formats.add(format_obj)
+    record.structured_formats.create(
+        variant_of_format=1,
+        carrier="Vinyl",
+        quantity=1,
+        format_name='12"',
+        details="Old",
+    )
+
+    service = RecordService(
+        discogs_service=DiscogsUpdateStub(
+            DummyRelease(release_id=888, data={"id": 888})
+        ),
+        redeye_service=DummyRedeyeService(),
+        image_service=DummyImageService(),
+        audio_service=DummyAudioService(),
+    )
+
+    updated_record = service.update_from_discogs(record, update_image=False)
+
+    assert updated_record.structured_formats.count() == 0
+    assert updated_record.active_structured_format_variant is None
+    assert list(updated_record.formats.values_list("name", flat=True)) == ['12" Vinyl']

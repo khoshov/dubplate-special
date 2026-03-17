@@ -45,7 +45,7 @@ class DummyRelease:
         self.year = year
         self.genres = ["Electronic"]
         self.styles = ["Drum n Bass"]
-        self.formats = [{"qty": "1", "descriptions": ["LP", "Album"]}]
+        self.formats = [{"name": "Vinyl", "qty": "1", "descriptions": ["LP", "Album"]}]
         self.tracklist = [DummyTrack("Track A", "A1", "03:00")]
         self.artists = [DummyArtist("Artist A")]
         self.labels = labels if labels is not None else [DummyLabel("Label A")]
@@ -66,7 +66,16 @@ def test_adapt_discogs_release_extracts_discogs_id_and_full_release_date():
     assert payload["release_year"] == 2025
     assert payload["release_month"] == 9
     assert payload["release_day"] == 26
-    assert payload["formats"] == ["LP", "ALBUM"]
+    assert payload["formats"] == []
+    assert payload["structured_formats"] == [
+        {
+            "variant_of_format": 1,
+            "carrier": "Vinyl",
+            "quantity": 1,
+            "format_name": '12"',
+            "details": "Album",
+        }
+    ]
 
 
 def test_adapt_discogs_release_uses_data_id_and_handles_unknown_month_day():
@@ -136,3 +145,53 @@ def test_adapt_discogs_release_ignores_none_like_catalog_number_from_identifiers
     payload = adapt_discogs_release(release)
 
     assert payload["catalog_number"] is None
+
+
+def test_adapt_discogs_release_defaults_quantity_to_one_when_missing():
+    release = DummyRelease(release_id=2001, year=1999, released="1999-01-01")
+    release.formats = [{"name": "Vinyl", "descriptions": ["LP", "Album"]}]
+
+    payload = adapt_discogs_release(release)
+
+    assert payload["structured_formats"][0]["quantity"] == 1
+
+
+def test_adapt_discogs_release_keeps_row_when_descriptions_missing():
+    release = DummyRelease(release_id=2002, year=1999, released="1999-01-01")
+    release.formats = [{"name": "Cassette", "qty": "1", "descriptions": []}]
+
+    payload = adapt_discogs_release(release)
+
+    assert payload["structured_formats"] == [
+        {
+            "variant_of_format": 1,
+            "carrier": "Cassette",
+            "quantity": 1,
+            "format_name": "",
+            "details": "",
+        }
+    ]
+
+
+def test_adapt_discogs_release_preserves_rare_carrier_values_and_discogs_text():
+    release = DummyRelease(release_id=2003, year=1999, released="1999-01-01")
+    release.formats = [
+        {
+            "name": "Lathe Cut",
+            "qty": "1",
+            "descriptions": ['7"', "Single Sided"],
+            "text": "Hand-numbered",
+        }
+    ]
+
+    payload = adapt_discogs_release(release)
+
+    assert payload["structured_formats"] == [
+        {
+            "variant_of_format": 1,
+            "carrier": "Lathe Cut",
+            "quantity": 1,
+            "format_name": '7"',
+            "details": "Single Sided, Hand-numbered",
+        }
+    ]

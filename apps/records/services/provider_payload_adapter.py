@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 _INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
+_CANONICAL_CARRIERS = {
+    "VINYL": "Vinyl",
+    "CD": "CD",
+    "CASSETTE": "Cassette",
+}
 
 
 def _to_str(value: Any) -> str:
@@ -136,7 +141,9 @@ def _extract_discogs_release_date_parts(
     return None, None, None
 
 
-def _extract_discogs_identifier_type_value(identifier: Any) -> tuple[str, Optional[str]]:
+def _extract_discogs_identifier_type_value(
+    identifier: Any,
+) -> tuple[str, Optional[str]]:
     if isinstance(identifier, Mapping):
         ident_type = _to_str(identifier.get("type")).lower()
         ident_value = _to_optional_str(identifier.get("value"))
@@ -185,6 +192,10 @@ def _normalize_common_fields(dst: Dict[str, Any], src: Mapping[str, Any]) -> Non
     dst["genres"] = _to_str_list(src.get("genres"))
     dst["styles"] = _to_str_list(src.get("styles"))
     dst["formats"] = _to_str_list(src.get("formats"))
+    if "structured_formats" in src:
+        dst["structured_formats"] = _normalize_structured_rows(
+            src.get("structured_formats")
+        )
 
 
 def _normalize_tracks(seq: Any) -> List[Dict[str, Any]]:
@@ -210,6 +221,93 @@ def _normalize_tracks(seq: Any) -> List[Dict[str, Any]]:
             }
         )
     return normalized
+
+
+def _normalize_discogs_carrier(value: Any) -> Optional[str]:
+    text = _to_optional_str(value)
+    if not text:
+        return None
+    return _CANONICAL_CARRIERS.get(text.upper(), text)
+
+
+def _normalize_discogs_primary_format(value: Any) -> Optional[str]:
+    text = _to_optional_str(value)
+    if not text:
+        return None
+    if text.upper() == "LP":
+        return '12"'
+    return text
+
+
+def _to_positive_int_or_default(value: Any, *, default: int = 1) -> int:
+    parsed = _to_int_or_none(value)
+    if parsed is None or parsed < 1:
+        return default
+    return parsed
+
+
+def _normalize_structured_rows(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for index, row in enumerate(value, start=1):
+        if not isinstance(row, Mapping):
+            continue
+        carrier = _to_optional_str(row.get("carrier"))
+        format_name = _to_optional_str(row.get("format_name"))
+        details = _to_optional_str(row.get("details"))
+        if not any((carrier, format_name, details)):
+            continue
+        rows.append(
+            {
+                "variant_of_format": _to_positive_int_or_default(
+                    row.get("variant_of_format") or row.get("sort_order"),
+                    default=index,
+                ),
+                "carrier": carrier or "",
+                "quantity": _to_positive_int_or_default(row.get("quantity"), default=1),
+                "format_name": format_name or "",
+                "details": details or "",
+            }
+        )
+    return rows
+
+
+def _build_discogs_structured_formats(raw_formats: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_formats, (list, tuple)):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for index, raw_format in enumerate(raw_formats, start=1):
+        if not isinstance(raw_format, Mapping):
+            continue
+        carrier = _normalize_discogs_carrier(raw_format.get("name"))
+        descriptions = _to_str_list(raw_format.get("descriptions"))
+        format_name = _normalize_discogs_primary_format(
+            descriptions[0] if descriptions else None
+        )
+        details_parts = descriptions[1:] if len(descriptions) > 1 else []
+        free_text = _to_optional_str(raw_format.get("text"))
+        if free_text:
+            details_parts.append(free_text)
+        details = ", ".join(part.strip() for part in details_parts if part.strip())
+
+        if not any((carrier, format_name, details)):
+            continue
+
+        rows.append(
+            {
+                "variant_of_format": index,
+                "carrier": carrier or "",
+                "quantity": _to_positive_int_or_default(
+                    raw_format.get("qty"), default=1
+                ),
+                "format_name": format_name or "",
+                "details": details,
+            }
+        )
+    return rows
 
 
 def adapt_redeye_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -314,21 +412,12 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
         if not src["catalog_number"]:
             src["catalog_number"] = catno
 
-    # Форматы
-    out_formats: List[str] = []
-    for fmt in getattr(release, "formats", []) or []:
-        if not isinstance(fmt, dict):
-            continue
-        qty = _to_int_or_none(fmt.get("qty")) or 1
-        descriptions = [
-            d.upper() for d in (fmt.get("descriptions") or []) if isinstance(d, str)
-        ]
-        if "LP" in descriptions:
-            out_formats.append(f"{qty}LP" if qty > 1 else "LP")
-        for description in descriptions:
-            if description not in {"LP", "2LP", "3LP", "4LP", "5LP", "6LP"}:
-                out_formats.append(description)
-    src["formats"] = out_formats
+    raw_formats = getattr(release, "formats", None) or []
+    if not raw_formats:
+        data = getattr(release, "data", None)
+        raw_formats = _mapping_get(data, "formats") or []
+    structured_formats = _build_discogs_structured_formats(raw_formats)
+    src["structured_formats"] = structured_formats
 
     # Треки (position_index = порядковый номер)
     tracks_src: List[Dict[str, Any]] = []
@@ -353,10 +442,11 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     out["tracks"] = _normalize_tracks(src.get("tracks"))
 
     logger.debug(
-        "adapt_discogs_release: нормализовано: title=%r, artists=%d, tracks=%d",
+        "adapt_discogs_release: нормализовано: title=%r, artists=%d, tracks=%d, structured_formats=%d",
         out.get("title"),
         len(out.get("artists", [])),
         len(out.get("tracks", [])),
+        len(out.get("structured_formats", [])),
     )
     return out
 
@@ -367,13 +457,20 @@ def adapt_discogs_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     DiscogsService.extract_release_data(...), к формату сборки записи.
     """
     src: Dict[str, Any] = dict(raw_payload)
+    formats_value = src.get("formats")
+    if isinstance(formats_value, list) and any(
+        isinstance(item, Mapping) for item in formats_value
+    ):
+        structured_formats = _build_discogs_structured_formats(formats_value)
+        src["structured_formats"] = structured_formats
     out: Dict[str, Any] = {}
     _normalize_common_fields(out, src)
     out["tracks"] = _normalize_tracks(src.get("tracks"))
     logger.debug(
-        "adapt_discogs_payload: нормализовано: title=%r, artists=%d, tracks=%d",
+        "adapt_discogs_payload: нормализовано: title=%r, artists=%d, tracks=%d, structured_formats=%d",
         out.get("title"),
         len(out.get("artists", [])),
         len(out.get("tracks", [])),
+        len(out.get("structured_formats", [])),
     )
     return out

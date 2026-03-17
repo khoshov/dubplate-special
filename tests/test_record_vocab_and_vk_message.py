@@ -5,9 +5,11 @@ import pytest
 from records.models import (
     Artist,
     AvailableChoices,
+    Format,
     Genre,
     Record,
     RecordConditions,
+    StructuredFormat,
     Style,
 )
 from records.services.record_assembly import attach_relations
@@ -77,9 +79,11 @@ def test_attach_relations_canonizes_style_and_preserves_regular_genre() -> None:
 def test_not_specified_str_is_localized_for_admin_display() -> None:
     genre, _ = Genre.objects.get_or_create(name="Not specified")
     style, _ = Style.objects.get_or_create(name="Not specified")
+    format_obj, _ = Format.objects.get_or_create(name="Not specified")
 
     assert str(genre) == "Не указан"
     assert str(style) == "Не указан"
+    assert str(format_obj) == "Не указан"
 
 
 def test_condition_not_specified_choice_is_last() -> None:
@@ -87,3 +91,109 @@ def test_condition_not_specified_choice_is_last() -> None:
         RecordConditions.NOT_SPECIFIED,
         "Не указано",
     )
+
+
+@pytest.mark.django_db
+def test_compose_record_text_prefers_structured_formats_over_legacy_projection() -> (
+    None
+):
+    record = Record.objects.create(
+        title="Structured Release",
+        price=1500,
+        condition="SS",
+        availability_status=AvailableChoices.IN_STOCK,
+    )
+    format_obj, _ = Format.objects.get_or_create(name='7" Vinyl')
+    record.formats.add(format_obj)
+    StructuredFormat.objects.create(
+        record=record,
+        variant_of_format=1,
+        carrier="Vinyl",
+        quantity=2,
+        format_name='12"',
+        details="Album, Reissue",
+    )
+
+    text = compose_record_text(record)
+
+    assert 'Format: 2x12" Vinyl (Album, Reissue)' in text
+    assert '7" Vinyl' not in text
+
+
+@pytest.mark.django_db
+def test_compose_record_text_uses_active_structured_format_variant() -> None:
+    record = Record.objects.create(
+        title="Structured Variant",
+        price=1500,
+        condition="SS",
+        availability_status=AvailableChoices.IN_STOCK,
+        active_structured_format_variant=2,
+    )
+    format_obj, _ = Format.objects.get_or_create(name='7" Vinyl')
+    record.formats.add(format_obj)
+    StructuredFormat.objects.create(
+        record=record,
+        variant_of_format=1,
+        carrier="Vinyl",
+        quantity=2,
+        format_name='12"',
+        details="Album, Reissue",
+    )
+    StructuredFormat.objects.create(
+        record=record,
+        variant_of_format=2,
+        carrier="CD",
+        quantity=1,
+        format_name="Album",
+        details="Promo",
+    )
+
+    text = compose_record_text(record)
+
+    assert "Format: CD Album (Promo)" in text
+    assert '2x12" Vinyl' not in text
+
+
+@pytest.mark.django_db
+def test_compose_record_text_falls_back_to_legacy_formats_when_structured_rows_absent() -> (
+    None
+):
+    record = Record.objects.create(
+        title="Fallback Release",
+        price=1500,
+        condition="SS",
+        availability_status=AvailableChoices.IN_STOCK,
+    )
+    format_obj, _ = Format.objects.get_or_create(name='12" Vinyl')
+    record.formats.add(format_obj)
+
+    text = compose_record_text(record)
+
+    assert 'Format: 12" Vinyl' in text
+
+
+@pytest.mark.django_db
+def test_compose_record_text_raises_for_partial_structured_format() -> None:
+    record = Record.objects.create(
+        title="Partial Structured",
+        price=1500,
+        condition="SS",
+        availability_status=AvailableChoices.IN_STOCK,
+        active_structured_format_variant=1,
+    )
+    format_obj, _ = Format.objects.get_or_create(name='12" Vinyl')
+    record.formats.add(format_obj)
+    StructuredFormat.objects.create(
+        record=record,
+        variant_of_format=1,
+        carrier="Vinyl",
+        quantity=1,
+        format_name="",
+        details="",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Поля структурированного формата заполнен не полностью",
+    ):
+        compose_record_text(record)
