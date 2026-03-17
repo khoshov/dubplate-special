@@ -42,10 +42,12 @@ from typing import List
 
 from django.core.management.base import BaseCommand, CommandError
 
+from config.logging import log_event
 from records.constants import REDEYE_URLS
 from records.pipelines.redeye.bulk_import_from_redeye import RedeyeBulkImporter
 
 logger = logging.getLogger(__name__)
+_PARSE_REDEYE_COMPONENT = "parse_redeye"
 
 
 def _derive_code(url: str | None, genre: str | None, style: str | None) -> str:
@@ -111,6 +113,16 @@ class Command(BaseCommand):
             raise CommandError(f"Не найдена категория: {category_code}")
 
         total_ok = total_err = total_created = total_updated = 0
+        log_event(
+            logger,
+            logging.INFO,
+            "Запуск parse_redeye.",
+            component=_PARSE_REDEYE_COMPONENT,
+            event="command_start",
+            category=category_code,
+            limit=options.get("limit"),
+            save=options.get("save"),
+        )
 
         for cfg in selected:
             url = cfg["url"]
@@ -160,6 +172,17 @@ class Command(BaseCommand):
                         self.style.WARNING(f"[ERROR] {res.url} :: {res.error}")
                     )
 
+        log_event(
+            logger,
+            logging.INFO,
+            "Команда parse_redeye завершена.",
+            component=_PARSE_REDEYE_COMPONENT,
+            event="command_finish",
+            total_ok=total_ok,
+            total_err=total_err,
+            total_created=total_created,
+            total_updated=total_updated,
+        )
         self.stdout.write(
             self.style.SUCCESS(
                 f"Готово. Успешно: {total_ok}, Ошибок: {total_err}, "

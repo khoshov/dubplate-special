@@ -37,6 +37,7 @@ from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
+from config.logging import build_log_extra, log_event
 from records.models import Record, RecordSource, Track
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
@@ -45,6 +46,23 @@ from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
+_REDEYE_MP3_COMMAND_COMPONENT = "redeye_mp3_attach"
+
+
+def _log_redeye_mp3_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_MP3_COMMAND_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class Command(BaseCommand):
@@ -197,22 +215,23 @@ class Command(BaseCommand):
         cooldown: float = options["cooldown"]
         stop_on_block: bool = options["stop_on_block"]
 
-        logger.info("Запуск redeye_mp3_attach | now=%s", timezone.now().isoformat())
-        logger.info(
-            "Параметры: all=%s, catalog=%s, limit=%s, offset=%s, order=%s, force=%s, dry_run=%s, "
-            "delay=%.2f, jitter=%.2f, max_retries=%d, cooldown=%.1f, stop_on_block=%s",
-            all_mode,
-            catalog,
-            limit,
-            offset,
-            order,
-            force,
-            dry_run,
-            delay,
-            jitter,
-            max_retries,
-            cooldown,
-            stop_on_block,
+        _log_redeye_mp3_event(
+            logging.INFO,
+            "command_start",
+            "Запуск команды redeye_mp3_attach.",
+            timestamp=timezone.now().isoformat(),
+            all_mode=all_mode,
+            catalog=catalog or "—",
+            limit=limit,
+            offset=offset,
+            order=order,
+            force=force,
+            dry_run=dry_run,
+            delay=round(delay, 2),
+            jitter=round(jitter, 2),
+            max_retries=max_retries,
+            cooldown=round(cooldown, 1),
+            stop_on_block=stop_on_block,
         )
 
         if options["diagnose"]:
@@ -224,19 +243,30 @@ class Command(BaseCommand):
             raise CommandError(f"Не удалось построить queryset: {exc}") from exc
 
         total = qs.count()
-        logger.info("К обработке найдено записей: %d", total)
+        _log_redeye_mp3_event(
+            logging.INFO,
+            "selection_ready",
+            "К обработке найдено записей.",
+            total=total,
+        )
 
         if dry_run:
             for r in self._iter_queryset_in_order(
                 qs, order=order, offset=offset, limit=min(limit or 25, 50)
             ):
-                logger.info(
-                    "[DRY-RUN] id=%s catalog=%s title=%s",
-                    r.id,
-                    r.catalog_number,
-                    r.title,
+                _log_redeye_mp3_event(
+                    logging.INFO,
+                    "dry_run_item",
+                    "DRY-RUN запись для обработки.",
+                    record_id=r.id,
+                    catalog_number=r.catalog_number or "—",
+                    title=r.title or "—",
                 )
-            logger.info("DRY-RUN завершён.")
+            _log_redeye_mp3_event(
+                logging.INFO,
+                "dry_run_finish",
+                "DRY-RUN завершён.",
+            )
             return
 
         service = RecordService(
@@ -284,12 +314,16 @@ class Command(BaseCommand):
                                     browser=browser,  # единый браузер на весь прогон
                                 )
                             logger.info(
-                                "OK  id=%s catalog=%s: обновлено=%s (attempt %d/%d)",
-                                record.id,
-                                record.catalog_number,
-                                updated,
-                                attempt,
-                                max_retries,
+                                "Запись обработана.",
+                                extra=build_log_extra(
+                                    component=_REDEYE_MP3_COMMAND_COMPONENT,
+                                    event="record_processed",
+                                    record_id=record.id,
+                                    catalog_number=record.catalog_number or "—",
+                                    updated_count=updated,
+                                    attempt=attempt,
+                                    max_retries=max_retries,
+                                ),
                             )
                             break
 
@@ -306,33 +340,50 @@ class Command(BaseCommand):
                             )
                             if is_block:
                                 blocked_hits += 1
-                                logger.warning(
-                                    "BLOCK id=%s catalog=%s: %s",
-                                    record.id,
-                                    record.catalog_number,
-                                    exc,
+                                _log_redeye_mp3_event(
+                                    logging.WARNING,
+                                    "blocked_detected",
+                                    "Обнаружены признаки блокировки Redeye.",
+                                    record_id=record.id,
+                                    catalog_number=record.catalog_number or "—",
+                                    error=str(exc),
                                 )
                                 if stop_on_block and blocked_hits >= 2:
-                                    logger.error(
-                                        "Повторная блокировка. Останавливаю по флагу --stop-on-block."
+                                    _log_redeye_mp3_event(
+                                        logging.ERROR,
+                                        "blocked_stop",
+                                        "Повторная блокировка. Остановка по флагу --stop-on-block.",
+                                        record_id=record.id,
                                     )
                                     return
-                                logger.info("Ожидание %.1f сек...", cooldown)
+                                _log_redeye_mp3_event(
+                                    logging.INFO,
+                                    "cooldown_wait",
+                                    "Ожидание после блокировки Redeye.",
+                                    cooldown=round(cooldown, 1),
+                                )
                                 time.sleep(cooldown)
                                 continue
 
                             logger.exception(
-                                "ERR id=%s catalog=%s (attempt %d/%d): %s",
-                                record.id,
-                                record.catalog_number,
-                                attempt,
-                                max_retries,
-                                exc,
+                                "Ошибка при обработке записи Redeye.",
+                                extra=build_log_extra(
+                                    component=_REDEYE_MP3_COMMAND_COMPONENT,
+                                    event="record_failed",
+                                    record_id=record.id,
+                                    catalog_number=record.catalog_number or "—",
+                                    attempt=attempt,
+                                    max_retries=max_retries,
+                                    error=str(exc),
+                                ),
                             )
                             if attempt >= max_retries:
-                                logger.error(
-                                    "Переход к следующей записи после %d неудачных попыток.",
-                                    max_retries,
+                                _log_redeye_mp3_event(
+                                    logging.ERROR,
+                                    "record_failed_max_retries",
+                                    "Переход к следующей записи после неудачных попыток.",
+                                    max_retries=max_retries,
+                                    record_id=record.id,
                                 )
         finally:
             # --- возвращаем переменную окружения в исходное состояние ---
@@ -341,7 +392,12 @@ class Command(BaseCommand):
             else:
                 os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = prev_unsafe
 
-        logger.info("Готово. Обработано записей: %d", processed)
+        _log_redeye_mp3_event(
+            logging.INFO,
+            "command_finish",
+            "Команда redeye_mp3_attach завершена.",
+            processed=processed,
+        )
 
     def _build_queryset(self, all_mode: bool, catalog: Optional[str]):
         """
@@ -380,18 +436,25 @@ class Command(BaseCommand):
         """
         total_records = Record.objects.count()
         total_sources = RecordSource.objects.count()
-        logger.info(
-            "[DIAG] всего Record: %d, всего RecordSource: %d",
-            total_records,
-            total_sources,
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_totals",
+            "DIAG: общее количество записей/источников.",
+            total_records=total_records,
+            total_sources=total_sources,
         )
 
         providers = list(
             RecordSource.objects.values_list("provider", flat=True).distinct()
         )
         roles = list(RecordSource.objects.values_list("role", flat=True).distinct())
-        logger.info("[DIAG] distinct provider values: %s", providers)
-        logger.info("[DIAG] distinct role values: %s", roles)
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_distinct",
+            "DIAG: уникальные значения provider/role.",
+            providers=providers,
+            roles=roles,
+        )
 
         role_value = getattr(RecordSource.Role, "PRODUCT_PAGE", "product_page")
 
@@ -401,7 +464,12 @@ class Command(BaseCommand):
             .distinct()
         )
         n_with_redeye = recs_with_redeye.count()
-        logger.info("[DIAG] записей с provider=redeye: %d", n_with_redeye)
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_redeye_sources",
+            "DIAG: записей с provider=redeye.",
+            total=n_with_redeye,
+        )
 
         recs_with_redeye_pp = (
             RecordSource.objects.filter(provider__iexact="redeye", role=role_value)
@@ -409,7 +477,12 @@ class Command(BaseCommand):
             .distinct()
         )
         n_with_redeye_pp = recs_with_redeye_pp.count()
-        logger.info("[DIAG] из них с role=product_page: %d", n_with_redeye_pp)
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_redeye_product_page",
+            "DIAG: записей с role=product_page.",
+            total=n_with_redeye_pp,
+        )
 
         recs_with_redeye_pp_can = (
             RecordSource.objects.filter(
@@ -419,7 +492,12 @@ class Command(BaseCommand):
             .distinct()
         )
         n_with_redeye_pp_can = recs_with_redeye_pp_can.count()
-        logger.info("[DIAG] из них с can_fetch_audio=True: %d", n_with_redeye_pp_can)
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_redeye_can_fetch_audio",
+            "DIAG: записей с can_fetch_audio=True.",
+            total=n_with_redeye_pp_can,
+        )
 
         missing_audio_q = Track.objects.filter(record=OuterRef("pk")).filter(
             Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
@@ -428,16 +506,21 @@ class Command(BaseCommand):
             missing=Exists(missing_audio_q)
         ).filter(missing=True)
         n_missing_audio = recs_missing_qs.count()
-        logger.info(
-            "[DIAG] записей, где у треков отсутствуют превью: %d", n_missing_audio
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_missing_audio",
+            "DIAG: записей без превью у треков.",
+            total=n_missing_audio,
         )
 
         n_candidates_default = recs_missing_qs.filter(
             id__in=recs_with_redeye_pp_can
         ).count()
-        logger.info(
-            "[DIAG] кандидатов в дефолтной логике (product_page + can_fetch_audio + отсутствуют превью): %d",
-            n_candidates_default,
+        _log_redeye_mp3_event(
+            logging.DEBUG,
+            "diag_candidates_default",
+            "DIAG: кандидатов по дефолтной логике.",
+            total=n_candidates_default,
         )
 
         if n_candidates_default <= 10:
@@ -446,7 +529,12 @@ class Command(BaseCommand):
                     "id", flat=True
                 )
             )
-            logger.info("[DIAG] candidate IDs: %s", ids_default)
+            _log_redeye_mp3_event(
+                logging.DEBUG,
+                "diag_candidates_ids",
+                "DIAG: candidate IDs.",
+                ids=ids_default,
+            )
 
         almost_ids = list(
             Record.objects.filter(id__in=recs_with_redeye_pp)
@@ -454,9 +542,11 @@ class Command(BaseCommand):
             .values_list("id", flat=True)
         )
         if almost_ids:
-            logger.info(
-                "[DIAG] есть записи с role=product_page, но can_fetch_audio=False, ids=%s",
-                almost_ids,
+            _log_redeye_mp3_event(
+                logging.DEBUG,
+                "diag_candidates_almost",
+                "DIAG: записи с role=product_page, но can_fetch_audio=False.",
+                ids=almost_ids,
             )
 
         if total_records <= 50:
@@ -476,13 +566,15 @@ class Command(BaseCommand):
                         | Q(audio_preview__exact=""),
                     ),
                 )
-                logger.info(
-                    "[DIAG] rec id=%s cat=%s | tracks total=%s, have=%s, miss=%s",
-                    r.id,
-                    r.catalog_number,
-                    totals["total"],
-                    totals["have"],
-                    totals["miss"],
+                _log_redeye_mp3_event(
+                    logging.DEBUG,
+                    "diag_tracks",
+                    "DIAG: статистика треков записи.",
+                    record_id=r.id,
+                    catalog_number=r.catalog_number or "—",
+                    total=totals["total"],
+                    have=totals["have"],
+                    miss=totals["miss"],
                 )
 
             for r in Record.objects.filter(id__in=recs_with_redeye).order_by("id"):
@@ -491,6 +583,11 @@ class Command(BaseCommand):
                         "provider", "role", "can_fetch_audio", "url"
                     )
                 )
-                logger.info(
-                    "[DIAG] rec id=%s cat=%s | sources=%s", r.id, r.catalog_number, srcs
+                _log_redeye_mp3_event(
+                    logging.DEBUG,
+                    "diag_sources",
+                    "DIAG: источники записи.",
+                    record_id=r.id,
+                    catalog_number=r.catalog_number or "—",
+                    sources=srcs,
                 )
