@@ -1,0 +1,86 @@
+.inline-group .structured-format-inline th.original,
+.inline-group .structured-format-inline td.original,
+.inline-group .structured-format-inline col.original {
+  display: none !important;
+  width: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+.inline-group .structured-format-inline .wrapper {
+  overflow-x: auto;
+}
+
+.inline-group .structured-format-inline table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.inline-group .structured-format-inline col.col-variant_of_format {
+  width: 5.5em;
+}
+
+.inline-group .structured-format-inline col.col-carrier {
+  width: 9em;
+}
+
+.inline-group .structured-format-inline col.col-quantity {
+  width: 7.5em;
+}
+
+.inline-group .structured-format-inline col.col-format_name {
+  width: 6.5em;
+}
+
+.inline-group .structured-format-inline col.col-details {
+  width: auto;
+}
+
+.inline-group .structured-format-inline th.column-variant_of_format,
+.inline-group .structured-format-inline td.field-variant_of_format,
+.inline-group .structured-format-inline th.column-carrier,
+.inline-group .structured-format-inline td.field-carrier,
+.inline-group .structured-format-inline th.column-quantity,
+.inline-group .structured-format-inline td.field-quantity,
+.inline-group .structured-format-inline th.column-format_name,
+.inline-group .structured-format-inline td.field-format_name {
+  white-space: nowrap;
+  padding-inline: 2mm;
+}
+
+.inline-group .structured-format-inline th.column-variant_of_format,
+.inline-group .structured-format-inline th.column-carrier,
+.inline-group .structured-format-inline th.column-quantity,
+.inline-group .structured-format-inline th.column-format_name,
+.inline-group .structured-format-inline th.column-details {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.inline-group .structured-format-inline th.column-variant_of_format {
+  line-height: 1.15;
+}
+
+.inline-group .structured-format-inline td.field-details {
+  width: auto;
+  padding-inline: 2mm;
+}
+
+.inline-group .structured-format-inline td.field-variant_of_format select,
+.inline-group .structured-format-inline td.field-carrier input,
+.inline-group .structured-format-inline td.field-quantity input,
+.inline-group .structured-format-inline td.field-format_name input,
+.inline-group .structured-format-inline td.field-details input,
+.inline-group .structured-format-inline td.field-details textarea {
+  width: 100%;
+  min-height: 2.4em;
+  height: 2.4em;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1024px) {
+  .inline-group .structured-format-inline table {
+    min-width: 39em;
+  }
+}

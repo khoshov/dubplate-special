@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional
 
 from django import forms
@@ -59,15 +60,20 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         label="URL карточки Redeye",
         help_text="Прямая ссылка на карточку релиза на сайте Redeye Records (или укажите catalog_number).",
     )
+    discogs_id = forms.CharField(
+        required=False,
+        label="Discogs ID",
+        help_text="ID релиза Discogs: 1724093 или [r1724093].",
+    )
 
     class Meta:
         model = Record
         fields = "__all__"
         widgets = {"notes": forms.Textarea(attrs={"rows": 4})}
         help_texts = {
-            "barcode": "Штрих-код для поиска в Discogs",
+            "barcode": "Штрихкод для поиска в Discogs",
             "catalog_number": "Каталожный номер для поиска (Discogs/Redeye)",
-            "discogs_id": "ID релиза в базе Discogs (заполняется автоматически)",
+            "discogs_id": "ID релиза в базе Discogs (можно указать для импорта)",
         }
 
     @property
@@ -98,6 +104,8 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             self.fields["barcode"].required = False
         if "catalog_number" in self.fields:
             self.fields["catalog_number"].required = False
+        if "discogs_id" in self.fields:
+            self.fields["discogs_id"].required = False
 
         if not self.is_editing:
             current_source = (
@@ -111,10 +119,15 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         else:
             self.fields.pop("source", None)
             self.fields.pop("source_url", None)
+            if "active_structured_format_variant" in self.fields:
+                self.fields["active_structured_format_variant"].required = False
+                self.fields["active_structured_format_variant"].widget = (
+                    forms.HiddenInput()
+                )
 
     def _setup_fields_for_new_record(self, _current_source: str) -> None:
         """Убирает поля, не участвующие в импорте при создании записи."""
-        allowed = {"source", "barcode", "catalog_number", "source_url"}
+        allowed = {"source", "discogs_id", "barcode", "catalog_number", "source_url"}
 
         for name in list(self.fields.keys()):
             if name not in allowed:
@@ -126,6 +139,15 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                     "placeholder": "Например: 5060384616698",
                     "class": "forms-control barcode-input",
                     "autofocus": True,
+                }
+            )
+        if "discogs_id" in self.fields:
+            self.fields["discogs_id"].widget = forms.TextInput()
+            self.fields["discogs_id"].widget.attrs.update(
+                {
+                    "placeholder": "Например: [r1724093]",
+                    "class": "forms-control discogs-id-input",
+                    "inputmode": "numeric",
                 }
             )
         if "catalog_number" in self.fields:
@@ -152,6 +174,28 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
         barcode = self.cleaned_data.get("barcode")
         return RecordIdentifierValidator.validate_barcode(barcode, self.instance.pk)
 
+    def clean_discogs_id(self) -> Optional[int]:
+        """Строгая проверка Discogs ID (для edit и create)."""
+        raw_value = str(self.cleaned_data.get("discogs_id") or "").strip()
+        if not raw_value:
+            return None
+
+        if raw_value.isdigit():
+            discogs_id = int(raw_value)
+        else:
+            match = re.fullmatch(r"\[\s*[rR](\d+)\s*\]", raw_value) or re.fullmatch(
+                r"[rR](\d+)", raw_value
+            )
+            if not match:
+                raise ValidationError(
+                    "Укажите Discogs ID в формате 1724093 или [r1724093]."
+                )
+            discogs_id = int(match.group(1))
+
+        return RecordIdentifierValidator.validate_discogs_id(
+            discogs_id, self.instance.pk
+        )
+
     def clean_catalog_number(self) -> Optional[str]:
         """Строгая проверка каталожного номера (для edit и create)."""
         catalog_number = self.cleaned_data.get("catalog_number")
@@ -165,7 +209,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
 
         Create:
             - Redeye: обязателен хотя бы один идентификатор (source_url ИЛИ catalog_number).
-            - Discogs: обязателен хотя бы один идентификатор (barcode ИЛИ catalog_number).
+            - Discogs: обязателен хотя бы один идентификатор (discogs_id ИЛИ barcode ИЛИ catalog_number).
         Edit:
             - поведение без изменений (валидация как обычно).
         """
@@ -189,9 +233,8 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                     raise ValidationError({"source_url": str(err)})
             if source_url and not catalog_number:
                 try:
-                    prefetched_payload = (
+                    prefetched_payload = self._sanitize_optional_structured_payload(
                         self.record_service.parse_redeye_product_by_url(source_url)
-                        or {}
                     )
                 except ValueError:
                     raise ValidationError(
@@ -218,7 +261,9 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 cleaned["catalog_number"] = parsed_catalog_number
             return cleaned
         if source == SOURCE_DISCOGS:
-            return RecordIdentifierValidator.validate_identifiers_required(cleaned)
+            return RecordIdentifierValidator.validate_identifiers_required(
+                cleaned, raw_data=self.data
+            )
         return cleaned
 
     def validate_unique(self) -> None:
@@ -258,6 +303,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             return super().save(commit=commit)
 
         source: str = self.cleaned_data.get("source") or SOURCE_DISCOGS
+        discogs_id: Optional[int] = self.cleaned_data.get("discogs_id")
         barcode: Optional[str] = self.cleaned_data.get("barcode")
         catalog_number: Optional[str] = self.cleaned_data.get("catalog_number")
         source_url: Optional[str] = self.cleaned_data.get("source_url")
@@ -268,14 +314,11 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 normalized_source_url = (source_url or "").strip()
                 fallback_catalog_number = (catalog_number or "").strip().upper()
                 if normalized_source_url and not fallback_catalog_number:
-                    raw_payload = (
+                    raw_payload = self._sanitize_optional_structured_payload(
                         self._prefetched_redeye_payload
                         if self._prefetched_redeye_payload is not None
-                        else (
-                            self.record_service.parse_redeye_product_by_url(
-                                normalized_source_url
-                            )
-                            or {}
+                        else self.record_service.parse_redeye_product_by_url(
+                            normalized_source_url
                         )
                     )
                     parsed_catalog_number = (
@@ -302,9 +345,16 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                         source_url=normalized_source_url or None,
                     )
             elif source == SOURCE_DISCOGS:
-                logger.debug("Выбран discogs в качестве источника")
+                logger.info(
+                    "Запрошен импорт Discogs: discogs_id=%s, barcode=%s, catalog_number=%s",
+                    discogs_id,
+                    barcode,
+                    catalog_number,
+                )
                 record, record_is_new = self.record_service.import_from_discogs(
-                    barcode=barcode, catalog_number=catalog_number
+                    discogs_id=discogs_id,
+                    barcode=barcode,
+                    catalog_number=catalog_number,
                 )
             else:
                 logger.error("Неизвестный источник %s.", source)
@@ -329,14 +379,57 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             self._apply_scalar_fields(record=record)
             record.save()
             self._apply_m2m_fields(record=record)
+            self.instance = record
+            self._log_import_result(record=record, source=source)
             return record
 
         except ValueError as err:
-            logger.warning("Не удалось импортировать из %s: %s.", source, err)
-            error_field = "source_url" if source == SOURCE_REDEYE else "catalog_number"
+            logger.info("Не удалось импортировать из %s: %s.", source, err)
+            if source == SOURCE_REDEYE:
+                error_field = "source_url"
+            elif source == SOURCE_DISCOGS and self.cleaned_data.get("discogs_id"):
+                error_field = "discogs_id"
+            elif source == SOURCE_DISCOGS and self.cleaned_data.get("barcode"):
+                error_field = "barcode"
+            else:
+                error_field = "catalog_number"
             raise ValidationError(
                 {error_field: f"Не удалось импортировать из {source}: {err}"}
             )
+
+    @staticmethod
+    def _sanitize_optional_structured_payload(payload: dict | None) -> dict:
+        """
+        Очищает пустой structured_formats у не-Discogs payload, чтобы он не
+        активировал structured-flow без реальных строк формата.
+        """
+        normalized = dict(payload or {})
+        if not normalized.get("structured_formats"):
+            normalized.pop("structured_formats", None)
+        return normalized
+
+    def _log_import_result(self, *, record: Record, source: str) -> None:
+        structured_count = 0
+        structured_manager = getattr(record, "structured_formats", None)
+        if getattr(record, "pk", None) and structured_manager is not None:
+            counter = getattr(structured_manager, "count", None)
+            if callable(counter):
+                structured_count = counter()
+
+        if source != SOURCE_DISCOGS and structured_count == 0:
+            logger.info(
+                "Импорт из %s завершён без structured_formats для записи %s: это допустимо для не-Discogs источника.",
+                source,
+                record.pk,
+            )
+            return
+
+        logger.info(
+            "Импорт из %s завершён: record_id=%s, structured_formats=%d",
+            source,
+            record.pk,
+            structured_count,
+        )
 
     class Media:
         """live-переключение полей при выборе источника в create-форме."""

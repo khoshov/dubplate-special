@@ -7,6 +7,7 @@ from records.models import (
     Label,
     Record,
     Style,
+    StructuredFormat,
     Track,
 )
 
@@ -41,6 +42,18 @@ class StyleSerializer(serializers.ModelSerializer):
         fields = ["id", "name"]
 
 
+class StructuredFormatSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StructuredFormat
+        fields = [
+            "variant_of_format",
+            "carrier",
+            "quantity",
+            "format_name",
+            "details",
+        ]
+
+
 class TrackSerializer(serializers.ModelSerializer):
     class Meta:
         model = Track
@@ -55,7 +68,8 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
     styles = StyleSerializer(many=True, read_only=True)
     tracks = TrackSerializer(many=True, read_only=True)
     condition = serializers.CharField(source="get_condition_display", read_only=True)
-    format = FormatSerializer(many=True, read_only=True)
+    format = FormatSerializer(source="formats", many=True, read_only=True)
+    structured_formats = StructuredFormatSerializer(many=True, read_only=True)
 
     class Meta:
         model = Record
@@ -76,6 +90,8 @@ class RecordSerializer(serializers.HyperlinkedModelSerializer):
             "catalog_number",
             "barcode",
             "format",
+            "active_structured_format_variant",
+            "structured_formats",
             "country",
             "tracks",
             "price",

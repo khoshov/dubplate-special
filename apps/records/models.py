@@ -60,18 +60,14 @@ class StyleChoices(models.TextChoices):
 
 
 class FormatChoices(models.TextChoices):
-    NOT_SPECIFIED = "Not specified", _("Not specified")
-    INCH_7 = '7"', _('7"')
-    INCH_10 = '10"', _('10"')
-    INCH_12 = '12"', _('12"')
-    EP = "EP", _("EP")
-    SINGLE = "Single", _("Single")
-    LP = "LP", _("LP")
-    LP2 = "2LP", _("2LP")
-    LP3 = "3LP", _("3LP")
-    LP4 = "4LP", _("4LP")
-    BOX_SET = "Box Set", _("Box Set")
-    PICTURE_DISC = "Picture Disc", _("Picture Disc")
+    NOT_SPECIFIED = "Not specified", _("Не указан")
+    INCH_12 = '12" Vinyl', _('12" Vinyl')
+    INCH_2X12 = '2x12" Vinyl', _('2x12" Vinyl')
+    INCH_10 = '10" Vinyl', _('10" Vinyl')
+    INCH_7 = '7" Vinyl', _('7" Vinyl')
+    INCH_3X12 = '3x12" Vinyl', _('3x12" Vinyl')
+    INCH_4X12 = '4x12" Vinyl', _('4x12" Vinyl')
+    INCH_5X12 = '5x12" Vinyl', _('5x12" Vinyl')
 
 
 class RecordConditions:
@@ -189,6 +185,8 @@ class Format(TimeStampedModel):
     objects = FormatManager()
 
     def __str__(self):
+        if self.name == FormatChoices.NOT_SPECIFIED:
+            return "Не указан"
         return self.name
 
     class Meta:
@@ -280,6 +278,11 @@ class Record(TimeStampedModel):
     styles = models.ManyToManyField(
         Style, related_name="records", verbose_name=_("Стили")
     )
+    active_structured_format_variant = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Активный вариант формата"),
+    )
 
     cover_image = ImageField(
         upload_to=PathByInstance("cover_image"),
@@ -347,10 +350,87 @@ class Record(TimeStampedModel):
     def __str__(self):
         return self.title
 
+    def selected_structured_format_variant(self) -> int | None:
+        """Возвращает активный variant number или первый доступный."""
+        if not self.pk:
+            return None
+
+        variants = list(
+            self.structured_formats.order_by("variant_of_format", "id").values_list(
+                "variant_of_format",
+                flat=True,
+            )
+        )
+        if not variants:
+            return None
+
+        active_variant = self.active_structured_format_variant
+        if active_variant in variants:
+            return active_variant
+        return variants[0]
+
     class Meta:
         verbose_name = _("Record")
         verbose_name_plural = _("Records")
         ordering = ("title",)
+
+
+class StructuredFormat(TimeStampedModel):
+    """Структурированный вариант формата конкретного релиза."""
+
+    record = models.ForeignKey(
+        Record,
+        on_delete=models.CASCADE,
+        related_name="structured_formats",
+        verbose_name=_("Запись"),
+    )
+    variant_of_format = models.PositiveSmallIntegerField(
+        verbose_name=_("Вариант формата")
+    )
+    carrier = models.CharField(max_length=64, blank=True, verbose_name=_("Носитель"))
+    quantity = models.PositiveSmallIntegerField(default=1, verbose_name=_("Количество"))
+    format_name = models.CharField(max_length=64, blank=True, verbose_name=_("Формат"))
+    details = models.CharField(
+        max_length=255,
+        blank=True,
+        verbose_name=_("Дополнительно"),
+    )
+
+    def __str__(self) -> str:
+        carrier = (self.carrier or "").strip()
+        format_name = (self.format_name or "").strip()
+        try:
+            quantity = int(self.quantity)
+        except (TypeError, ValueError):
+            quantity = 1
+
+        if carrier == "Vinyl" and format_name in {'7"', '10"', '12"'}:
+            base = (
+                f"{quantity}x{format_name} Vinyl"
+                if quantity > 1
+                else f"{format_name} Vinyl"
+            )
+            return base
+
+        parts: list[str] = []
+        if quantity > 1 and (carrier or format_name):
+            parts.append(f"{quantity}x")
+        if carrier:
+            parts.append(carrier)
+        if format_name:
+            parts.append(format_name)
+        return " ".join(parts) or f"Format variant #{self.variant_of_format}"
+
+    class Meta:
+        verbose_name = _("Структурированный формат релиза")
+        verbose_name_plural = _("Структурированные форматы релиза")
+        ordering = ("record", "variant_of_format", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["record", "variant_of_format"],
+                name="uq_structuredformat_record_variant_of_format",
+            )
+        ]
 
 
 class VKPublicationLog(TimeStampedModel):

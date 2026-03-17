@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Iterable, List, Mapping
 
 from django.db import transaction
@@ -26,6 +27,7 @@ from django.db import transaction
 from records.models import Record, Track
 
 logger = logging.getLogger(__name__)
+_TRACK_KEY_NON_WORD_RE = re.compile(r"[^\w]+", flags=re.UNICODE)
 
 TrackInput = Mapping[str, Any]
 
@@ -50,12 +52,45 @@ def _normalize_input_row(data: TrackInput) -> dict:
     }
 
 
+def _normalize_track_key(value: Any) -> str:
+    text = (value or "").strip().casefold()
+    text = _TRACK_KEY_NON_WORD_RE.sub(" ", text)
+    return " ".join(text.split())
+
+
+def _pick_preserved_audio_preview_name(
+    *,
+    existing_rows: list[dict[str, Any]],
+    title: str,
+    position: str,
+) -> str | None:
+    title_key = _normalize_track_key(title)
+    position_key = _normalize_track_key(position)
+
+    for row in existing_rows:
+        if row["used"]:
+            continue
+        if row["title_key"] == title_key and row["position_key"] == position_key:
+            row["used"] = True
+            return row["audio_preview_name"]
+
+    for row in existing_rows:
+        if row["used"]:
+            continue
+        if row["title_key"] == title_key:
+            row["used"] = True
+            return row["audio_preview_name"]
+
+    return None
+
+
 @transaction.atomic
 def create_tracks_for_record(
     record: Record,
     tracks: Iterable[TrackInput],
     *,
     replace: bool = True,
+    preserve_existing_audio_previews: bool = False,
 ) -> List[Track]:
     """
     Метод создаёт треки для указанной записи с новой плотной нумерацией 1..N.
@@ -69,6 +104,22 @@ def create_tracks_for_record(
         Список созданных объектов Track (в порядке добавления).
     """
     items: List[TrackInput] = list(tracks or [])
+    existing_rows: list[dict[str, Any]] = []
+    if replace and preserve_existing_audio_previews:
+        for existing in Track.objects.filter(record=record).only(
+            "title", "position", "audio_preview"
+        ):
+            existing_rows.append(
+                {
+                    "title_key": _normalize_track_key(existing.title),
+                    "position_key": _normalize_track_key(existing.position),
+                    "audio_preview_name": (
+                        existing.audio_preview.name if existing.audio_preview else None
+                    ),
+                    "used": False,
+                }
+            )
+
     if not items:
         logger.info("create_tracks_for_record(%s): входной список пуст.", record.pk)
         if replace:
@@ -93,6 +144,11 @@ def create_tracks_for_record(
 
     to_create: List[Track] = []
     for index, row in enumerate(normalized_rows, start=1):
+        preserved_audio_preview_name = _pick_preserved_audio_preview_name(
+            existing_rows=existing_rows,
+            title=row["title"],
+            position=row["position"],
+        )
         to_create.append(
             Track(
                 record=record,
@@ -101,6 +157,7 @@ def create_tracks_for_record(
                 title=row["title"],
                 duration=row["duration"],
                 youtube_url=row["youtube_url"],
+                audio_preview=preserved_audio_preview_name,
             )
         )
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Dict, Optional
 from urllib.parse import urljoin, quote
 
 from bs4 import BeautifulSoup
 from records.constants import REDEYE_BASE_URL
+from .helpers import normalize_abs_url
 from .http import RedeyeHTTPClient
 from .page_product_scraper import RedeyeProductParser
 
@@ -55,54 +55,58 @@ class RedeyeService:
             raise ValueError("Catalogue number is required.")
 
         logger.info("[Redeye] search by CAT: '%s'", cat)
-        product_url = self._product_page_url_by_catalog_number(cat)
-        if not product_url:
+        product_urls = self._product_page_urls_by_catalog_number(cat)
+        if not product_urls:
             raise ValueError(f"Redeye: release not found by Catalogue No. '{cat}'")
 
-        abs_url = (
-            product_url
-            if re.match(r"^https?://", product_url, re.I)
-            else urljoin(REDEYE_BASE_URL, product_url)
-        )
-        logger.info("[Redeye] opening product: %s", abs_url)
-        html_text = self.http.get_text(abs_url)
-
-        payload = self.parser.parse(abs_url, html_text)
-
-        parsed_cat = (payload.get("catalog_number") or "").strip().upper()
         req_cat = cat.upper()
-        if not parsed_cat:
-            payload["catalog_number"] = req_cat
-        elif parsed_cat != req_cat:
-            logger.warning(
-                "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
-                req_cat,
-                parsed_cat,
-                abs_url,
-            )
+        for abs_url in product_urls:
+            logger.info("[Redeye] opening product: %s", abs_url)
+            html_text = self.http.get_text(abs_url)
 
-        return RedeyeFetchResult(source_url=abs_url, payload=payload)
+            payload = self.parser.parse(abs_url, html_text)
+            parsed_cat = (payload.get("catalog_number") or "").strip().upper()
+            if not parsed_cat:
+                logger.info(
+                    "[Redeye] skip candidate with empty parsed CAT: requested '%s' (%s)",
+                    req_cat,
+                    abs_url,
+                )
+                continue
+
+            if parsed_cat != req_cat:
+                logger.info(
+                    "[Redeye] CAT mismatch: requested '%s' vs parsed '%s' (%s)",
+                    req_cat,
+                    parsed_cat,
+                    abs_url,
+                )
+                continue
+
+            return RedeyeFetchResult(source_url=abs_url, payload=payload)
+
+        raise ValueError(
+            f"В Redeye не найден релиз с точным совпадением каталожного номера '{cat}'."
+        )
 
     def parse_redeye_product_by_url(self, url: str) -> RedeyeFetchResult:
         """Метод получает карточку товара по-прямому URL и возвращает распарсенные поля."""
         if not url:
             raise ValueError("Product URL is required.")
 
-        abs_url = (
-            url if re.match(r"^https?://", url, re.I) else urljoin(REDEYE_BASE_URL, url)
-        )
+        abs_url = normalize_abs_url(url)
         logger.info("[Redeye] opening product by URL: %s", abs_url)
         html_text = self.http.get_text(abs_url)
         payload = self.parser.parse(abs_url, html_text)
         return RedeyeFetchResult(source_url=abs_url, payload=payload)
 
-    def _product_page_url_by_catalog_number(self, catalog_number: str) -> Optional[str]:
+    def _product_page_urls_by_catalog_number(self, catalog_number: str) -> list[str]:
         """
-        Метод возвращает URL карточки по каталожному номеру.
+        Метод возвращает список URL карточек по каталожному номеру.
 
         Алгоритм:
             - Запрашивает страницу поиска с параметрами searchType=CAT&keywords=<CAT>.
-            - Извлекает первую ссылку, ведущую на /vinyl/....
+            - Извлекает ссылки, ведущие на /vinyl/....
         """
 
         search_url = (
@@ -115,10 +119,17 @@ class RedeyeService:
         )
         soup = BeautifulSoup(html_text, "html.parser")
 
+        urls: list[str] = []
+        seen: set[str] = set()
         for link in soup.select('a[href*="/vinyl/"]'):
-            href = link.get("href", "")
+            href = (link.get("href", "") or "").strip()
             if not href:
                 continue
-            return href if href.startswith("http") else urljoin(REDEYE_BASE_URL, href)
+            abs_url = href if href.startswith("http") else urljoin(REDEYE_BASE_URL, href)
+            abs_url = normalize_abs_url(abs_url)
+            if abs_url in seen:
+                continue
+            seen.add(abs_url)
+            urls.append(abs_url)
 
-        return None
+        return urls

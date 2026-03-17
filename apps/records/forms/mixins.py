@@ -53,6 +53,8 @@ class ApplyFieldsMixin(ModelForm):
         Args:
             record: Экземпляр модели Record для обновления связей.
         """
+        changed_data = set(getattr(self, "changed_data", []))
+
         if "artists" in self.cleaned_data:
             record.artists.set(self.cleaned_data["artists"])  # type: ignore[attr-defined]
         if "genres" in self.cleaned_data:
@@ -60,4 +62,10 @@ class ApplyFieldsMixin(ModelForm):
         if "styles" in self.cleaned_data:
             record.styles.set(self.cleaned_data["styles"])  # type: ignore[attr-defined]
         if "formats" in self.cleaned_data:
+            if getattr(record, "pk", None) and "formats" not in changed_data:
+                logger.debug(
+                    "Поле 'formats' не изменилось для записи %s; повторная запись legacy M2M пропущена.",
+                    record.pk,
+                )
+                return
             record.formats.set(self.cleaned_data["formats"])  # type: ignore[attr-defined]

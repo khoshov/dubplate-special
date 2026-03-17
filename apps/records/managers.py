@@ -68,16 +68,24 @@ class RecordQuerySet(BaseQuerySet):
     def with_related(self):
         """
         Выполняет предзагрузку связанных объектов:
-        label, artists, genres, styles, formats и треков в корректном порядке.
+        label, artists, genres, styles, formats, structured_formats и треков
+        в корректном порядке.
         """
-        from .models import Track  # локальный импорт во избежание циклов
+        from .models import (
+            StructuredFormat,
+            Track,
+        )  # локальный импорт во избежание циклов
 
         tracks_qs = Track.objects.order_by("position_index", "position", "id")
+        structured_formats_qs = StructuredFormat.objects.order_by(
+            "variant_of_format", "id"
+        )
         return self.select_related("label").prefetch_related(
             "artists",
             "genres",
             "styles",
             "formats",
+            Prefetch("structured_formats", queryset=structured_formats_qs),
             Prefetch("tracks", queryset=tracks_qs),
         )
 

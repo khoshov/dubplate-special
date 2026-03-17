@@ -10,6 +10,7 @@ from django.http import HttpRequest, HttpResponseRedirect
 from django.utils.text import Truncator
 from django.utils import timezone
 from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 
 from records.models import Record, VKPublicationLog
 from records.services.social.publication_log import register_vk_publication_event
@@ -37,6 +38,9 @@ def _batch_update(
     do_update: Callable[[Record], object],
     on_success: Callable[[Record, object], None] | None = None,
     on_error: Callable[[Record, Exception], None] | None = None,
+    format_failed_item: Callable[[Record, str | None, Exception], str] | None = None,
+    show_fail_summary: bool = True,
+    expected_errors: tuple[type[Exception], ...] = (),
 ) -> None:
     """Универсальный исполнитель массового обновления."""
     start_ts = time.perf_counter()
@@ -67,16 +71,28 @@ def _batch_update(
             ok += 1
         except Exception as e:
             fail += 1
-            failed.append(f"{log_record_name}: {e!s}")
+            if format_failed_item is not None:
+                failed.append(format_failed_item(record, extract_id, e))
+            else:
+                failed.append(f"{log_record_name}: {e!s}")
             if on_error is not None:
                 on_error(record, e)
-            logger.exception(
-                "Ошибка при обновлении %s (%s=%s): %s",
-                log_record_name,
-                id_label,
-                extract_id,
-                e,
-            )
+            if expected_errors and isinstance(e, expected_errors):
+                logger.info(
+                    "Ожидаемая ошибка при обновлении %s (%s=%s): %s",
+                    log_record_name,
+                    id_label,
+                    extract_id,
+                    e,
+                )
+            else:
+                logger.exception(
+                    "Ошибка при обновлении %s (%s=%s): %s",
+                    log_record_name,
+                    id_label,
+                    extract_id,
+                    e,
+                )
 
     if ok:
         admin_obj.message_user(
@@ -88,9 +104,17 @@ def _batch_update(
             request, skip_header + "\n• " + "\n• ".join(skipped), level=messages.INFO
         )
     if fail:
-        admin_obj.message_user(request, fail_msg.format(n=fail), level=messages.ERROR)
+        if show_fail_summary:
+            admin_obj.message_user(request, fail_msg.format(n=fail), level=messages.ERROR)
+        failed_lines_html = format_html_join(
+            "",
+            "<br>&nbsp;&nbsp;&bull; {}",
+            ((item,) for item in failed),
+        )
         admin_obj.message_user(
-            request, fail_header + "\n• " + "\n• ".join(failed), level=messages.ERROR
+            request,
+            format_html("{}{}", fail_header, failed_lines_html),
+            level=messages.ERROR,
         )
 
     logger.info(
@@ -239,6 +263,49 @@ def update_from_redeye(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
     record_service = admin_obj.record_service
+
+    def _get_redeye_catalog_number(record: Record) -> str | None:
+        raw_value = getattr(record, "catalog_number", None)
+        if not isinstance(raw_value, str):
+            logger.info(
+                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
+                record.pk,
+                raw_value,
+                "—",
+            )
+            return None
+
+        normalized = raw_value.strip().upper()
+        if not normalized:
+            logger.info(
+                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
+                record.pk,
+                raw_value,
+                "—",
+            )
+            return None
+
+        if normalized in {"NONE", "NULL", "N/A", "N-A", "-", "—"}:
+            logger.info(
+                "Redeye update skipped: record_id=%s, raw_catalog_number=%r, normalized_catalog_number=%s, reason=invalid_catalog_number",
+                record.pk,
+                raw_value,
+                normalized,
+            )
+            return None
+
+        return normalized
+
+    def _format_redeye_failed_item(
+        record: Record, _extract_id: str | None, _error: Exception
+    ) -> str:
+        record_label = f"#{record.pk} «{record}»"
+        catalog_number = _get_redeye_catalog_number(record) or "—"
+        return (
+            f"Обновление записи с id {record_label} из Redeye невозможно: "
+            f"на сайте не найден релиз с каталожным номером '{catalog_number}'."
+        )
+
     _batch_update(
         admin_obj,
         request,
@@ -251,8 +318,13 @@ def update_from_redeye(
         fail_msg="С ошибками: {n}.",
         fail_header="Ошибки:",
         id_label="каталожный номер",
-        get_id=lambda record: record.catalog_number,
-        do_update=lambda record: record_service.import_from_redeye(
-            catalog_number=record.catalog_number
+        get_id=_get_redeye_catalog_number,
+        do_update=lambda record: record_service.attach_audio_from_redeye(
+            record=record,
+            force=False,
+            require_source=True,
         ),
+        format_failed_item=_format_redeye_failed_item,
+        show_fail_summary=False,
+        expected_errors=(ValueError,),
     )

@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional, Tuple
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
@@ -66,9 +66,19 @@ def normalize_abs_url(url: str) -> str:
     if not u:
         return u
     if u.startswith("http"):
+        parts = urlsplit(u)
+        if parts.netloc == REDEYE_HOST and parts.path.startswith(f"/{REDEYE_HOST}/"):
+            fixed_path = parts.path[len(f"/{REDEYE_HOST}") :]
+            return urlunsplit(
+                (parts.scheme, parts.netloc, fixed_path, parts.query, parts.fragment)
+            )
         return u
     if u.startswith("//"):
         return "https:" + u
+    if u.startswith(REDEYE_HOST):
+        return "https://" + u
+    if u.startswith(f"/{REDEYE_HOST}/"):
+        return "https://" + u.lstrip("/")
     if u.startswith("/"):
         return urljoin(REDEYE_BASE_URL, u)
     return urljoin(REDEYE_BASE_URL + "/", u)
