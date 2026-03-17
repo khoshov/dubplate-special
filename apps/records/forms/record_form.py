@@ -313,7 +313,7 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 logger.debug("Выбран redeye в качестве источника")
                 normalized_source_url = (source_url or "").strip()
                 fallback_catalog_number = (catalog_number or "").strip().upper()
-                if normalized_source_url and not fallback_catalog_number:
+                if normalized_source_url:
                     raw_payload = self._sanitize_optional_structured_payload(
                         self._prefetched_redeye_payload
                         if self._prefetched_redeye_payload is not None

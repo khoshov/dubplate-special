@@ -1,49 +1,117 @@
-/* 1) Убрать колонку "original" у табличного инлайна */
-.inline-group .tabular th.original,
-.inline-group .tabular td.original,
-.inline-group .tabular col.original {
+#tracks-group .track-inline .wrapper {
+  overflow-x: auto;
+}
+
+#tracks-group .track-inline table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+#tracks-group .track-inline th.original,
+#tracks-group .track-inline td.original,
+#tracks-group .track-inline col.original {
   display: none !important;
   width: 0 !important;
   padding: 0 !important;
   border: 0 !important;
 }
 
-/* 2) Избавиться от лишней «полосы» сверху строки, которую даёт has_original */
-.inline-group .tabular tr.has_original td {
+#tracks-group .track-inline tr.has_original td {
   border-top: 0 !important;
-  padding-top: 4px;  /* компактнее */
+  padding-top: 4px;
 }
 
-/* Компактные ширины (в "символах") для узких полей */
-.inline-group .tabular th.field-position_index,
-.inline-group .tabular td.field-position_index {
-  width: 4ch;        /* до 3 цифр + небольшой зазор */
+#tracks-group .track-inline col.col-position_index {
+  width: 7.5em;
+}
+
+#tracks-group .track-inline col.col-position {
+  width: 6.5em;
+}
+
+#tracks-group .track-inline col.col-title {
+  width: 18em;
+}
+
+#tracks-group .track-inline col.col-duration {
+  width: 7.5em;
+}
+
+#tracks-group .track-inline col.col-youtube_url {
+  width: 14em;
+}
+
+#tracks-group .track-inline col.col-audio_preview {
+  width: auto;
+}
+
+#tracks-group .track-inline col.col-audio_preview_actions {
+  width: 10.5em;
+}
+
+#tracks-group .track-inline col.col-delete {
+  width: 1%;
+}
+
+#tracks-group .track-inline th.column-position_index,
+#tracks-group .track-inline td.field-position_index,
+#tracks-group .track-inline th.column-position,
+#tracks-group .track-inline td.field-position,
+#tracks-group .track-inline th.column-title,
+#tracks-group .track-inline td.field-title,
+#tracks-group .track-inline th.column-duration,
+#tracks-group .track-inline td.field-duration,
+#tracks-group .track-inline th.column-youtube_url,
+#tracks-group .track-inline td.field-youtube_url,
+#tracks-group .track-inline th.column-audio_preview,
+#tracks-group .track-inline td.field-audio_preview,
+#tracks-group .track-inline th.column-audio_preview_actions,
+#tracks-group .track-inline td.field-audio_preview_actions {
+  padding-inline: 2mm;
+  white-space: nowrap;
+}
+
+#tracks-group .track-inline th.column-position_index,
+#tracks-group .track-inline th.column-position,
+#tracks-group .track-inline th.column-duration,
+#tracks-group .track-inline th.column-youtube_url,
+#tracks-group .track-inline th.column-audio_preview_actions {
+  text-align: center;
+  vertical-align: middle;
+}
+
+#tracks-group .track-inline td.field-position_index,
+#tracks-group .track-inline td.field-position,
+#tracks-group .track-inline td.field-duration {
   text-align: right;
-  white-space: nowrap;
 }
 
-.inline-group .tabular th.field-position,
-.inline-group .tabular td.field-position {
-  width: 4ch;        /* 'A10' поместится; чаще 2-3 знака */
-  white-space: nowrap;
+#tracks-group .track-inline td.field-position input,
+#tracks-group .track-inline td.field-title input,
+#tracks-group .track-inline td.field-duration input,
+#tracks-group .track-inline td.field-youtube_url input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
-.inline-group .tabular th.field-duration,
-.inline-group .tabular td.field-duration {
-  width: 6ch;        /* '07:31' + запас */
-  white-space: nowrap;
+#tracks-group .track-inline td.field-audio_preview p {
+  margin: 0;
 }
 
-.inline-group .tabular th.field-youtube_url,
-.inline-group .tabular td.field-youtube_url {
-  width: 12ch;       /* компактно, без «растягивания» строки */
-  white-space: nowrap;
+#tracks-group .track-inline td.field-audio_preview a {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Заголовок "TRACK TITLE" пусть занимает остаток */
-.inline-group .tabular th.field-title,
-.inline-group .tabular td.field-title {
-  width: auto;
+#tracks-group .track-inline td.field-audio_preview_actions {
+  text-align: center;
+}
+
+#tracks-group .track-inline .track-audio-controls {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
 }

@@ -49,6 +49,10 @@ _TRACK_VIDEO_NOISE_SUFFIX_RE = re.compile(
     r"\b(?:official|visualiser|visualizer|video|audio|lyric|lyrics)\b.*$",
     flags=re.IGNORECASE,
 )
+_TRACK_VIDEO_POSITION_TOKEN_RE = re.compile(
+    r"\b([A-Z]{1,3}\s*[-./]?\s*\d{1,3}|\d{1,3})\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _to_str(value: Any) -> str:
@@ -271,9 +275,61 @@ def _is_discogs_single_track_video_title(value: Any) -> bool:
     return True
 
 
+def _normalize_discogs_position_marker(value: Any) -> Optional[str]:
+    text = _to_str(value).upper()
+    if not text:
+        return None
+    marker = re.sub(r"[^A-Z0-9]+", "", text)
+    if not marker or not any(ch.isdigit() for ch in marker):
+        return None
+    if marker.isdigit():
+        try:
+            return str(int(marker))
+        except ValueError:
+            return None
+    alnum_match = re.match(r"^([A-Z]+)(\d+)$", marker)
+    if alnum_match:
+        prefix, digits = alnum_match.groups()
+        try:
+            return f"{prefix}{int(digits)}"
+        except ValueError:
+            return None
+    return marker
+
+
+def _extract_discogs_position_markers(value: Any) -> set[str]:
+    text = _to_str(value).upper()
+    if not text:
+        return set()
+
+    markers: set[str] = set()
+    for match in _TRACK_VIDEO_POSITION_TOKEN_RE.finditer(text):
+        marker = _normalize_discogs_position_marker(match.group(1))
+        if marker:
+            markers.add(marker)
+    return markers
+
+
+def _extract_discogs_track_type(track_obj: Any) -> str:
+    if isinstance(track_obj, Mapping):
+        return _to_str(track_obj.get("type_") or track_obj.get("type")).lower()
+
+    direct_type = _to_str(
+        getattr(track_obj, "type_", None) or getattr(track_obj, "type", None)
+    ).lower()
+    if direct_type:
+        return direct_type
+
+    data = getattr(track_obj, "data", None)
+    if isinstance(data, Mapping):
+        return _to_str(data.get("type_") or data.get("type")).lower()
+    return ""
+
+
 def _extract_discogs_video_rows(release: Any) -> List[Dict[str, Any]]:
     raw_videos = getattr(release, "videos", None) or []
     rows: List[Dict[str, Any]] = []
+    seen_video_keys: set[tuple[str, str]] = set()
     for video in raw_videos:
         if isinstance(video, Mapping):
             title = _to_str(video.get("title"))
@@ -285,17 +341,25 @@ def _extract_discogs_video_rows(release: Any) -> List[Dict[str, Any]]:
             )
         if not title or not url or _is_discogs_collection_video_title(title):
             continue
+
+        normalized_title = _normalize_discogs_title_for_match(title)
+        video_key = (normalized_title, url)
+        if video_key in seen_video_keys:
+            continue
+        seen_video_keys.add(video_key)
+
         core_title = _discogs_video_track_core(title)
         rows.append(
             {
                 "title": title,
                 "url": url,
-                "normalized_title": _normalize_discogs_title_for_match(title),
+                "normalized_title": normalized_title,
                 "base_title": _discogs_base_title(core_title),
                 "tokens": _discogs_match_tokens(title),
                 "core_tokens": _discogs_match_tokens(core_title),
                 "is_single_track": _is_discogs_single_track_video_title(title),
                 "part_number": _extract_discogs_part_number(title),
+                "position_markers": _extract_discogs_position_markers(title),
             }
         )
     return rows
@@ -306,6 +370,7 @@ def _match_discogs_video_url_for_track(
     videos: List[Dict[str, Any]],
     *,
     used_indexes: set[int],
+    track_position: Optional[str] = None,
 ) -> Optional[str]:
     if not track_title or not videos:
         return None
@@ -313,6 +378,19 @@ def _match_discogs_video_url_for_track(
     track_base = _discogs_base_title(track_title)
     track_tokens = _discogs_match_tokens(track_title)
     track_part = _extract_discogs_part_number(track_title)
+    track_position_marker = _normalize_discogs_position_marker(track_position)
+
+    def _prioritize_by_position(
+        rows: List[tuple[int, Dict[str, Any]]],
+    ) -> List[tuple[int, Dict[str, Any]]]:
+        if not track_position_marker:
+            return rows
+        position_matched: List[tuple[int, Dict[str, Any]]] = []
+        for index, video in rows:
+            markers = video.get("position_markers")
+            if isinstance(markers, set) and track_position_marker in markers:
+                position_matched.append((index, video))
+        return position_matched or rows
 
     candidates: List[tuple[int, Dict[str, Any]]] = []
     for index, video in enumerate(videos):
@@ -331,6 +409,7 @@ def _match_discogs_video_url_for_track(
                 continue
             if track_tokens and track_tokens.issubset(video_tokens):
                 fuzzy_candidates.append((index, video))
+        fuzzy_candidates = _prioritize_by_position(fuzzy_candidates)
         if len(fuzzy_candidates) == 1 and bool(
             fuzzy_candidates[0][1].get("is_single_track")
         ):
@@ -348,6 +427,8 @@ def _match_discogs_video_url_for_track(
                 used_indexes.add(index)
                 return _to_optional_str(video.get("url"))
         return None
+
+    candidates = _prioritize_by_position(candidates)
 
     if track_part is not None:
         for index, video in candidates:
@@ -629,23 +710,35 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     video_rows = _extract_discogs_video_rows(release)
     used_video_indexes: set[int] = set()
     tracks_src: List[Dict[str, Any]] = []
-    for index, track_obj in enumerate(
-        (getattr(release, "tracklist", []) or []), start=1
-    ):
-        title_track = _to_str(getattr(track_obj, "title", ""))
+    for track_obj in getattr(release, "tracklist", []) or []:
+        track_type = _extract_discogs_track_type(track_obj)
+        if track_type and track_type != "track":
+            continue
+
+        if isinstance(track_obj, Mapping):
+            title_track = _to_str(track_obj.get("title"))
+            track_position = _to_str(track_obj.get("position"))
+            track_duration = _to_optional_str(track_obj.get("duration"))
+        else:
+            title_track = _to_str(getattr(track_obj, "title", ""))
+            track_position = _to_str(getattr(track_obj, "position", ""))
+            track_duration = _to_optional_str(getattr(track_obj, "duration", None))
+
         if not title_track:
             continue
+
         tracks_src.append(
             {
-                "position": _to_str(getattr(track_obj, "position", "")),
+                "position": track_position,
                 "title": title_track,
-                "duration": _to_optional_str(getattr(track_obj, "duration", None)),
+                "duration": track_duration,
                 "youtube_url": _match_discogs_video_url_for_track(
                     title_track,
                     video_rows,
                     used_indexes=used_video_indexes,
+                    track_position=track_position,
                 ),
-                "position_index": index,
+                "position_index": len(tracks_src) + 1,
             }
         )
     src["tracks"] = tracks_src
