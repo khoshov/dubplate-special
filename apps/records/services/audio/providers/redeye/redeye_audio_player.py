@@ -5,12 +5,30 @@ from typing import List, Optional, Tuple
 
 from django.db.models import Q
 from playwright.sync_api import Browser
+from config.logging import NOTICE_LEVEL, log_event
 from records.constants import REDEYE_PLAYER_PRUNE_UNTITLED
 from records.models import Record, Track, RecordSource
 from records.services.audio.common.downloader import download_audio_to_track
 from .redeye_audio_scraper import collect_redeye_audio_urls
 
 logger = logging.getLogger(__name__)
+_REDEYE_AUDIO_PLAYER_COMPONENT = "redeye_audio_player"
+
+
+def _log_redeye_player_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_AUDIO_PLAYER_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _resolve_product_page_url(
@@ -31,7 +49,12 @@ def _resolve_product_page_url(
         Валидный URL карточки либо None, если источник не найден.
     """
     if explicit_url:
-        logger.debug("явный URL карточки: %s", explicit_url)
+        _log_redeye_player_event(
+            logging.DEBUG,
+            "page_url_explicit",
+            "Использован явный URL карточки Redeye.",
+            source=explicit_url,
+        )
         return explicit_url
 
     try:
@@ -45,14 +68,32 @@ def _resolve_product_page_url(
             .first()
         )
         if src:
-            logger.debug("URL из RecordSource: %s", src)
+            _log_redeye_player_event(
+                logging.DEBUG,
+                "page_url_from_source",
+                "URL карточки Redeye взят из RecordSource.",
+                record_id=getattr(record, "pk", None),
+                source=src,
+            )
             return src
     except Exception as exc:
-        logger.debug("не удалось получить URL из RecordSource: %s", exc)
+        _log_redeye_player_event(
+            logging.DEBUG,
+            "page_url_from_source_failed",
+            "Не удалось получить URL карточки Redeye из RecordSource.",
+            record_id=getattr(record, "pk", None),
+            error=str(exc),
+        )
 
     legacy_url = getattr(record, "source_url", None)
     if legacy_url:
-        logger.debug("legacy record.source_url: %s", legacy_url)
+        _log_redeye_player_event(
+            logging.DEBUG,
+            "page_url_legacy",
+            "URL карточки Redeye взят из legacy record.source_url.",
+            record_id=getattr(record, "pk", None),
+            source=legacy_url,
+        )
     return legacy_url
 
 
@@ -80,10 +121,12 @@ def _ordered_tracks(record: Record) -> List[Track]:
             without_idx.append(track)
 
     if without_idx:
-        logger.warning(
-            "у %d трек(ов) записи %s нет position_index — они будут привязаны в конце по порядку.",
-            len(without_idx),
-            record.pk,
+        _log_redeye_player_event(
+            NOTICE_LEVEL,
+            "tracks_without_position_index",
+            "У треков отсутствует position_index — они будут привязаны в конце по порядку.",
+            record_id=getattr(record, "pk", None),
+            tracks_total=len(without_idx),
         )
 
     with_idx.sort(key=lambda it: (it[0], it[1].id))
@@ -103,7 +146,13 @@ def _prune_empty_untitled_placeholders(record: Record) -> None:
     deleted = qs.filter(
         Q(audio_preview__isnull=True) | Q(audio_preview__exact="")
     ).delete()
-    logger.info("удалено плейсхолдеров без аудио: %s.", deleted[0])
+    _log_redeye_player_event(
+        logging.INFO,
+        "placeholders_pruned",
+        "Удалены плейсхолдеры без аудио.",
+        record_id=getattr(record, "pk", None),
+        deleted_count=deleted[0],
+    )
 
 
 def attach_audio_from_redeye_player(
@@ -133,7 +182,13 @@ def attach_audio_from_redeye_player(
     Returns:
         Количество треков, у которых аудио появилось или обновилось.
     """
-    logger.info("запуск для записи %s.", record.pk)
+    _log_redeye_player_event(
+        logging.INFO,
+        "attach_start",
+        "Запущена привязка аудио из Redeye для записи.",
+        record_id=getattr(record, "pk", None),
+        overwrite=force,
+    )
 
     if REDEYE_PLAYER_PRUNE_UNTITLED:
         _prune_empty_untitled_placeholders(record)
@@ -141,13 +196,23 @@ def attach_audio_from_redeye_player(
     # URL карточки
     page_url = _resolve_product_page_url(record, page_url)
     if not page_url:
-        logger.info("у записи %s отсутствует URL карточки — пропуск.", record.pk)
+        _log_redeye_player_event(
+            NOTICE_LEVEL,
+            "page_url_missing",
+            "У записи отсутствует URL карточки Redeye — пропуск.",
+            record_id=getattr(record, "pk", None),
+        )
         return 0
 
     # Треки в порядке привязки
     tracks: List[Track] = _ordered_tracks(record)
     if not tracks:
-        logger.info("у записи %s нет треков.", record.pk)
+        _log_redeye_player_event(
+            NOTICE_LEVEL,
+            "tracks_missing",
+            "У записи нет треков — привязка аудио пропущена.",
+            record_id=getattr(record, "pk", None),
+        )
         return 0
 
     # Сбор ссылок плеера
@@ -157,9 +222,21 @@ def attach_audio_from_redeye_player(
         debug=False,
         browser=browser,
     )
-    logger.debug("ссылок получено=%d: %s", len(urls), urls)
+    _log_redeye_player_event(
+        logging.DEBUG,
+        "audio_urls_collected",
+        "Получены ссылки плеера Redeye.",
+        record_id=getattr(record, "pk", None),
+        urls_total=len(urls),
+    )
     if not urls:
-        logger.info("не удалось получить медиа-ссылки для %s.", page_url)
+        _log_redeye_player_event(
+            logging.WARNING,
+            "audio_urls_missing",
+            "Не удалось получить медиа-ссылки Redeye.",
+            record_id=getattr(record, "pk", None),
+            source=page_url,
+        )
         return 0
 
     # Сопоставление и скачивание
@@ -171,11 +248,13 @@ def attach_audio_from_redeye_player(
         if saved:
             updated += 1
 
-    logger.info(
-        "запись=%s, обновлено аудио: %d (urls=%d, tracks=%d).",
-        record.pk,
-        updated,
-        len(urls),
-        len(tracks),
+    _log_redeye_player_event(
+        logging.INFO,
+        "attach_finish",
+        "Привязка аудио Redeye завершена.",
+        record_id=getattr(record, "pk", None),
+        updated_count=updated,
+        urls_total=len(urls),
+        tracks_total=len(tracks),
     )
     return updated

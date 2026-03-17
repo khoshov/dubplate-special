@@ -34,8 +34,27 @@ from records.constants import (
     PLAYWRIGHT_WAIT_TICK_MS,
 )
 from records.services.providers.redeye.helpers import normalize_abs_url
+from config.logging import NOTICE_LEVEL, build_log_extra, log_event
 
 logger = logging.getLogger(__name__)
+_REDEYE_AUDIO_SCRAPER_COMPONENT = "redeye_audio_scraper"
+
+
+def _log_redeye_scraper_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_REDEYE_AUDIO_SCRAPER_COMPONENT,
+        event=event,
+        **context,
+    )
+
 
 # --- добавлено: блокировки «тяжёлых» и посторонних ресурсов ---
 _THIRDPARTY_BLOCKLIST = (
@@ -78,7 +97,14 @@ def _install_network_blocker(context) -> None:
                 route.abort()
                 return
         except Exception as err:  # noqa: BLE001 — роутер не должен ронять сценарий
-            logger.debug("Ошибка в роутере сети: %s", err, exc_info=True)
+            logger.exception(
+                "Ошибка в роутере сети.",
+                extra=build_log_extra(
+                    component=_REDEYE_AUDIO_SCRAPER_COMPONENT,
+                    event="network_route_failed",
+                    error=str(err),
+                ),
+            )
         route.continue_()
 
     context.route("**/*", _route)
@@ -90,7 +116,12 @@ def _dismiss_cookie_banners(page: Page) -> None:
         try:
             locator = page.locator(selector).first
             if locator.count() and locator.is_visible():
-                logger.debug("Закрытие cookie-баннера: %s", selector)
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "cookie_banner_dismissed",
+                    "Закрыт cookie-баннер Redeye.",
+                    selector=selector,
+                )
                 locator.click(timeout=1_000)
                 break
         except PWError:
@@ -132,9 +163,19 @@ def _attach_response_sniffer(page: Page) -> OrderedDictType[str, None]:
                 url = normalize_abs_url(re.sub(r"\s+", "", raw_url))
                 if url and url not in collected:
                     collected[url] = None
-                    logger.debug("Обнаружен аудио-ответ: %s", url)  # <-- с заглавной
+                    _log_redeye_scraper_event(
+                        logging.DEBUG,
+                        "audio_response_detected",
+                        "Обнаружен аудио-ответ Redeye.",
+                        source=url,
+                    )
         except Exception as err:  # noqa: BLE001
-            logger.debug("Ошибка сниффера ответа: %s", err)
+            _log_redeye_scraper_event(
+                logging.DEBUG,
+                "response_sniffer_failed",
+                "Ошибка сниффера ответа Redeye.",
+                error=str(err),
+            )
 
     page.on("response", _on_response)
     return collected
@@ -159,7 +200,12 @@ def _collect_button_letters(page: Page) -> List[str]:
         pass
 
     letters = sorted(unique_letters)
-    logger.debug("буквы плеера (отсортированы): %s", letters)
+    _log_redeye_scraper_event(
+        logging.DEBUG,
+        "player_letters_collected",
+        "Собраны буквы плеера Redeye.",
+        letters=letters,
+    )
     return letters
 
 
@@ -256,9 +302,20 @@ def _fallback_fill_missing(
             if resp.status_code in MEDIA_ACCEPTABLE_HTTP_STATUSES:
                 out.append(candidate)
                 present.add(candidate)
-                logger.info("Добавлена недостающая ссылка: %s", candidate)
+                _log_redeye_scraper_event(
+                    NOTICE_LEVEL,
+                    "fallback_audio_added",
+                    "Добавлена недостающая ссылка Redeye (fallback).",
+                    source=candidate,
+                )
         except requests.RequestException as req_err:
-            logger.debug("Ошибка проверки %s: %s", candidate, req_err)
+            _log_redeye_scraper_event(
+                logging.DEBUG,
+                "fallback_audio_check_failed",
+                "Ошибка проверки fallback-ссылки Redeye.",
+                source=candidate,
+                error=str(req_err),
+            )
 
     return _map_urls_by_letters(out, letters)
 
@@ -308,21 +365,31 @@ def _safe_goto(
             return True
         except PWTimeout:
             if attempt < retries:
-                logger.debug(
-                    "Навигация превысила таймаут, повторная попытка %d/%d: %s",
-                    attempt + 1,
-                    retries,
-                    url,
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "page_goto_retry",
+                    "Навигация Redeye превысила таймаут. Повторная попытка.",
+                    source=url,
+                    attempt=attempt + 1,
+                    max_retries=retries + 1,
                 )
                 continue
-            logger.warning(
-                "Навигация не уложилась в %d мс: %s — пропуск страницы.",
-                PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
-                url,
+            _log_redeye_scraper_event(
+                logging.WARNING,
+                "page_goto_timeout",
+                "Навигация Redeye не уложилась в таймаут. Страница пропущена.",
+                source=url,
+                timeout_ms=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
             )
             return False
         except PWError as err:
-            logger.error("Ошибка навигации Playwright к %s: %s", url, err)
+            _log_redeye_scraper_event(
+                logging.ERROR,
+                "page_goto_failed",
+                "Ошибка навигации Playwright к Redeye.",
+                source=url,
+                error=str(err),
+            )
             return False
     return False  # недостижимо, но для спокойствия mypy
 
@@ -370,8 +437,12 @@ def _collect_with_browser(
         letters = _collect_button_letters(page)
         total = len(letters)
         if total == 0:
-            logger.warning(
-                "На странице нет кнопок плеера: %s", REDEYE_PLAYER_BUTTON_SELECTOR
+            _log_redeye_scraper_event(
+                logging.WARNING,
+                "player_buttons_missing",
+                "На странице отсутствуют кнопки плеера Redeye.",
+                selector=REDEYE_PLAYER_BUTTON_SELECTOR,
+                source=page_url,
             )
             return []
 
@@ -382,19 +453,41 @@ def _collect_with_browser(
             before_count = len(bag)
             try:
                 btn = buttons.nth(idx)
-                logger.debug("Клик по кнопке #%s", idx + 1)
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "player_button_click",
+                    "Клик по кнопке плеера Redeye.",
+                    index=idx + 1,
+                    total=total,
+                )
                 btn.scroll_into_view_if_needed()
                 btn.click(timeout=PLAYWRIGHT_CLICK_ACTION_TIMEOUT_MS)
                 _wait_new_urls(bag, before_count, per_click_timeout_sec, page)
             except PWTimeout:
-                logger.debug("Таймаут ожидания после клика idx=%s", idx)
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "player_click_timeout",
+                    "Таймаут ожидания после клика по кнопке плеера.",
+                    index=idx + 1,
+                )
             except PWError as pw_err:
-                logger.debug("Ошибка клика idx=%s: %s", idx, pw_err)
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "player_click_failed",
+                    "Ошибка клика по кнопке плеера Redeye.",
+                    index=idx + 1,
+                    error=str(pw_err),
+                )
 
             if len(bag) >= total:
                 break
             if time.monotonic() - start_ts > global_max_sec:
-                logger.debug("Достигнут общий мягкий таймаут сбора")
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "collect_soft_timeout",
+                    "Достигнут общий мягкий таймаут сбора ссылок Redeye.",
+                    timeout_sec=global_max_sec,
+                )
                 break
 
         end_deadline = time.monotonic() + CAPTURE_POST_CLICK_SETTLE_SEC
@@ -403,7 +496,12 @@ def _collect_with_browser(
 
         urls_raw = list(bag.keys())
         if debug:
-            logger.debug("Сырые ссылки: %s", urls_raw)
+            _log_redeye_scraper_event(
+                logging.DEBUG,
+                "audio_urls_raw",
+                "Сырые ссылки Redeye.",
+                urls=urls_raw,
+            )
 
         urls_ordered: List[str] = _map_urls_by_letters(urls_raw, letters)
 
@@ -411,7 +509,12 @@ def _collect_with_browser(
             html = page.content()
             urls_ordered = _fallback_fill_missing(html, urls_ordered, letters)
             if debug and html:
-                logger.debug("HTML-сниппет (первые 1800 симв.): %s", html[:1800])
+                _log_redeye_scraper_event(
+                    logging.DEBUG,
+                    "html_snippet",
+                    "HTML-сниппет Redeye (первые 1800 символов).",
+                    snippet=html[:1800],
+                )
 
         return urls_ordered
 
@@ -419,7 +522,12 @@ def _collect_with_browser(
         try:
             context.close()
         except PWError as close_exc:
-            logger.debug("Ошибка закрытия контекста: %s", close_exc)
+            _log_redeye_scraper_event(
+                logging.DEBUG,
+                "context_close_failed",
+                "Ошибка закрытия Playwright-контекста.",
+                error=str(close_exc),
+            )
 
 
 def collect_redeye_audio_urls(
@@ -447,7 +555,12 @@ def collect_redeye_audio_urls(
     Returns:
         Список аудио-URL в порядке кнопок (A, B, C, ...).
     """
-    logger.info("Открываем страницу: %s", page_url)
+    _log_redeye_scraper_event(
+        logging.INFO,
+        "collect_start",
+        "Запущен сбор аудио-ссылок Redeye.",
+        source=page_url,
+    )
     if per_click_timeout_sec is None:
         per_click_timeout_sec = REDEYE_PLAYER_DEFAULT_CLICK_TIMEOUT_SEC
     try:
@@ -455,14 +568,18 @@ def collect_redeye_audio_urls(
         if browser is not None:
             try:
                 if hasattr(browser, "is_connected") and not browser.is_connected():
-                    logger.warning(
-                        "Получен неактивный браузер (is_connected=False) — используем локальный экземпляр"
+                    _log_redeye_scraper_event(
+                        logging.WARNING,
+                        "browser_disconnected",
+                        "Получен неактивный браузер. Используется локальный экземпляр.",
                     )
                     browser = None
             except PWError as probe_err:
-                logger.warning(
-                    "Ошибка проверки состояния браузера: %s — используем локальный экземпляр",
-                    probe_err,
+                _log_redeye_scraper_event(
+                    logging.WARNING,
+                    "browser_state_check_failed",
+                    "Ошибка проверки состояния браузера. Используется локальный экземпляр.",
+                    error=str(probe_err),
                 )
                 browser = None
 
@@ -474,7 +591,13 @@ def collect_redeye_audio_urls(
                 debug=debug,
                 global_max_sec=global_max_sec,
             )
-            logger.info("Собрано ссылок: %d", len(urls))
+            _log_redeye_scraper_event(
+                logging.INFO,
+                "collect_finish",
+                "Сбор аудио-ссылок Redeye завершён.",
+                source=page_url,
+                urls_total=len(urls),
+            )
             return urls
 
         # Разовый случай — поднимаем собственный браузер
@@ -496,25 +619,67 @@ def collect_redeye_audio_urls(
                 debug=debug,
                 global_max_sec=global_max_sec,
             )
-            logger.info("Собрано ссылок: %d", len(urls))
+            _log_redeye_scraper_event(
+                logging.INFO,
+                "collect_finish",
+                "Сбор аудио-ссылок Redeye завершён.",
+                source=page_url,
+                urls_total=len(urls),
+            )
             return urls
 
     except PWTimeout:
-        logger.warning(
-            "Таймаут Playwright при обработке %s — страница пропущена.", page_url
+        _log_redeye_scraper_event(
+            logging.WARNING,
+            "collect_timeout",
+            "Таймаут Playwright при обработке страницы Redeye.",
+            source=page_url,
         )
         if debug:
-            logger.exception("Детали таймаута:")
+            logger.exception(
+                "Детали таймаута Playwright.",
+                extra=build_log_extra(
+                    component=_REDEYE_AUDIO_SCRAPER_COMPONENT,
+                    event="collect_timeout_details",
+                    source=page_url,
+                ),
+            )
         return []
     except PWError as pw_err:
-        logger.error("Ошибка Playwright при обработке %s: %s", page_url, pw_err)
+        _log_redeye_scraper_event(
+            logging.ERROR,
+            "collect_playwright_failed",
+            "Ошибка Playwright при обработке Redeye.",
+            source=page_url,
+            error=str(pw_err),
+        )
         if debug:
-            logger.exception("Детали ошибки Playwright:")
+            logger.exception(
+                "Детали ошибки Playwright.",
+                extra=build_log_extra(
+                    component=_REDEYE_AUDIO_SCRAPER_COMPONENT,
+                    event="collect_playwright_failed_details",
+                    source=page_url,
+                ),
+            )
         return []
     except Exception as exc:  # noqa: BLE001 — предохранитель
-        logger.error("Неожиданная ошибка при обработке %s: %s", page_url, exc)
+        _log_redeye_scraper_event(
+            logging.ERROR,
+            "collect_unexpected_failed",
+            "Неожиданная ошибка при обработке Redeye.",
+            source=page_url,
+            error=str(exc),
+        )
         if debug:
-            logger.exception("Детали непредвиденной ошибки:")
+            logger.exception(
+                "Детали непредвиденной ошибки.",
+                extra=build_log_extra(
+                    component=_REDEYE_AUDIO_SCRAPER_COMPONENT,
+                    event="collect_unexpected_failed_details",
+                    source=page_url,
+                ),
+            )
         return []
 
 

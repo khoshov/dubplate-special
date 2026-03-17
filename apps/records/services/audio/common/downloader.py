@@ -11,6 +11,7 @@ import requests
 from django.core.files import File
 from django.utils.text import slugify
 from requests.adapters import HTTPAdapter, Retry
+from config.logging import NOTICE_LEVEL, build_log_extra, log_event
 
 from records.constants import (
     REDEYE_USER_AGENTS,
@@ -27,6 +28,23 @@ from records.constants import (
 )
 
 logger = logging.getLogger(__name__)
+_AUDIO_DOWNLOADER_COMPONENT = "audio_downloader"
+
+
+def _log_downloader_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_AUDIO_DOWNLOADER_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class FileFieldLike(Protocol):
@@ -122,8 +140,11 @@ def http_get(
     scheme = urlsplit(url).scheme.lower()
     if scheme == "http" and not allow_http:
         # Раньше выбрасывали ValueError; теперь не рвём поток по умолчанию, а даём возможность жёстко запретить.
-        logger.warning(
-            "HTTP-ссылка (не https): %s — запрещено (allow_http=False).", url
+        _log_downloader_event(
+            logging.WARNING,
+            "http_blocked",
+            "HTTP-ссылка (не https) запрещена настройкой allow_http=False.",
+            source=url,
         )
         # Эмулируем «жёсткий» запрет явным исключением только если так просили:
         raise ValueError(
@@ -136,17 +157,33 @@ def http_get(
             headers["Referer"] = ascii_safe_url(referer)
         except Exception:
             # не даём заголовку уронить запрос — просто опускаем его
-            logger.debug("Невозможно нормализовать Referer: %s", referer, exc_info=True)
+            logger.exception(
+                "Невозможно нормализовать Referer.",
+                extra=build_log_extra(
+                    component=_AUDIO_DOWNLOADER_COMPONENT,
+                    event="referer_normalize_failed",
+                    referer=referer,
+                ),
+            )
     if random.random() < 0.25:
         headers["User-Agent"] = random.choice(REDEYE_USER_AGENTS)
 
     if scheme == "http":
-        logger.warning(
-            "Используется http-ссылка (не https): %s — продолжаем по совместимости.",
-            url,
+        _log_downloader_event(
+            NOTICE_LEVEL,
+            "http_allowed",
+            "Используется http-ссылка (не https) по совместимости.",
+            source=url,
         )
 
-    logger.debug("HTTP GET %s params=%s stream=%s", url, params, stream)
+    _log_downloader_event(
+        logging.DEBUG,
+        "http_get",
+        "HTTP GET запрос для загрузки аудио.",
+        source=url,
+        params=params or "—",
+        stream=stream,
+    )
     response = SESSION.get(
         url, params=params, headers=headers, timeout=timeout, stream=stream
     )
@@ -218,10 +255,12 @@ def _validate_content_type(url: str, content_type: str) -> None:
         and (content_type not in ALLOWED_AUDIO_CONTENT_TYPES)
         and not url.lower().endswith((".mp3", ".aac"))
     ):
-        logger.warning(
-            "Неожиданный Content-Type '%s' для URL %s — продолжаем осторожно.",
-            content_type,
-            url,
+        _log_downloader_event(
+            logging.WARNING,
+            "content_type_unexpected",
+            "Неожиданный Content-Type для аудио. Продолжаем осторожно.",
+            source=url,
+            content_type=content_type,
         )
 
 
@@ -231,10 +270,12 @@ def _content_length_ok(response: requests.Response, *, max_bytes: int) -> bool:
         header = response.headers.get("Content-Length", "0")
         value = int(header) if header else 0
         if value and value > max_bytes:
-            logger.warning(
-                "Размер файла %s байт превышает лимит %s байт — скачивание отменено.",
-                value,
-                max_bytes,
+            _log_downloader_event(
+                logging.WARNING,
+                "content_length_exceeded",
+                "Размер файла превышает лимит. Скачивание отменено.",
+                size_bytes=value,
+                max_bytes=max_bytes,
             )
             return False
     except (ValueError, TypeError):
@@ -256,9 +297,13 @@ def _write_stream_to_temp(
             written += len(chunk)
             if written > max_bytes:
                 logger.warning(
-                    "Лимит размера %s байт превышен (получено %s байт) — удаляем временный файл.",
-                    max_bytes,
-                    written,
+                    "Лимит размера превышен при скачивании — временный файл удалён.",
+                    extra=build_log_extra(
+                        component=_AUDIO_DOWNLOADER_COMPONENT,
+                        event="download_size_exceeded",
+                        max_bytes=max_bytes,
+                        written_bytes=written,
+                    ),
                 )
                 tmp_file.close()
                 try:
@@ -297,11 +342,13 @@ def _delete_replaced_audio_file(
     try:
         track.audio_preview.storage.delete(old_name)
     except Exception as error:  # noqa: BLE001
-        logger.warning(
-            "Не удалось удалить прежний mp3 после перезаписи (track=%s, old_file=%s): %s.",
-            getattr(track, "pk", None),
-            old_name,
-            error,
+        _log_downloader_event(
+            logging.WARNING,
+            "replace_cleanup_failed",
+            "Не удалось удалить прежний mp3 после перезаписи.",
+            track_id=getattr(track, "pk", None),
+            old_file=old_name,
+            error=str(error),
         )
 
 
@@ -342,15 +389,21 @@ def download_audio_to_track(
         ValueError: При явном запрете http-ссылок и попытке скачать по http.
     """
     if not url:
-        logger.debug("Скачивание пропущено: пустой URL.")
+        _log_downloader_event(
+            logging.DEBUG,
+            "download_skipped_empty_url",
+            "Скачивание пропущено: пустой URL.",
+        )
         return None
 
     existing_name = getattr(getattr(track, "audio_preview", None), "name", "")
     if existing_name and not overwrite:
-        logger.info(
-            "Скачивание пропущено: у трека уже есть аудио (track=%s, file=%s).",
-            getattr(track, "pk", None),
-            existing_name,
+        _log_downloader_event(
+            NOTICE_LEVEL,
+            "download_skipped_existing",
+            "Скачивание пропущено: у трека уже есть аудио.",
+            track_id=getattr(track, "pk", None),
+            old_audio=existing_name,
         )
         return existing_name
 
@@ -379,22 +432,39 @@ def download_audio_to_track(
                 old_name=old_name,
                 saved_name=saved_name,
             )
-        logger.info(
-            "Аудио сохранено: track=%s, file=%s (источник: %s).",
-            getattr(track, "pk", None),
-            saved_name,
-            url,
+        _log_downloader_event(
+            logging.INFO,
+            "download_saved",
+            "Аудио сохранено.",
+            track_id=getattr(track, "pk", None),
+            new_audio=saved_name,
+            source=url,
+            overwrite=overwrite,
         )
         return saved_name
 
     except requests.HTTPError as http_error:
         status = getattr(getattr(http_error, "response", None), "status_code", "?")
-        logger.warning(
-            "HTTP-ошибка при скачивании %s (status=%s): %s.", url, status, http_error
+        _log_downloader_event(
+            logging.WARNING,
+            "download_http_error",
+            "HTTP-ошибка при скачивании аудио.",
+            source=url,
+            status=status,
+            error=str(http_error),
         )
         return None
     except (requests.RequestException, OSError, ValueError) as error:
-        logger.error("Ошибка скачивания/сохранения %s: %s.", url, error, exc_info=True)
+        logger.error(
+            "Ошибка скачивания/сохранения аудио.",
+            extra=build_log_extra(
+                component=_AUDIO_DOWNLOADER_COMPONENT,
+                event="download_failed",
+                source=url,
+                error=str(error),
+            ),
+            exc_info=True,
+        )
         return None
     finally:
         if tmp_path and os.path.exists(tmp_path):
