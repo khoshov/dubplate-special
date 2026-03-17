@@ -7,7 +7,10 @@ from django.conf import settings
 from django.core.exceptions import TooManyFieldsSent
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 
+from config.logging import log_event
+
 logger = logging.getLogger(__name__)
+_CORE_MIDDLEWARE_COMPONENT = "core_middleware"
 
 ADMIN_TOO_MANY_FIELDS_SESSION_KEY = "admin_too_many_fields_error"
 ADMIN_RECORD_CHANGELIST_PATH = "/admin/records/record/"
@@ -42,10 +45,14 @@ class AdminTooManyFieldsSentMiddleware:
         )
 
         request.session[ADMIN_TOO_MANY_FIELDS_SESSION_KEY] = message
-        logger.warning(
-            "Перехвачена TooManyFieldsSent в админке: path=%s, limit=%s",
-            request.path,
-            limit,
+        log_event(
+            logger,
+            logging.WARNING,
+            "Перехвачена TooManyFieldsSent в админке.",
+            component=_CORE_MIDDLEWARE_COMPONENT,
+            event="too_many_fields",
+            path=request.path,
+            limit=limit,
         )
 
         return HttpResponseRedirect(request.get_full_path())

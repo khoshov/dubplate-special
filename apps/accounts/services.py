@@ -3,11 +3,29 @@ import re
 
 import requests
 
+from config.logging import NOTICE_LEVEL, log_event
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+_SMS_SERVICE_COMPONENT = "sms_service"
+
+
+def _log_sms_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_SMS_SERVICE_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class SMSService:
@@ -78,7 +96,12 @@ class SMSService:
         Отправка SMS через SMS.ru
         """
         if not self.api_key:
-            logger.error("SMS.ru API key not configured")
+            _log_sms_event(
+                logging.ERROR,
+                "provider_key_missing",
+                "SMS.ru API key не настроен.",
+                provider=self.provider,
+            )
             return False, "SMS сервис не настроен"
 
         url = "https://sms.ru/sms/send"
@@ -92,18 +115,35 @@ class SMSService:
                 return True, "SMS отправлена"
             else:
                 error_msg = data.get("status_text", "Неизвестная ошибка")
-                logger.error(f"SMS.ru error: {error_msg}")
+                _log_sms_event(
+                    logging.ERROR,
+                    "provider_error",
+                    "Ошибка SMS.ru при отправке SMS.",
+                    provider=self.provider,
+                    error=error_msg,
+                )
                 return False, f"Ошибка отправки SMS: {error_msg}"
 
         except Exception as e:
-            logger.error(f"SMS sending error: {str(e)}")
+            _log_sms_event(
+                logging.ERROR,
+                "send_failed",
+                "Ошибка при отправке SMS.",
+                provider=self.provider,
+                error=str(e),
+            )
             return False, "Ошибка отправки SMS"
 
     def send_test_sms(self, phone, message):
         """
         Тестовый режим - логирует SMS вместо отправки
         """
-        logger.info(f"TEST SMS to {phone}: {message}")
+        _log_sms_event(
+            NOTICE_LEVEL,
+            "test_sms",
+            "TEST SMS (тестовый режим).",
+            phone=phone,
+        )
         print(f"TEST SMS to {phone}: {message}")
         return True, "SMS отправлена (тестовый режим)"
 
@@ -133,11 +173,25 @@ class SMSService:
             if self.provider == "sms_ru":
                 success, msg = self.send_sms_via_sms_ru(normalized_phone, message)
             else:
+                _log_sms_event(
+                    logging.ERROR,
+                    "provider_unsupported",
+                    "Неподдерживаемый SMS провайдер.",
+                    provider=self.provider,
+                )
                 return False, "Неподдерживаемый SMS провайдер"
 
         if success:
             # Устанавливаем кулдаун на 1 минуту
             cache.set(f"sms_cooldown_{normalized_phone}", timezone.now(), 60)
+            _log_sms_event(
+                logging.INFO,
+                "sms_sent",
+                "SMS успешно отправлена.",
+                phone=normalized_phone,
+                provider=self.provider,
+                test_mode=self.test_mode,
+            )
 
         return success, msg
 
