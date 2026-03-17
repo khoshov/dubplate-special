@@ -9,7 +9,10 @@ import logging
 import re
 from typing import Any, Dict, List, Mapping, Optional
 
+from config.logging import NOTICE_LEVEL, log_event
+
 logger = logging.getLogger(__name__)
+_PAYLOAD_ADAPTER_COMPONENT = "provider_payload_adapter"
 _INVALID_CATALOG_VALUES = {"NONE", "NULL", "N/A", "N-A", "-", "—"}
 _CANONICAL_CARRIERS = {
     "VINYL": "Vinyl",
@@ -54,6 +57,22 @@ _TRACK_VIDEO_POSITION_TOKEN_RE = re.compile(
     r"\b([A-Z]{1,3}\s*[-./]?\s*\d{1,3}|\d{1,3})\b",
     flags=re.IGNORECASE,
 )
+
+
+def _log_payload_adapter_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_PAYLOAD_ADAPTER_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 def _to_str(value: Any) -> str:
@@ -744,7 +763,11 @@ def adapt_redeye_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     Метод нормализует словарь, полученный от RedeyeService, к формату сборки записи.
     """
     if not raw_payload:
-        logger.warning("adapt_redeye_payload: пустой входной словарь.")
+        _log_payload_adapter_event(
+            NOTICE_LEVEL,
+            "redeye_payload_empty",
+            "Пустой payload Redeye: адаптация пропущена.",
+        )
         return {}
 
     src: Dict[str, Any] = dict(raw_payload)  # копия
@@ -759,11 +782,13 @@ def adapt_redeye_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     _normalize_common_fields(out, src)
     out["tracks"] = _normalize_tracks(src.get("tracks"))
 
-    logger.debug(
-        "adapt_redeye_payload: нормализовано: title=%r, artists=%d, tracks=%d",
-        out.get("title"),
-        len(out.get("artists", [])),
-        len(out.get("tracks", [])),
+    _log_payload_adapter_event(
+        logging.DEBUG,
+        "redeye_payload_adapted",
+        "Payload Redeye нормализован.",
+        title=out.get("title") or "—",
+        artists_total=len(out.get("artists", [])),
+        tracks_total=len(out.get("tracks", [])),
     )
     return out
 
@@ -891,12 +916,14 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     _normalize_common_fields(out, src)
     out["tracks"] = _normalize_tracks(src.get("tracks"))
 
-    logger.debug(
-        "adapt_discogs_release: нормализовано: title=%r, artists=%d, tracks=%d, structured_formats=%d",
-        out.get("title"),
-        len(out.get("artists", [])),
-        len(out.get("tracks", [])),
-        len(out.get("structured_formats", [])),
+    _log_payload_adapter_event(
+        logging.DEBUG,
+        "discogs_release_adapted",
+        "Release Discogs нормализован.",
+        title=out.get("title") or "—",
+        artists_total=len(out.get("artists", [])),
+        tracks_total=len(out.get("tracks", [])),
+        structured_formats_total=len(out.get("structured_formats", [])),
     )
     return out
 
@@ -925,11 +952,13 @@ def adapt_discogs_payload(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     _normalize_common_fields(out, src)
     out["tracks"] = _normalize_tracks(src.get("tracks"))
-    logger.debug(
-        "adapt_discogs_payload: нормализовано: title=%r, artists=%d, tracks=%d, structured_formats=%d",
-        out.get("title"),
-        len(out.get("artists", [])),
-        len(out.get("tracks", [])),
-        len(out.get("structured_formats", [])),
+    _log_payload_adapter_event(
+        logging.DEBUG,
+        "discogs_payload_adapted",
+        "Payload Discogs нормализован.",
+        title=out.get("title") or "—",
+        artists_total=len(out.get("artists", [])),
+        tracks_total=len(out.get("tracks", [])),
+        structured_formats_total=len(out.get("structured_formats", [])),
     )
     return out

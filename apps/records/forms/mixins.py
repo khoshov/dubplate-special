@@ -5,9 +5,27 @@ from typing import Iterable
 
 from django.forms import ModelForm
 
+from config.logging import NOTICE_LEVEL, log_event
 from ..models import Record
 
 logger = logging.getLogger(__name__)
+_RECORD_FORM_MIXIN_COMPONENT = "record_form_mixins"
+
+
+def _log_record_form_mixin_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_FORM_MIXIN_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class ApplyFieldsMixin(ModelForm):
@@ -43,7 +61,15 @@ class ApplyFieldsMixin(ModelForm):
                 old_val = getattr(record, field, None)
                 new_val = self.cleaned_data[field]
                 if old_val != new_val:
-                    logger.debug("Поле '%s': %r → %r", field, old_val, new_val)
+                    _log_record_form_mixin_event(
+                        logging.DEBUG,
+                        "field_changed",
+                        "Поле записи изменено по данным формы.",
+                        record_id=getattr(record, "pk", None),
+                        field=field,
+                        old_value=old_val,
+                        new_value=new_val,
+                    )
                 setattr(record, field, self.cleaned_data[field])
 
     def _apply_m2m_fields(self, record: Record) -> None:
@@ -63,9 +89,11 @@ class ApplyFieldsMixin(ModelForm):
             record.styles.set(self.cleaned_data["styles"])  # type: ignore[attr-defined]
         if "formats" in self.cleaned_data:
             if getattr(record, "pk", None) and "formats" not in changed_data:
-                logger.debug(
-                    "Поле 'formats' не изменилось для записи %s; повторная запись legacy M2M пропущена.",
-                    record.pk,
+                _log_record_form_mixin_event(
+                    NOTICE_LEVEL,
+                    "formats_unchanged_skip",
+                    "Поле formats не изменилось; повторная запись legacy M2M пропущена.",
+                    record_id=getattr(record, "pk", None),
                 )
                 return
             record.formats.set(self.cleaned_data["formats"])  # type: ignore[attr-defined]

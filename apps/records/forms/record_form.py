@@ -7,6 +7,7 @@ from typing import Callable, Optional
 from django import forms
 from django.core.exceptions import ValidationError
 
+from config.logging import NOTICE_LEVEL, log_event
 from .mixins import ApplyFieldsMixin
 from .validators import RecordIdentifierValidator
 from records.constants import (
@@ -23,6 +24,23 @@ from records.services.providers.redeye.redeye_service import RedeyeService
 from records.services.record_service import RecordService
 
 logger = logging.getLogger(__name__)
+_RECORD_FORM_COMPONENT = "record_form"
+
+
+def _log_record_form_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: object,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_RECORD_FORM_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 class RecordForm(ApplyFieldsMixin, forms.ModelForm):
@@ -112,9 +130,11 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 self.data.get("source") or self.initial.get("source") or SOURCE_DISCOGS
             )
             self._setup_fields_for_new_record(current_source)
-            logger.debug(
-                "Создание записи: источник=%s, поля формы ограничены под источник.",
-                current_source,
+            _log_record_form_event(
+                logging.DEBUG,
+                "create_source_selected",
+                "Создание записи: поля формы ограничены под источник.",
+                source=current_source,
             )
         else:
             self.fields.pop("source", None)
@@ -241,9 +261,12 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                         {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
                     )
                 except Exception:
-                    logger.warning(
+                    logger.exception(
                         "Не удалось разобрать карточку Redeye по URL во время валидации формы.",
-                        exc_info=True,
+                        extra={
+                            "component": _RECORD_FORM_COMPONENT,
+                            "event": "redeye_prefetch_failed",
+                        },
                     )
                     raise ValidationError(
                         {"source_url": self.REDEYE_URL_NOT_FOUND_ERROR}
@@ -310,7 +333,12 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
 
         try:
             if source == SOURCE_REDEYE:
-                logger.debug("Выбран redeye в качестве источника")
+                _log_record_form_event(
+                    logging.DEBUG,
+                    "source_selected",
+                    "Выбран источник Redeye.",
+                    source=SOURCE_REDEYE,
+                )
                 normalized_source_url = (source_url or "").strip()
                 fallback_catalog_number = (catalog_number or "").strip().upper()
                 if normalized_source_url:
@@ -345,11 +373,13 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                         source_url=normalized_source_url or None,
                     )
             elif source == SOURCE_DISCOGS:
-                logger.info(
-                    "Запрошен импорт Discogs: discogs_id=%s, barcode=%s, catalog_number=%s",
-                    discogs_id,
-                    barcode,
-                    catalog_number,
+                _log_record_form_event(
+                    logging.INFO,
+                    "discogs_import_requested",
+                    "Запрошен импорт Discogs.",
+                    discogs_id=discogs_id,
+                    barcode=barcode or "—",
+                    catalog_number=catalog_number or "—",
                 )
                 record, record_is_new = self.record_service.import_from_discogs(
                     discogs_id=discogs_id,
@@ -357,11 +387,21 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                     catalog_number=catalog_number,
                 )
             else:
-                logger.error("Неизвестный источник %s.", source)
+                _log_record_form_event(
+                    logging.ERROR,
+                    "unknown_source",
+                    "Неизвестный источник импорта.",
+                    source=source,
+                )
                 raise ValidationError({"source": f"Неизвестный источник {source}"})
 
             if record is None:
-                logger.error(f"Импорт из {source} не вернул объект записи.")
+                _log_record_form_event(
+                    logging.ERROR,
+                    "import_failed",
+                    "Импорт из источника не вернул объект записи.",
+                    source=source,
+                )
                 raise ValidationError(
                     {
                         "source": f"Не удалось получить данные записи из источника {source}."
@@ -371,10 +411,14 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             if not record_is_new:
                 self.duplicate_record = record
                 setattr(record, "_duplicate_record", True)
-            status = (
-                "Обнаружен дубликат" if not record_is_new else "Создана новая запись"
+            _log_record_form_event(
+                logging.INFO,
+                "import_result",
+                "Импорт из источника завершён.",
+                record_id=getattr(record, "pk", None),
+                source=source,
+                status="duplicate" if not record_is_new else "created",
             )
-            logger.info("%s (pk=%s) при импорте из %s.", status, record.pk, source)
 
             self._apply_scalar_fields(record=record)
             record.save()
@@ -384,7 +428,13 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
             return record
 
         except ValueError as err:
-            logger.info("Не удалось импортировать из %s: %s.", source, err)
+            _log_record_form_event(
+                NOTICE_LEVEL,
+                "import_failed",
+                "Импорт из источника завершился ошибкой.",
+                source=source,
+                error=str(err),
+            )
             if source == SOURCE_REDEYE:
                 error_field = "source_url"
             elif source == SOURCE_DISCOGS and self.cleaned_data.get("discogs_id"):
@@ -417,18 +467,22 @@ class RecordForm(ApplyFieldsMixin, forms.ModelForm):
                 structured_count = counter()
 
         if source != SOURCE_DISCOGS and structured_count == 0:
-            logger.info(
-                "Импорт из %s завершён без structured_formats для записи %s: это допустимо для не-Discogs источника.",
-                source,
-                record.pk,
+            _log_record_form_event(
+                logging.INFO,
+                "import_structured_formats_missing",
+                "Импорт завершён без structured_formats (допустимо для не-Discogs).",
+                source=source,
+                record_id=getattr(record, "pk", None),
             )
             return
 
-        logger.info(
-            "Импорт из %s завершён: record_id=%s, structured_formats=%d",
-            source,
-            record.pk,
-            structured_count,
+        _log_record_form_event(
+            logging.INFO,
+            "import_structured_formats_ready",
+            "Импорт завершён с structured_formats.",
+            source=source,
+            record_id=getattr(record, "pk", None),
+            structured_formats_total=structured_count,
         )
 
     class Media:
