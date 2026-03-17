@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import uuid
 from pathlib import Path
 
 import pytest
@@ -473,6 +475,141 @@ def test_youtube_provider_prefers_browser_profile_over_cookie_file(
         None,
     )
     assert "cookiefile" not in options
+
+
+@pytest.mark.django_db
+def test_youtube_provider_fills_missing_track_duration_from_metadata(
+    settings, monkeypatch
+):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    media_root = runtime_dir / f"media-duration-{uuid.uuid4().hex}"
+    temp_dir = runtime_dir / f"yt-audio-{uuid.uuid4().hex}"
+    media_root.mkdir()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            return {"duration": 185}
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            (self.path / "downloaded.mp3").write_bytes(b"mp3-data")
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+
+    try:
+        settings.MEDIA_ROOT = str(media_root)
+        record = Record.objects.create(title="Duration Record")
+        track = Track.objects.create(
+            record=record,
+            position="A1",
+            position_index=1,
+            title="Duration Track",
+            youtube_url="https://www.youtube.com/watch?v=duration-track",
+            duration="",
+        )
+
+        saved_name = YouTubeAudioEnrichmentProvider.download_audio_to_track(track=track)
+
+        track.refresh_from_db()
+
+        assert saved_name
+        assert track.duration == "03:05"
+        assert track.audio_preview.name.endswith("duration-track.mp3")
+    finally:
+        shutil.rmtree(media_root, ignore_errors=True)
+
+
+@pytest.mark.django_db
+def test_youtube_provider_keeps_existing_track_duration_from_source(
+    settings, monkeypatch
+):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    media_root = runtime_dir / f"media-duration-{uuid.uuid4().hex}"
+    temp_dir = runtime_dir / f"yt-audio-{uuid.uuid4().hex}"
+    media_root.mkdir()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            return {"duration": 185}
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            (self.path / "downloaded.mp3").write_bytes(b"mp3-data")
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+
+    try:
+        settings.MEDIA_ROOT = str(media_root)
+        record = Record.objects.create(title="Existing Duration Record")
+        track = Track.objects.create(
+            record=record,
+            position="A1",
+            position_index=1,
+            title="Existing Duration Track",
+            youtube_url="https://www.youtube.com/watch?v=existing-duration-track",
+            duration="04:44",
+        )
+
+        saved_name = YouTubeAudioEnrichmentProvider.download_audio_to_track(track=track)
+
+        track.refresh_from_db()
+
+        assert saved_name
+        assert track.duration == "04:44"
+    finally:
+        shutil.rmtree(media_root, ignore_errors=True)
 
 
 def test_youtube_session_service_resolves_browser_profile(settings):

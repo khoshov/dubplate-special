@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -29,6 +30,7 @@ from records.models import (
 from records.services.audio.providers.youtube_session import YouTubeSessionService
 
 logger = logging.getLogger(__name__)
+_DURATION_STRING_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
 
 
 class PayloadValidationError(ValueError):
@@ -390,6 +392,34 @@ class YouTubeAudioEnrichmentProvider:
         base_name = slugify(track.title or "audio") or "audio"
         return f"{base_name}.mp3"
 
+    @staticmethod
+    def _format_duration_seconds(total_seconds: int) -> str:
+        total_seconds = max(0, int(total_seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    @classmethod
+    def _extract_track_duration(cls, info: dict[str, Any] | None) -> str | None:
+        if not isinstance(info, dict):
+            return None
+
+        raw_duration = info.get("duration")
+        if isinstance(raw_duration, (int, float)):
+            return cls._format_duration_seconds(round(raw_duration))
+        if isinstance(raw_duration, str):
+            try:
+                return cls._format_duration_seconds(round(float(raw_duration)))
+            except ValueError:
+                pass
+
+        raw_duration_string = str(info.get("duration_string") or "").strip()
+        if _DURATION_STRING_RE.match(raw_duration_string):
+            return raw_duration_string
+        return None
+
     @classmethod
     def _resolve_cookie_file(cls) -> str | None:
         configured_path = str(
@@ -542,7 +572,7 @@ class YouTubeAudioEnrichmentProvider:
             ydl_options = cls._build_ydl_options(temp_dir)
             try:
                 with YoutubeDL(ydl_options) as ydl:
-                    ydl.extract_info(youtube_url, download=True)
+                    info = ydl.extract_info(youtube_url, download=True)
             except DownloadError as exc:
                 error_text = str(exc)
                 if "Sign in to confirm you" in error_text:
@@ -557,6 +587,10 @@ class YouTubeAudioEnrichmentProvider:
             mp3_path = cls._find_downloaded_mp3(temp_dir)
             old_name = existing_name
             file_name = cls._build_file_name(track)
+            if not str(track.duration or "").strip():
+                resolved_duration = cls._extract_track_duration(info)
+                if resolved_duration:
+                    track.duration = resolved_duration
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()
