@@ -156,7 +156,9 @@ def test_record_format_inline_formset_allows_clearing_existing_row() -> None:
 
 
 @pytest.mark.django_db
-def test_record_format_inline_formset_assigns_variant_of_format_to_first_manual_row() -> None:
+def test_record_format_inline_formset_assigns_variant_of_format_to_first_manual_row() -> (
+    None
+):
     admin_user = _make_superuser()
     record = Record.objects.create(title="Manual structured row")
 
@@ -339,13 +341,17 @@ def test_change_page_preserves_selected_variant_after_save(client) -> None:
     record.refresh_from_db()
     assert record.active_structured_format_variant == 2
 
-    reload_response = client.get(reverse("admin:records_record_change", args=[record.pk]))
+    reload_response = client.get(
+        reverse("admin:records_record_change", args=[record.pk])
+    )
     assert reload_response.status_code == 200
     assert 'value="2"' in reload_response.content.decode("utf-8")
 
 
 @pytest.mark.django_db
-def test_change_page_shows_error_for_incomplete_active_structured_format(client) -> None:
+def test_change_page_shows_error_for_incomplete_active_structured_format(
+    client,
+) -> None:
     admin_user = _make_superuser()
     client.force_login(admin_user)
     record = Record.objects.create(

@@ -135,16 +135,12 @@ def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkey
 
     all_messages = html.unescape("\n".join(msg for msg, _ in admin.messages))
     assert "С ошибками: 1." not in all_messages
-    assert (
-        "Обновление записи с id #"
-        in all_messages
-    )
+    assert "Обновление записи с id #" in all_messages
     assert "«R1» из Redeye невозможно" in all_messages
     assert "на сайте не найден релиз с каталожным номером 'SP34'" in all_messages
     assert exception_calls == []
     assert any(
-        "Ожидаемая ошибка при обновлении" in str(args[0])
-        for args, _ in info_calls
+        "Ожидаемая ошибка при обновлении" in str(args[0]) for args, _ in info_calls
     )
 
 

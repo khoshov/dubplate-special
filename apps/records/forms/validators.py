@@ -117,6 +117,7 @@ class RecordIdentifierValidator:
         Raises:
             ValidationError: Если не указан ни один идентификатор.
         """
+
         def _has_value(key: str) -> bool:
             value = cleaned_data.get(key)
             if value not in (None, ""):
