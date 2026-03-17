@@ -6,7 +6,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.contrib import admin
 from django.contrib import messages
 from django.core.exceptions import ValidationError
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.shortcuts import get_object_or_404
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
@@ -23,6 +24,7 @@ from records.models import (
     Genre,
     Record,
     Style,
+    Track,
     VKPublicationLog,
 )
 from records.services.audio.audio_service import AudioService
@@ -260,12 +262,59 @@ class RecordAdmin(RedeyeAudioRefreshMixin, admin.ModelAdmin):
         base_urls = super().get_urls()
         custom = [
             path(
+                "<path:object_id>/tracks/<path:track_id>/delete-mp3/",
+                self.admin_site.admin_view(self.delete_track_mp3_view),
+                name="records_record_track_delete_mp3",
+            ),
+            path(
                 "vk-schedule/",
                 self.admin_site.admin_view(self.vk_schedule_view),
                 name="records_record_vk_schedule",
             ),
         ]
         return custom + base_urls
+
+    def delete_track_mp3_view(
+        self, request: HttpRequest, object_id: str, track_id: str
+    ) -> JsonResponse:
+        """Удаляет mp3 трека сразу и очищает поле в БД."""
+        if request.method != "POST":
+            return JsonResponse(
+                {"ok": False, "error": "Разрешён только POST-запрос."},
+                status=405,
+            )
+
+        record = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, record):
+            return JsonResponse(
+                {"ok": False, "error": "Недостаточно прав для удаления mp3."},
+                status=403,
+            )
+
+        track = get_object_or_404(Track, pk=track_id, record=record)
+        audio_name = str(getattr(track.audio_preview, "name", "") or "").strip()
+        if not audio_name:
+            return JsonResponse(
+                {"ok": True, "deleted": False, "message": "Файл уже отсутствует."}
+            )
+
+        try:
+            track.audio_preview.delete(save=False)
+            track.audio_preview = None
+            track.save(update_fields=["audio_preview", "modified"])
+        except Exception as exc:
+            logger.exception(
+                "Не удалось удалить mp3 трека #%s у записи #%s: %s",
+                track.pk,
+                record.pk,
+                exc,
+            )
+            return JsonResponse(
+                {"ok": False, "error": "Не удалось удалить mp3-файл."},
+                status=500,
+            )
+
+        return JsonResponse({"ok": True, "deleted": True})
 
     def vk_schedule_view(self, request: HttpRequest) -> HttpResponse:
         if not self.has_change_permission(request):

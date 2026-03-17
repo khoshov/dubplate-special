@@ -24,10 +24,18 @@ class DummyIdentifier:
 
 
 class DummyTrack:
-    def __init__(self, title: str, position: str = "", duration: str | None = None):
+    def __init__(
+        self,
+        title: str,
+        position: str = "",
+        duration: str | None = None,
+        track_type: str | None = "track",
+    ):
         self.title = title
         self.position = position
         self.duration = duration
+        self.type_ = track_type
+        self.data = {"type_": track_type} if track_type is not None else {}
 
 
 class DummyVideo:
@@ -281,6 +289,85 @@ def test_adapt_discogs_release_leaves_track_video_empty_when_titles_do_not_match
     payload = adapt_discogs_release(release)
 
     assert payload["tracks"][0]["youtube_url"] is None
+
+
+def test_adapt_discogs_release_skips_headings_and_matches_video_by_position_with_duplicates():
+    release = DummyRelease(
+        release_id=25202965,
+        year=2022,
+        released="2022-11-15",
+        videos=[
+            DummyVideo(
+                "Aladdin - Mash Up Yer Know (Aphrodite Recordings APH-69 A1) 2022",
+                "https://www.youtube.com/watch?v=Sr6seAWf83A",
+            ),
+            DummyVideo(
+                "Aladdin - Mash Up Yer Know (Aphrodite Recordings APH-69 A1) 2022",
+                "https://www.youtube.com/watch?v=Sr6seAWf83A",
+            ),
+            DummyVideo(
+                "Aladdin / DJ Aphrodite - Mash Up Yer Know (1994)",
+                "https://www.youtube.com/watch?v=DW-blpeIweo",
+            ),
+            DummyVideo(
+                "Aladdin - So Good (Aphrodite Recordings APH-69 A2) 2022",
+                "https://www.youtube.com/watch?v=QrKxoTWiyZU",
+            ),
+            DummyVideo(
+                "DJ Aphrodite / Aladdin - So Good (1994)",
+                "https://www.youtube.com/watch?v=JjLd2cZ5Liw",
+            ),
+            DummyVideo(
+                "Aladdin - We Enter (Heavenly Remix) (Aphrodite Recordings APH-69 B1) 2022",
+                "https://www.youtube.com/watch?v=XoinYdLw1M4",
+            ),
+            DummyVideo(
+                "Aladdin / DJ Aphrodite - We Enter (Heavenly Remix 1994)",
+                "https://www.youtube.com/watch?v=AOnzFBHqBh4",
+            ),
+            DummyVideo(
+                "Aladdin - Geni (Lost In Zanzibar) (Aphrodite Recordings APH-69 B2) 2022",
+                "https://www.youtube.com/watch?v=0sJCUAKoTIo",
+            ),
+        ],
+    )
+    release.tracklist = [
+        DummyTrack("That", track_type="heading"),
+        DummyTrack("Mash Up Yer Know", "A1", None, track_type="track"),
+        DummyTrack("So Good", "A2", None, track_type="track"),
+        DummyTrack("This", track_type="heading"),
+        DummyTrack("We Enter (Heavenly Remix)", "B1", None, track_type="track"),
+        DummyTrack("Geni (Lost In Zanzibar)", "B2", None, track_type="track"),
+    ]
+
+    payload = adapt_discogs_release(release)
+
+    tracks = payload["tracks"]
+    assert [track["title"] for track in tracks] == [
+        "Mash Up Yer Know",
+        "So Good",
+        "We Enter (Heavenly Remix)",
+        "Geni (Lost In Zanzibar)",
+    ]
+    assert [track["position_index"] for track in tracks] == [1, 2, 3, 4]
+
+    by_title = {track["title"]: track for track in tracks}
+    assert (
+        by_title["Mash Up Yer Know"]["youtube_url"]
+        == "https://www.youtube.com/watch?v=Sr6seAWf83A"
+    )
+    assert (
+        by_title["So Good"]["youtube_url"]
+        == "https://www.youtube.com/watch?v=QrKxoTWiyZU"
+    )
+    assert (
+        by_title["We Enter (Heavenly Remix)"]["youtube_url"]
+        == "https://www.youtube.com/watch?v=XoinYdLw1M4"
+    )
+    assert (
+        by_title["Geni (Lost In Zanzibar)"]["youtube_url"]
+        == "https://www.youtube.com/watch?v=0sJCUAKoTIo"
+    )
 
 
 def test_adapt_discogs_release_matches_remastered_titles_and_skips_full_album_video():

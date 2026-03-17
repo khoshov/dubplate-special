@@ -104,6 +104,9 @@ def test_change_page_shows_blank_structured_format_row_and_legacy_formats(
     content = response.content.decode("utf-8")
     assert 'id="id_structured_formats-0-carrier"' in content
     assert 'id="id_structured_formats-0-format_name"' in content
+    assert 'id="structured_formats-empty"' in content
+    assert "empty-form" in content
+    assert 'id="structured_formats-1"' not in content
     assert "structured-format-variant-select" not in content
     assert "Нет структурированных форматов Discogs." not in content
     assert "Структурированный формат релиза" in content

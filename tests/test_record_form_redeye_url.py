@@ -67,6 +67,53 @@ class RecordFormRedeyeImportTests(SimpleTestCase):
             source_url=source_url,
         )
 
+    def test_save_redeye_prefers_url_path_when_catalog_autofilled_in_clean(
+        self,
+    ) -> None:
+        source_url = "https://www.redeyerecords.co.uk/vinyl/12345-test-release"
+        payload = {"catalog_number": "RT999", "structured_formats": []}
+        record = DummyRecord(pk=79)
+
+        form = RecordForm(
+            data={
+                "source": SOURCE_REDEYE,
+                "source_url": source_url,
+                "barcode": "",
+                "catalog_number": "",
+            }
+        )
+
+        with patch.object(
+            form.record_service,
+            "parse_redeye_product_by_url",
+            return_value=payload,
+        ) as parse_validate_mock:
+            self.assertTrue(form.is_valid())
+
+        self.assertEqual(form.cleaned_data["catalog_number"], "RT999")
+
+        with (
+            patch.object(
+                form.record_service,
+                "parse_redeye_product_by_url",
+            ) as parse_save_mock,
+            patch.object(
+                form.record_service,
+                "import_from_redeye",
+                return_value=(record, True),
+            ) as import_mock,
+        ):
+            saved_record = form.save()
+
+        self.assertIs(saved_record, record)
+        parse_validate_mock.assert_called_once_with(source_url)
+        parse_save_mock.assert_not_called()
+        import_mock.assert_called_once_with(
+            catalog_number="RT999",
+            raw_payload={"catalog_number": "RT999"},
+            source_url=source_url,
+        )
+
     def test_redeye_invalid_record_shows_source_url_error(self) -> None:
         source_url = "https://www.redeyerecords.co.uk/vinyl/unknown-record"
         form = RecordForm(

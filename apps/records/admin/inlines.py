@@ -4,8 +4,10 @@ from typing import Optional
 
 from django import forms
 from django.contrib import admin
-from django.http import HttpRequest
 from django.forms.models import BaseInlineFormSet
+from django.http import HttpRequest
+from django.urls import reverse
+from django.utils.html import format_html
 
 from ..models import Record, StructuredFormat, Track
 from ..services.record_assembly import get_structured_format_incomplete_error
@@ -16,13 +18,25 @@ class TrackInline(admin.TabularInline):
     Inline-администратор для треков.
 
     Отображает треки записи в табличном виде.
-    Треки доступны только для чтения и не могут быть добавлены через админку.
+    Большинство полей редактируемы, но порядок и mp3 остаются readonly.
     """
 
     model = Track
+
+    class TrackInlineForm(forms.ModelForm):
+        class Meta:
+            model = Track
+            fields = "__all__"
+            widgets = {
+                "youtube_url": forms.URLInput(attrs={"class": "vURLField"}),
+            }
+
+    form = TrackInlineForm
     extra = 0
     can_delete = False
     show_change_link = False
+    template = "admin/edit_inline/track_tabular.html"
+    classes = ("track-inline",)
 
     fields = (
         "position_index",
@@ -31,24 +45,93 @@ class TrackInline(admin.TabularInline):
         "duration",
         "youtube_url",
         "audio_preview",
+        "audio_preview_actions",
     )
     readonly_fields = (
         "position_index",
-        "position",
-        "title",
-        "duration",
-        "youtube_url",
         "audio_preview",
+        "audio_preview_actions",
     )
 
     class Media:
         css = {"all": ("records/admin/track_inline.css",)}
+        js = ("records/admin/track_inline_delete_mp3.js",)
+
+    def formfield_for_dbfield(self, db_field, request: HttpRequest, **kwargs):
+        """Рендерит youtube_url как обычный URLInput без блока Currently/Change."""
+        if db_field.name == "youtube_url":
+            kwargs["widget"] = forms.URLInput(attrs={"class": "vURLField"})
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
+
+    @admin.display(description="")
+    def audio_preview_actions(self, obj: Track) -> str:
+        """Показывает кнопку мгновенного удаления mp3 для трека."""
+        if not obj.pk:
+            return "-"
+
+        audio_name = str(getattr(obj.audio_preview, "name", "") or "").strip()
+        if not audio_name:
+            return "-"
+
+        delete_url = reverse(
+            "admin:records_record_track_delete_mp3",
+            args=[obj.record_id, obj.pk],
+        )
+        return format_html(
+            (
+                '<div class="track-audio-controls" data-has-audio="1">'
+                '<button type="button" class="button js-track-delete-mp3"'
+                ' data-delete-mp3-url="{delete_url}">Удалить mp3</button>'
+                "</div>"
+            ),
+            delete_url=delete_url,
+        )
 
     def has_add_permission(
         self, request: HttpRequest, obj: Optional[Record] = None
     ) -> bool:
         """Запрещает добавление треков через админку (импортируются из внешних источников)."""
         return False
+
+    def get_formset(self, request: HttpRequest, obj: Optional[Record] = None, **kwargs):
+        """Проставляет одинаковые размеры полей по максимуму в колонке."""
+        title_size = 12
+        youtube_size = 2
+
+        if obj is not None and getattr(obj, "pk", None):
+            tracks = list(obj.tracks.all().only("title", "youtube_url"))
+            title_size = max(
+                12,
+                min(
+                    80,
+                    max((len(str(track.title or "")) for track in tracks), default=0)
+                    + 2,
+                ),
+            )
+            youtube_size = max(
+                2,
+                min(
+                    60,
+                    max(
+                        (len(str(track.youtube_url or "")) for track in tracks),
+                        default=0,
+                    )
+                    + 2,
+                ),
+            )
+
+        base_form = self.form
+
+        class SizedTrackInlineForm(base_form):
+            def __init__(self, *args, **form_kwargs):
+                super().__init__(*args, **form_kwargs)
+                self.fields["position"].widget.attrs["size"] = "4"
+                self.fields["duration"].widget.attrs["size"] = "6"
+                self.fields["title"].widget.attrs["size"] = str(title_size)
+                self.fields["youtube_url"].widget.attrs["size"] = str(youtube_size)
+
+        kwargs["form"] = SizedTrackInlineForm
+        return super().get_formset(request, obj, **kwargs)
 
 
 class StructuredFormatInlineForm(forms.ModelForm):
