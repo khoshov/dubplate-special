@@ -164,7 +164,12 @@ def update_record_from_payload(record: Record, data: Mapping[str, object]) -> Re
     attach_relations(record, data)
     sync_format_state(record, data, preserve_existing_legacy_formats=True)
     tracks_payload = _seq_of_maps(data.get("tracks"))
-    create_tracklist(record, tracks_payload, replace=True)
+    create_tracklist(
+        record,
+        tracks_payload,
+        replace=True,
+        preserve_existing_audio_previews=True,
+    )
 
     logger.info(
         "Запись обновлена из нормализованных данных (pk=%s, CAT=%s)",
@@ -230,6 +235,7 @@ def create_tracklist(
     tracks: Sequence[Mapping[str, object]],
     *,
     replace: bool = True,
+    preserve_existing_audio_previews: bool = False,
 ) -> int:
     """
     Метод создаёт треклист записи.
@@ -245,7 +251,12 @@ def create_tracklist(
     Returns:
         int: Количество созданных треков.
     """
-    created_tracks = create_tracks_for_record(record, tracks, replace=replace)
+    created_tracks = create_tracks_for_record(
+        record,
+        tracks,
+        replace=replace,
+        preserve_existing_audio_previews=preserve_existing_audio_previews,
+    )
     created_count = len(created_tracks)
     logger.info("Создан треклист (%d треков) для записи %s", created_count, record.pk)
     return created_count

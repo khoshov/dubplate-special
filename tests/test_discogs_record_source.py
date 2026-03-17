@@ -1,6 +1,7 @@
 import pytest
+from django.core.files.base import ContentFile
 
-from records.models import Artist, Format, Label, Record, RecordSource
+from records.models import Artist, Format, Label, Record, RecordSource, Track
 from records.services import record_service as record_service_module
 from records.services.record_service import RecordService
 
@@ -362,3 +363,67 @@ def test_update_from_discogs_reuses_existing_suffixed_artist_label_and_does_not_
     assert updated_record.label is not None
     assert updated_record.label.name == "Kong"
     assert list(updated_record.artists.values_list("name", flat=True)) == ["Jerome"]
+
+
+@pytest.mark.django_db
+def test_update_from_discogs_preserves_existing_track_audio_preview(monkeypatch):
+    monkeypatch.setattr(
+        record_service_module,
+        "adapt_discogs_release",
+        lambda _release: {
+            "title": "Updated from Discogs",
+            "discogs_id": 991,
+            "release_year": 2025,
+            "release_month": 9,
+            "release_day": 26,
+            "structured_formats": [],
+            "tracks": [
+                {
+                    "position": "A1",
+                    "title": "Keep Me",
+                    "duration": "03:00",
+                    "youtube_url": "https://www.youtube.com/watch?v=keep",
+                },
+                {
+                    "position": "A2",
+                    "title": "New Track",
+                    "duration": "02:00",
+                    "youtube_url": "https://www.youtube.com/watch?v=new",
+                },
+            ],
+        },
+    )
+
+    record = Record.objects.create(
+        title="Initial Title",
+        discogs_id=991,
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    old_track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Keep Me",
+        duration="03:00",
+    )
+    old_track.audio_preview.save("keep-me.mp3", ContentFile(b"mp3"), save=True)
+    old_audio_name = old_track.audio_preview.name
+
+    service = RecordService(
+        discogs_service=DiscogsUpdateStub(
+            DummyRelease(release_id=991, data={"id": 991})
+        ),
+        redeye_service=DummyRedeyeService(),
+        image_service=DummyImageService(),
+        audio_service=DummyAudioService(),
+    )
+
+    updated_record = service.update_from_discogs(record, update_image=False)
+    updated_track = updated_record.tracks.get(title="Keep Me")
+    new_track = updated_record.tracks.get(title="New Track")
+
+    assert updated_track.audio_preview.name == old_audio_name
+    assert updated_track.youtube_url == "https://www.youtube.com/watch?v=keep"
+    assert not new_track.audio_preview
