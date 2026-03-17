@@ -284,6 +284,27 @@ def _save_temp_to_filefield(
     return getattr(track.audio_preview, "name", "")
 
 
+def _delete_replaced_audio_file(
+    track: TrackLike,
+    *,
+    old_name: str,
+    saved_name: str,
+) -> None:
+    """Удаляет прежний mp3-файл, если при сохранении был создан новый путь."""
+    if not old_name or old_name == saved_name:
+        return
+
+    try:
+        track.audio_preview.storage.delete(old_name)
+    except Exception as error:  # noqa: BLE001
+        logger.warning(
+            "Не удалось удалить прежний mp3 после перезаписи (track=%s, old_file=%s): %s.",
+            getattr(track, "pk", None),
+            old_name,
+            error,
+        )
+
+
 def download_audio_to_track(
     track: TrackLike,
     url: str,
@@ -350,7 +371,14 @@ def download_audio_to_track(
         if not tmp_path:
             return None
 
+        old_name = str(existing_name or "").strip()
         saved_name = _save_temp_to_filefield(track, url, tmp_path, content_type)
+        if overwrite:
+            _delete_replaced_audio_file(
+                track,
+                old_name=old_name,
+                saved_name=saved_name,
+            )
         logger.info(
             "Аудио сохранено: track=%s, file=%s (источник: %s).",
             getattr(track, "pk", None),

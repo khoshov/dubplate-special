@@ -20,6 +20,7 @@ from django.utils.text import slugify
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
+from config.logging import log_event
 from records.models import (
     AudioEnrichmentJob,
     AudioEnrichmentJobRecord,
@@ -31,6 +32,7 @@ from records.services.audio.providers.youtube_session import YouTubeSessionServi
 
 logger = logging.getLogger(__name__)
 _DURATION_STRING_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
+_YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
 
 
 class PayloadValidationError(ValueError):
@@ -60,16 +62,40 @@ class _YTDLPLogger:
     """Адаптер логгера для yt-dlp."""
 
     def debug(self, message: str) -> None:
-        logger.debug("yt-dlp: %s", message)
+        log_event(
+            logger,
+            logging.DEBUG,
+            f"yt-dlp: {message}",
+            component=_YOUTUBE_AUDIO_COMPONENT,
+            event="ytdlp_raw",
+        )
 
     def info(self, message: str) -> None:
-        logger.info("yt-dlp: %s", message)
+        log_event(
+            logger,
+            logging.DEBUG,
+            f"yt-dlp: {message}",
+            component=_YOUTUBE_AUDIO_COMPONENT,
+            event="ytdlp_raw",
+        )
 
     def warning(self, message: str) -> None:
-        logger.warning("yt-dlp: %s", message)
+        log_event(
+            logger,
+            logging.DEBUG,
+            f"yt-dlp: {message}",
+            component=_YOUTUBE_AUDIO_COMPONENT,
+            event="ytdlp_raw",
+        )
 
     def error(self, message: str) -> None:
-        logger.error("yt-dlp: %s", message)
+        log_event(
+            logger,
+            logging.DEBUG,
+            f"yt-dlp: {message}",
+            component=_YOUTUBE_AUDIO_COMPONENT,
+            event="ytdlp_raw",
+        )
 
 
 @dataclass(frozen=True)
@@ -223,16 +249,18 @@ class YouTubeAudioEnrichmentProvider:
         previous_audio_present: bool,
     ) -> None:
         """Пишет структурированный лог итога по треку."""
-        logger.info(
-            "youtube_enrichment_track_outcome "
-            "record_id=%s track_id=%s status=%s reason=%s attempts=%s "
-            "previous_audio_present=%s",
-            record_id,
-            track_id,
-            status,
-            reason_code or "none",
-            attempts,
-            previous_audio_present,
+        log_event(
+            logger,
+            logging.INFO,
+            "Зафиксирован итог обработки трека YouTube-задачей.",
+            component=_YOUTUBE_AUDIO_COMPONENT,
+            event="track_outcome",
+            record_id=record_id,
+            track_id=track_id,
+            status=status,
+            reason=reason_code or "none",
+            attempts=attempts,
+            previous_audio_present=previous_audio_present,
         )
 
     @staticmethod
@@ -577,6 +605,16 @@ class YouTubeAudioEnrichmentProvider:
                 error_text = str(exc)
                 if "Sign in to confirm you" in error_text:
                     YouTubeSessionService.mark_state_auth_required(error_text)
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "YouTube запросил повторную авторизацию во время скачивания.",
+                        component=_YOUTUBE_AUDIO_COMPONENT,
+                        event="download_auth_required",
+                        record_id=track.record_id,
+                        track_id=track.id,
+                        youtube_url=youtube_url,
+                    )
                     raise cls._build_authentication_error() from exc
                 raise RuntimeError(f"yt-dlp не смог скачать аудио: {exc}") from exc
             except FileNotFoundError as exc:
@@ -601,9 +639,15 @@ class YouTubeAudioEnrichmentProvider:
                 try:
                     track.audio_preview.storage.delete(old_name)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Не удалось удалить старый mp3 трека %s: %s",
-                        track.pk,
-                        exc,
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Не удалось удалить прежний mp3 после обновления трека.",
+                        component=_YOUTUBE_AUDIO_COMPONENT,
+                        event="old_audio_delete_failed",
+                        record_id=track.record_id,
+                        track_id=track.pk,
+                        old_audio=old_name,
+                        error=str(exc),
                     )
             return saved_name or None

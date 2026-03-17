@@ -18,7 +18,10 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
+from config.logging import NOTICE_LEVEL, log_event
+
 logger = logging.getLogger(__name__)
+_YOUTUBE_SESSION_COMPONENT = "youtube_session"
 
 _THIRDPARTY_BLOCKLIST = (
     "doubleclick",
@@ -57,6 +60,22 @@ _AUTHENTICATED_COOKIE_DOMAIN_HINTS = (
 )
 _GOOGLE_LOGIN_EMAIL_SELECTOR = 'input[type="email"]'
 _GOOGLE_LOGIN_PASSWORD_SELECTOR = 'input[type="password"]'
+
+
+def _log_youtube_session_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: Any,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_YOUTUBE_SESSION_COMPONENT,
+        event=event,
+        **context,
+    )
 
 
 @dataclass(frozen=True)
@@ -206,6 +225,12 @@ class YouTubeSessionService:
         cls.mark_state_login_in_progress(
             "Запущена интерактивная авторизация YouTube-сессии."
         )
+        _log_youtube_session_event(
+            logging.INFO,
+            "login_start",
+            "Запущена интерактивная авторизация YouTube-сессии.",
+            profile_ready=cls.profile_is_ready(),
+        )
         try:
             cls._clear_profile_singleton_artifacts()
             with sync_playwright() as pw:
@@ -247,7 +272,12 @@ class YouTubeSessionService:
                     with contextlib.suppress(PWError):
                         context.close()
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Не удалось выполнить интерактивный логин YouTube: %s", exc)
+            _log_youtube_session_event(
+                logging.WARNING,
+                "login_failed",
+                "Не удалось выполнить интерактивную авторизацию YouTube-сессии.",
+                error=str(exc),
+            )
             cls.mark_state_auth_required(
                 f"Ошибка интерактивной авторизации YouTube: {exc!s}"
             )
@@ -265,9 +295,21 @@ class YouTubeSessionService:
                 "YouTube-сессия авторизована и сохранена в persistent profile.",
                 login_completed=True,
             )
+            _log_youtube_session_event(
+                NOTICE_LEVEL,
+                "login_success",
+                "YouTube-сессия успешно авторизована и сохранена в persistent profile.",
+                profile_ready=cls.profile_is_ready(),
+            )
         else:
             cls.mark_state_auth_required(
                 "Требуется повторная авторизация YouTube-сессии."
+            )
+            _log_youtube_session_event(
+                logging.WARNING,
+                "login_timeout",
+                "Не удалось подтвердить авторизацию YouTube-сессии в отведённое время.",
+                profile_ready=cls.profile_is_ready(),
             )
 
         return YouTubeSessionLoginResult(
@@ -307,6 +349,12 @@ class YouTubeSessionService:
         profile_ready = False
         navigated = False
         seeded_from_cookie_file = False
+        _log_youtube_session_event(
+            logging.DEBUG,
+            "refresh_start",
+            "Запущено обновление persistent profile YouTube.",
+            force_seed_from_cookie_file=force_seed_from_cookie_file,
+        )
         try:
             cls._clear_profile_singleton_artifacts()
             with sync_playwright() as pw:
@@ -356,11 +404,20 @@ class YouTubeSessionService:
                     try:
                         context.close()
                     except PWError as exc:
-                        logger.debug(
-                            "Ошибка закрытия YouTube persistent context: %s", exc
+                        _log_youtube_session_event(
+                            logging.DEBUG,
+                            "refresh_context_close_failed",
+                            "Не удалось корректно закрыть persistent context YouTube.",
+                            error=str(exc),
                         )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Не удалось обновить YouTube-сессию: %s", exc)
+            _log_youtube_session_event(
+                logging.WARNING,
+                "refresh_failed",
+                "Не удалось обновить YouTube-сессию.",
+                error=str(exc),
+                seeded_from_cookie_file=seeded_from_cookie_file,
+            )
             return YouTubeSessionRefreshResult(
                 refreshed=False,
                 profile_ready=cls.profile_is_ready(),
@@ -371,7 +428,7 @@ class YouTubeSessionService:
         finally:
             cls._release_lock(lock_fd)
 
-        return YouTubeSessionRefreshResult(
+        result = YouTubeSessionRefreshResult(
             refreshed=navigated or seeded_from_cookie_file,
             profile_ready=profile_ready,
             waited_for_existing_refresh=waited_for_existing_refresh,
@@ -382,6 +439,17 @@ class YouTubeSessionService:
                 else "Профиль YouTube не удалось обновить через браузер."
             ),
         )
+        _log_youtube_session_event(
+            logging.DEBUG,
+            "refresh_finish",
+            "Обновление persistent profile YouTube завершено.",
+            refreshed=result.refreshed,
+            profile_ready=result.profile_ready,
+            waited=result.waited_for_existing_refresh,
+            seeded_from_cookie_file=result.seeded_from_cookie_file,
+            details=result.message,
+        )
+        return result
 
     @classmethod
     def _resolve_page(cls, context: BrowserContext) -> Page:
@@ -494,9 +562,18 @@ class YouTubeSessionService:
             with contextlib.suppress(PWTimeout, PWError):
                 page.wait_for_load_state("domcontentloaded", timeout=10_000)
         except PWTimeout:
-            logger.info("YouTube login autofill: поле email не найдено.")
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "login_autofill_email_missing",
+                "Поле email не найдено для автоподстановки.",
+            )
         except PWError as exc:
-            logger.info("YouTube login autofill: не удалось заполнить email: %s", exc)
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "login_autofill_email_failed",
+                "Не удалось автоматически заполнить email.",
+                error=str(exc),
+            )
 
     @classmethod
     def _prefill_password_step(cls, page: Page, password: str) -> None:
@@ -512,13 +589,19 @@ class YouTubeSessionService:
             except PWTimeout:
                 page.wait_for_timeout(500)
             except PWError as exc:
-                logger.info(
-                    "YouTube login autofill: не удалось заполнить пароль: %s",
-                    exc,
+                _log_youtube_session_event(
+                    logging.DEBUG,
+                    "login_autofill_password_failed",
+                    "Не удалось автоматически заполнить пароль.",
+                    error=str(exc),
                 )
                 return
         else:
-            logger.info("YouTube login autofill: поле пароля не найдено.")
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "login_autofill_password_missing",
+                "Поле пароля не найдено для автоподстановки.",
+            )
 
     @classmethod
     def _click_google_step(cls, page: Page, root_selector: str) -> None:
@@ -540,7 +623,11 @@ class YouTubeSessionService:
     def _seed_context_from_cookie_file(cls, context: BrowserContext) -> bool:
         cookie_file = cls.cookie_file()
         if cookie_file is None:
-            logger.info("YouTube session bootstrap: cookies.txt не найден.")
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "bootstrap_cookie_file_missing",
+                "cookies.txt не найден для bootstrap YouTube-сессии.",
+            )
             return False
 
         jar = MozillaCookieJar(str(cookie_file))
@@ -567,16 +654,21 @@ class YouTubeSessionService:
             cookies.append(payload)
 
         if not cookies:
-            logger.info(
-                "YouTube session bootstrap: в cookies.txt нет импортируемых cookies."
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "bootstrap_cookie_file_empty",
+                "В cookies.txt нет импортируемых cookies.",
+                cookie_file=str(cookie_file),
             )
             return False
 
         context.add_cookies(cookies)
-        logger.info(
-            "YouTube session bootstrap: импортировано cookies из %s, count=%s",
-            cookie_file,
-            len(cookies),
+        _log_youtube_session_event(
+            NOTICE_LEVEL,
+            "bootstrap_cookie_file_imported",
+            "В persistent profile импортированы cookies из cookies.txt.",
+            cookie_file=str(cookie_file),
+            cookies_count=len(cookies),
         )
         return True
 
@@ -664,7 +756,12 @@ class YouTubeSessionService:
                     route.abort()
                     return
             except Exception as exc:  # noqa: BLE001
-                logger.debug("Ошибка сетевого фильтра YouTube session: %s", exc)
+                _log_youtube_session_event(
+                    logging.DEBUG,
+                    "network_filter_failed",
+                    "Ошибка сетевого фильтра YouTube-сессии.",
+                    error=str(exc),
+                )
             route.continue_()
 
         context.route("**/*", _route)
@@ -675,10 +772,19 @@ class YouTubeSessionService:
             page.goto(url, wait_until="domcontentloaded")
             return True
         except PWTimeout:
-            logger.info(
-                "YouTube session refresh: навигация превысила таймаут для %s", url
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "refresh_navigation_timeout",
+                "Навигация к странице обновления YouTube-сессии превысила таймаут.",
+                url=url,
             )
             return False
         except PWError as exc:
-            logger.info("YouTube session refresh: ошибка навигации к %s: %s", url, exc)
+            _log_youtube_session_event(
+                logging.DEBUG,
+                "refresh_navigation_failed",
+                "Ошибка навигации к странице обновления YouTube-сессии.",
+                url=url,
+                error=str(exc),
+            )
             return False

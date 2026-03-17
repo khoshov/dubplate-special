@@ -16,6 +16,8 @@ from pathlib import Path
 
 import environ
 
+from config.logging import build_logging_config
+
 # Initialize environment variables
 env = environ.Env()
 
@@ -521,52 +523,24 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
 ]
 
-DJANGO_LOG_LEVEL = os.getenv("DJANGO_LOG_LEVEL", "INFO")  # можно переключать через env
+APP_LOG_LEVEL = env("APP_LOG_LEVEL", default="INFO")
+DJANGO_LOG_LEVEL = env("DJANGO_LOG_LEVEL", default="WARNING")
+APP_LOG_FORMAT = env("APP_LOG_FORMAT", default="text")
+APP_LOG_DESTINATION = env("APP_LOG_DESTINATION", default="stdout")
+APP_LOG_COLOR = env("APP_LOG_COLOR", default="true" if DEBUG else "false")
+APP_LOG_FILE_PATH = env(
+    "APP_LOG_FILE_PATH",
+    default=str(BASE_DIR / "logs" / "app.log"),
+)
 
-LOGGING = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "simple": {
-            "format": "[{levelname}] {asctime} {name}: {message}",
-            "style": "{",
-            "datefmt": "%H:%M:%S",
-        },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "stream": sys.stdout,
-            "formatter": "simple",
-        },
-    },
-    "loggers": {
-        # Базовые django-логи (минимум INFO, чтоб не захламлять DEBUG'ом из ORM)
-        "django": {
-            "handlers": ["console"],
-            "level": DJANGO_LOG_LEVEL,
-            "propagate": True,
-        },
-        # Ошибки запросов (500/403 и т.п.)
-        "django.request": {
-            "handlers": ["console"],
-            "level": "WARNING",
-            "propagate": False,
-        },
-        # Наше приложение целиком
-        "records": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        # Точка, где мы логируем парсер
-        "records.services.redeye": {
-            "handlers": ["console"],
-            "level": "DEBUG",  # можно поднять до DEBUG на время
-            "propagate": False,
-        },
-    },
-}
+LOGGING = build_logging_config(
+    app_level=APP_LOG_LEVEL,
+    django_level=DJANGO_LOG_LEVEL,
+    log_format=APP_LOG_FORMAT,
+    destination=APP_LOG_DESTINATION,
+    color=APP_LOG_COLOR,
+    file_path=APP_LOG_FILE_PATH,
+)
 
 # VK интеграция
 
