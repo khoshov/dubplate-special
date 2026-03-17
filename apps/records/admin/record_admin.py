@@ -55,6 +55,12 @@ from .mixins import RedeyeAudioRefreshMixin, YouTubeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
 _RECORD_ADMIN_COMPONENT = "record_admin"
+_SERVICE_ADMIN_MODELS = {
+    "audioenrichmentjob",
+    "audioenrichmentjobrecord",
+    "audioenrichmenttrackresult",
+    "vkpublicationlog",
+}
 
 
 def _log_record_admin_event(
@@ -71,6 +77,51 @@ def _log_record_admin_event(
         event=event,
         **context,
     )
+
+
+def _group_service_models_in_admin(app_list: list[dict]) -> list[dict]:
+    records_app_url: str | None = None
+    service_models: list[dict] = []
+    filtered_apps: list[dict] = []
+
+    for app in app_list:
+        if app.get("app_label") != "records":
+            filtered_apps.append(app)
+            continue
+
+        records_app_url = app.get("app_url")
+        kept_models: list[dict] = []
+        for model_info in app.get("models", []):
+            object_name = str(model_info.get("object_name") or "").lower()
+            if object_name in _SERVICE_ADMIN_MODELS:
+                service_models.append(model_info)
+            else:
+                kept_models.append(model_info)
+        if kept_models:
+            app["models"] = kept_models
+            filtered_apps.append(app)
+
+    if service_models:
+        filtered_apps.append(
+            {
+                "name": "Служебные",
+                "app_label": "service",
+                "app_url": records_app_url or "#",
+                "has_module_perms": True,
+                "models": service_models,
+            }
+        )
+    return filtered_apps
+
+
+_original_get_app_list = admin.site.get_app_list
+
+
+def _get_app_list_with_service(request: HttpRequest) -> list[dict]:
+    return _group_service_models_in_admin(_original_get_app_list(request))
+
+
+admin.site.get_app_list = _get_app_list_with_service
 
 
 @admin.register(Record)
@@ -895,7 +946,7 @@ class StyleAdmin(admin.ModelAdmin):
 @admin.register(VKPublicationLog)
 class VKPublicationLogAdmin(admin.ModelAdmin):
     list_display = (
-        "record",
+        "record_link",
         "mode",
         "status",
         "planned_publish_at",
@@ -903,6 +954,7 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
         "vk_post_id",
         "created",
     )
+    list_display_links = ("record_link",)
     list_filter = ("mode", "status", "created")
     search_fields = (
         "record__title",
@@ -911,6 +963,7 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
     )
     autocomplete_fields = ("record",)
     ordering = ("-created",)
+    list_select_related = ("record",)
     readonly_fields = (
         "record",
         "mode",
@@ -922,6 +975,22 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[VKPublicationLog] = None
+    ) -> bool:
+        return False
+
+    @admin.display(description="Релиз", ordering="record__title")
+    def record_link(self, obj: VKPublicationLog) -> str:
+        record = getattr(obj, "record", None)
+        if not record:
+            return "—"
+        url = reverse("admin:records_record_change", args=[record.pk])
+        return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)
 
 
 @admin.register(AudioEnrichmentJob)
@@ -961,13 +1030,21 @@ class AudioEnrichmentJobAdmin(admin.ModelAdmin):
         "modified",
     )
 
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[AudioEnrichmentJob] = None
+    ) -> bool:
+        return False
+
 
 @admin.register(AudioEnrichmentJobRecord)
 class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "job",
-        "record",
+        "record_link",
         "status",
         "reason_code",
         "updated_count",
@@ -977,10 +1054,12 @@ class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
         "started_at",
         "finished_at",
     )
+    list_display_links = ("id",)
     list_filter = ("status", "reason_code", "created")
     search_fields = ("id", "job__id", "record__title", "record__catalog_number")
     ordering = ("-created",)
     autocomplete_fields = ("job", "record")
+    list_select_related = ("job", "record")
     readonly_fields = (
         "id",
         "job",
@@ -996,6 +1075,22 @@ class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
         "modified",
     )
 
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[AudioEnrichmentJobRecord] = None
+    ) -> bool:
+        return False
+
+    @admin.display(description="Релиз", ordering="record__title")
+    def record_link(self, obj: AudioEnrichmentJobRecord) -> str:
+        record = getattr(obj, "record", None)
+        if not record:
+            return "—"
+        url = reverse("admin:records_record_change", args=[record.pk])
+        return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)
+
 
 @admin.register(AudioEnrichmentTrackResult)
 class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
@@ -1003,17 +1098,20 @@ class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
         "id",
         "job_record",
         "track",
+        "record_link",
         "status",
         "reason_code",
         "attempts",
         "previous_audio_present",
         "created",
     )
+    list_display_links = ("id",)
     list_filter = ("status", "reason_code", "attempts", "created")
     search_fields = ("id", "track__title", "job_record__id")
     ordering = ("-created",)
     autocomplete_fields = ("job_record",)
     raw_id_fields = ("track",)
+    list_select_related = ("job_record", "track", "track__record")
     readonly_fields = (
         "id",
         "job_record",
@@ -1027,3 +1125,20 @@ class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[AudioEnrichmentTrackResult] = None
+    ) -> bool:
+        return False
+
+    @admin.display(description="Релиз", ordering="track__record__title")
+    def record_link(self, obj: AudioEnrichmentTrackResult) -> str:
+        track = getattr(obj, "track", None)
+        record = getattr(track, "record", None) if track else None
+        if not record:
+            return "—"
+        url = reverse("admin:records_record_change", args=[record.pk])
+        return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)

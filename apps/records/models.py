@@ -660,8 +660,8 @@ class AudioEnrichmentJob(TimeStampedModel):
     )
 
     class Meta:
-        verbose_name = _("Audio enrichment job")
-        verbose_name_plural = _("Audio enrichment jobs")
+        verbose_name = _("Задача по добавлению mp3 к трекам")
+        verbose_name_plural = _("Задачи по добавлению mp3 к трекам")
         ordering = ("-created",)
 
     def __str__(self) -> str:
@@ -733,8 +733,8 @@ class AudioEnrichmentJobRecord(TimeStampedModel):
     )
 
     class Meta:
-        verbose_name = _("Audio enrichment job record")
-        verbose_name_plural = _("Audio enrichment job records")
+        verbose_name = _("Элемент списка задач")
+        verbose_name_plural = _("Список задач")
         ordering = ("-created",)
         constraints = [
             models.UniqueConstraint(
@@ -822,8 +822,8 @@ class AudioEnrichmentTrackResult(TimeStampedModel):
     )
 
     class Meta:
-        verbose_name = _("Audio enrichment track result")
-        verbose_name_plural = _("Audio enrichment track results")
+        verbose_name = _("Результат добавления mp3 к трекам")
+        verbose_name_plural = _("Результаты добавления mp3 к трекам")
         ordering = ("created",)
         constraints = [
             models.UniqueConstraint(
