@@ -606,6 +606,143 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
     }
 
 
+@shared_task(name="records.youtube_enrichment.process_track")
+def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
+    """Обрабатывает один трек и обновляет job report."""
+    audio_service = AudioService()
+    parsed = audio_service.parse_process_track_payload(payload)
+
+    job = AudioEnrichmentJob.objects.get(pk=parsed.job_id)
+    track = Track.objects.select_related("record").get(pk=parsed.track_id)
+    record = track.record
+
+    job_record, can_process = audio_service.acquire_youtube_record_lock(
+        job=job,
+        record=record,
+    )
+    if not can_process:
+        _refresh_job_status(job)
+        _log_youtube_audio_event(
+            NOTICE_LEVEL,
+            "record_skip",
+            "Запись пропущена: уже выполняется другой job-record.",
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=parsed.overwrite_existing,
+            reason=job_record.reason_code
+            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+        )
+        return {
+            "job_id": str(job.id),
+            "record_id": record.pk,
+            "track_id": track.pk,
+            "status": AudioEnrichmentJobRecord.Status.SKIPPED,
+            "reason_code": job_record.reason_code
+            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+        }
+
+    audio_service.mark_youtube_record_running(job_record)
+    _log_youtube_audio_event(
+        logging.INFO,
+        "record_start",
+        "----- Запущена обработка записи для обновления одного трека из YouTube -----",
+        job_id=job.id,
+        record_id=record.pk,
+        source=job.source,
+        overwrite=parsed.overwrite_existing,
+        title=record.title,
+        tracks_total=1,
+    )
+
+    updated_count = skipped_count = error_count = 0
+    try:
+        track_payload = _process_track_for_youtube_enrichment(
+            job_id=job.id,
+            source=job.source,
+            track=track,
+            overwrite_existing=parsed.overwrite_existing,
+        )
+        YouTubeAudioEnrichmentProvider.upsert_track_result(
+            job_record=job_record,
+            track=track,
+            payload=track_payload,
+        )
+
+        if track_payload["status"] == AudioEnrichmentTrackResult.Status.UPDATED:
+            updated_count += 1
+        elif track_payload["status"] == AudioEnrichmentTrackResult.Status.SKIPPED:
+            skipped_count += 1
+        else:
+            error_count += 1
+
+        audio_service.mark_youtube_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+        )
+        refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
+        _log_youtube_audio_event(
+            logging.INFO,
+            "record_finish",
+            (
+                "----- Обработка одного трека из YouTube завершена: "
+                f"updated={refreshed_job_record.updated_count}, "
+                f"skipped={refreshed_job_record.skipped_count}, "
+                f"failed={refreshed_job_record.error_count} -----"
+            ),
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=parsed.overwrite_existing,
+            status=refreshed_job_record.status,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_youtube_audio_event(
+            logging.ERROR,
+            "record_failed",
+            "Во время обработки трека произошла ошибка YouTube-блока.",
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=parsed.overwrite_existing,
+            error=str(exc),
+        )
+        logger.exception(
+            "Стектрейс ошибки обработки трека YouTube-блоком.",
+            extra=build_log_extra(
+                component=_YOUTUBE_AUDIO_COMPONENT,
+                event="record_failed_traceback",
+                job_id=job.id,
+                record_id=record.pk,
+                source=job.source,
+                overwrite=parsed.overwrite_existing,
+            ),
+        )
+        error_count = max(error_count, 1)
+        audio_service.mark_youtube_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            force_failed=True,
+            reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+        )
+
+    refreshed = _refresh_job_status(job)
+    refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
+    return {
+        "job_id": str(refreshed.id),
+        "record_id": record.pk,
+        "track_id": track.pk,
+        "status": refreshed_job_record.status,
+        "updated_count": refreshed_job_record.updated_count,
+        "skipped_count": refreshed_job_record.skipped_count,
+        "error_count": refreshed_job_record.error_count,
+    }
+
+
 @shared_task(name="records.youtube_session.refresh", queue="youtube_session")
 def refresh_youtube_session_profile() -> dict[str, Any]:
     """Обновляет persistent browser profile для YouTube."""

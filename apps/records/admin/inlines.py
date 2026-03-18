@@ -71,7 +71,22 @@ class TrackInline(admin.TabularInline):
 
         audio_name = str(getattr(obj.audio_preview, "name", "") or "").strip()
         if not audio_name:
-            return "-"
+            youtube_url = str(getattr(obj, "youtube_url", "") or "").strip()
+            if not youtube_url:
+                return "-"
+            enqueue_url = reverse(
+                "admin:records_record_track_enqueue_mp3",
+                args=[obj.record_id, obj.pk],
+            )
+            return format_html(
+                (
+                    '<div class="track-audio-controls" data-has-audio="0">'
+                    '<button type="button" class="button js-track-enqueue-mp3"'
+                    ' data-enqueue-mp3-url="{enqueue_url}">Загрузить mp3</button>'
+                    "</div>"
+                ),
+                enqueue_url=enqueue_url,
+            )
 
         delete_url = reverse(
             "admin:records_record_track_delete_mp3",

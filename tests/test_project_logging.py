@@ -53,13 +53,12 @@ def test_project_text_formatter_renders_structured_context() -> None:
 
     rendered = formatter.format(record)
 
-    assert "250 NOTICE" in rendered
-    assert "[component - youtube_audio]" in rendered
-    assert "[event - track_skip]" in rendered
-    assert "[job_id - job-1]" in rendered
-    assert "[record_id - 1943]" in rendered
-    assert "[track_id - 11275]" in rendered
-    assert "[overwrite - false]" in rendered
+    assert "NOTICE" in rendered
+    assert "[компонент - youtube_audio]" in rendered
+    assert "[record_id=1943]" in rendered
+    assert "[track_id=11275]" in rendered
+    assert "[overwrite=false]" in rendered
+    assert "job-1" not in rendered
     assert "Трек пропущен: локальный mp3 уже прикреплён." in rendered
 
 
@@ -80,6 +79,33 @@ def test_project_color_text_formatter_forces_ansi_colors() -> None:
 
     assert "\033[" in rendered
     assert "INFO" in rendered
+
+
+def test_project_text_formatter_debug_includes_logger_and_event() -> None:
+    formatter = ProjectTextFormatter()
+    record = logging.makeLogRecord(
+        {
+            "name": "records.services.tasks",
+            "levelno": logging.DEBUG,
+            "levelname": "DEBUG",
+            "msg": "Детали постановки трека.",
+            "component": "youtube_audio",
+            "event": "track_mp3_enqueue",
+            "log_context": {
+                "job_id": "job-1",
+                "record_id": 1943,
+                "track_id": 11275,
+            },
+        }
+    )
+
+    rendered = formatter.format(record)
+
+    assert "[records.services.tasks]" in rendered
+    assert "[событие - track_mp3_enqueue]" in rendered
+    assert "[job_id=job-1]" in rendered
+    assert "[record_id=1943]" in rendered
+    assert "[track_id=11275]" in rendered
 
 
 def test_project_json_formatter_and_config_builder() -> None:

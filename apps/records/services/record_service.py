@@ -29,6 +29,7 @@ from records.models import (
     FormatChoices,
     Record,
     RecordSource,
+    Track,
 )
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
@@ -53,7 +54,10 @@ from records.services.record_assembly import (
     ensure_legacy_formats,
     update_record_from_payload,
 )
-from records.services.tasks import run_youtube_enrichment_job
+from records.services.tasks import (
+    process_youtube_enrichment_track,
+    run_youtube_enrichment_job,
+)
 
 logger = logging.getLogger(__name__)
 _RECORD_SERVICE_COMPONENT = "record_service"
@@ -514,6 +518,42 @@ class RecordService:
             overwrite_existing=True,
             requested_by_user_id=requested_by_user_id,
         )
+
+    def enqueue_track_youtube_audio_enrichment(
+        self,
+        *,
+        track: Track,
+        requested_by_user_id: int | None = None,
+        overwrite_existing: bool = False,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь обработку одного трека из YouTube."""
+        job = AudioEnrichmentJob.objects.create(
+            source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+            status=AudioEnrichmentJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=overwrite_existing,
+            total_records=1,
+            total_tracks=1,
+        )
+        payload = {
+            "job_id": str(job.id),
+            "track_id": track.pk,
+            "overwrite_existing": overwrite_existing,
+        }
+        transaction.on_commit(
+            lambda: process_youtube_enrichment_track.delay(payload)  # noqa: B023
+        )
+        _log_record_service_event(
+            logging.INFO,
+            "youtube_audio_track_enqueued",
+            "Поставлена в очередь задача обновления mp3 для трека.",
+            job_id=job.id,
+            record_id=track.record_id,
+            track_id=track.pk,
+            overwrite=overwrite_existing,
+            requested_by_user_id=requested_by_user_id,
+        )
+        return job
 
     def enqueue_youtube_audio_enrichment(
         self,

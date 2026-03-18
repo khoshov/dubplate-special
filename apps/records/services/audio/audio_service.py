@@ -17,6 +17,7 @@ from records.services.audio.common.downloader import (
 )
 from records.services.audio.providers.youtube_audio_enrichment import (
     ProcessRecordPayload,
+    ProcessTrackPayload,
     RunJobPayload,
     YouTubeAudioEnrichmentProvider,
 )
@@ -195,6 +196,13 @@ class AudioService:
     ) -> ProcessRecordPayload:
         """Валидирует payload обработки одной записи."""
         return ProcessRecordPayload.from_dict(payload)
+
+    @staticmethod
+    def parse_process_track_payload(
+        payload: dict[str, object],
+    ) -> ProcessTrackPayload:
+        """Валидирует payload обработки одного трека."""
+        return ProcessTrackPayload.from_dict(payload)
 
     @staticmethod
     def acquire_youtube_record_lock(

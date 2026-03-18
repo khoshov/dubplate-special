@@ -78,6 +78,28 @@ class RecordingSingleRecordService:
         return type("Job", (), {"id": self.job_id})()
 
 
+class RecordingTrackService:
+    def __init__(self, job_id: uuid.UUID):
+        self.job_id = job_id
+        self.calls: list[dict[str, object]] = []
+
+    def enqueue_track_youtube_audio_enrichment(
+        self,
+        *,
+        track,
+        requested_by_user_id: int | None = None,
+        overwrite_existing: bool = False,
+    ):
+        self.calls.append(
+            {
+                "track_id": track.pk,
+                "requested_by_user_id": requested_by_user_id,
+                "overwrite_existing": overwrite_existing,
+            }
+        )
+        return type("Job", (), {"id": self.job_id})()
+
+
 def _attach_session_and_messages(request) -> None:
     session_middleware = SessionMiddleware(lambda req: None)
     session_middleware.process_request(request)
@@ -151,6 +173,33 @@ def test_record_admin_youtube_refresh_view_enqueues_single_record_job(monkeypatc
         f"/admin/records/audioenrichmentjob/{job_id}/change/" in msg
         for msg in rendered_messages
     )
+
+
+@pytest.mark.django_db
+def test_record_admin_track_enqueue_mp3_view_enqueues_job(monkeypatch):
+    record = Record.objects.create(title="Single Record")
+    track = record.tracks.create(title="Track 1", youtube_url="https://youtu.be/abc")
+    admin = RecordAdmin(Record, AdminSite())
+    job_id = uuid.uuid4()
+    admin.record_service = RecordingTrackService(job_id=job_id)
+    monkeypatch.setattr(admin, "has_change_permission", lambda request, obj=None: True)
+
+    request = RequestFactory().post(
+        f"/admin/records/record/{record.pk}/tracks/{track.pk}/enqueue-mp3/"
+    )
+    request.user = FakeUser()
+    _attach_session_and_messages(request)
+
+    response = admin.enqueue_track_mp3_view(request, str(record.pk), str(track.pk))
+
+    assert response.status_code == 200
+    assert admin.record_service.calls == [
+        {
+            "track_id": track.pk,
+            "requested_by_user_id": request.user.id,
+            "overwrite_existing": False,
+        }
+    ]
 
 
 @pytest.mark.django_db

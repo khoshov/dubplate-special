@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -193,6 +194,8 @@ class ProjectBaseFormatter(logging.Formatter):
         self, record: logging.LogRecord
     ) -> list[tuple[str, str]]:
         context = self._context(record)
+        if record.levelno != logging.DEBUG and "job_id" in context:
+            context = {key: value for key, value in context.items() if key != "job_id"}
         ordered: list[tuple[str, str]] = []
         seen: set[str] = set()
 
@@ -214,16 +217,27 @@ class ProjectTextFormatter(ProjectBaseFormatter):
     """Текстовый формат project-логов без ANSI-цветов."""
 
     def format(self, record: logging.LogRecord) -> str:
+        if record.levelno == logging.DEBUG:
+            prefix_parts = [
+                f"[{self._timestamp(record)}]",
+                self._level_name(record),
+                "|",
+                f"[{record.name}]",
+                f"[событие - {self._event(record)}]",
+            ]
+            for key, value in self._ordered_context_items(record):
+                prefix_parts.append(f"[{key}={value}]")
+            prefix = " ".join(prefix_parts)
+            return f"{prefix} | {record.getMessage()}"
+
         prefix_parts = [
             f"[{self._timestamp(record)}]",
-            str(self._level_number(record)),
             self._level_name(record),
             "|",
-            f"[component - {self._component(record)}]",
-            f"[event - {self._event(record)}]",
+            f"[компонент - {self._component(record)}]",
         ]
         for key, value in self._ordered_context_items(record):
-            prefix_parts.append(f"[{key} - {value}]")
+            prefix_parts.append(f"[{key}={value}]")
         prefix = " ".join(prefix_parts)
         return f"{prefix} | {record.getMessage()}"
 
@@ -265,9 +279,32 @@ class ProjectJSONFormatter(ProjectBaseFormatter):
             "message": record.getMessage(),
         }
         context = self._context(record)
+        if record.levelno != logging.DEBUG and "job_id" in context:
+            context = {key: value for key, value in context.items() if key != "job_id"}
         if context:
             payload["context"] = context
         return json.dumps(payload, ensure_ascii=False)
+
+
+class SilkJavascriptWarningFilter(logging.Filter):
+    """Понижает шумный WARNING Silk про text/javascript до DEBUG."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "silk.model_factory":
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return True
+
+        if "content type text/javascript" not in message:
+            return True
+
+        record.levelno = logging.DEBUG
+        record.levelname = "DEBUG"
+
+        app_level = normalize_log_level(os.getenv("APP_LOG_LEVEL", _DEFAULT_LOG_LEVEL))
+        return app_level == logging.DEBUG
 
 
 def build_logging_config(
@@ -294,6 +331,7 @@ def build_logging_config(
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",
             "formatter": formatter_name,
+            "filters": ["silk_js_warning_filter"],
         }
     }
 
@@ -305,11 +343,17 @@ def build_logging_config(
             "filename": str(target_path),
             "encoding": "utf-8",
             "formatter": formatter_name,
+            "filters": ["silk_js_warning_filter"],
         }
 
     return {
         "version": 1,
         "disable_existing_loggers": False,
+        "filters": {
+            "silk_js_warning_filter": {
+                "()": "config.logging.SilkJavascriptWarningFilter",
+            }
+        },
         "formatters": {
             "text": {
                 "()": "config.logging.ProjectTextFormatter",
@@ -331,6 +375,11 @@ def build_logging_config(
             "django": {
                 "handlers": [handler_name],
                 "level": normalize_log_level(django_level),
+                "propagate": False,
+            },
+            "silk.model_factory": {
+                "handlers": [handler_name],
+                "level": normalize_log_level("DEBUG"),
                 "propagate": False,
             },
             "django.request": {

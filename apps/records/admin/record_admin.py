@@ -32,6 +32,9 @@ from records.models import (
     VKPublicationLog,
 )
 from records.services.audio.audio_service import AudioService
+from records.services.audio.providers.youtube_audio_enrichment import (
+    YouTubeAudioEnrichmentProvider,
+)
 from records.services.image.image_service import ImageService
 from records.services.providers.discogs.discogs_service import DiscogsService
 from records.services.providers.redeye.redeye_service import RedeyeService
@@ -54,7 +57,7 @@ from .inlines import StructuredFormatInline, TrackInline
 from .mixins import RedeyeAudioRefreshMixin, YouTubeAudioRefreshMixin
 
 logger = logging.getLogger(__name__)
-_RECORD_ADMIN_COMPONENT = "record_admin"
+_RECORD_ADMIN_COMPONENT = "админка релизов"
 _SERVICE_ADMIN_MODELS = {
     "audioenrichmentjob",
     "audioenrichmentjobrecord",
@@ -353,6 +356,11 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
                 name="records_record_track_delete_mp3",
             ),
             path(
+                "<path:object_id>/tracks/<path:track_id>/enqueue-mp3/",
+                self.admin_site.admin_view(self.enqueue_track_mp3_view),
+                name="records_record_track_enqueue_mp3",
+            ),
+            path(
                 "vk-schedule/",
                 self.admin_site.admin_view(self.vk_schedule_view),
                 name="records_record_vk_schedule",
@@ -405,6 +413,83 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             )
 
         return JsonResponse({"ok": True, "deleted": True})
+
+    def enqueue_track_mp3_view(
+        self, request: HttpRequest, object_id: str, track_id: str
+    ) -> JsonResponse:
+        """Ставит один трек в очередь на докачку mp3 из YouTube."""
+        if request.method != "POST":
+            return JsonResponse(
+                {"ok": False, "error": "Разрешён только POST-запрос."},
+                status=405,
+            )
+
+        record = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, record):
+            return JsonResponse(
+                {"ok": False, "error": "Недостаточно прав для загрузки mp3."},
+                status=403,
+            )
+
+        track = get_object_or_404(Track, pk=track_id, record=record)
+        youtube_url = str(track.youtube_url or "").strip()
+        if not youtube_url:
+            return JsonResponse(
+                {"ok": False, "error": "У трека отсутствует ссылка на YouTube."},
+                status=400,
+            )
+        if not YouTubeAudioEnrichmentProvider.is_valid_youtube_url(youtube_url):
+            return JsonResponse(
+                {"ok": False, "error": "Ссылка на YouTube не прошла валидацию."},
+                status=400,
+            )
+
+        audio_name = str(getattr(track.audio_preview, "name", "") or "").strip()
+        if audio_name:
+            return JsonResponse(
+                {"ok": False, "error": "mp3 уже прикреплён к этому треку."},
+                status=400,
+            )
+
+        try:
+            job = self.record_service.enqueue_track_youtube_audio_enrichment(
+                track=track,
+                requested_by_user_id=getattr(request.user, "id", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log_record_admin_event(
+                logging.ERROR,
+                "track_mp3_enqueue_failed",
+                "Не удалось поставить трек в очередь на докачку mp3.",
+                record_id=record.pk,
+                track_id=track.pk,
+                error=str(exc),
+            )
+            return JsonResponse(
+                {"ok": False, "error": "Не удалось поставить трек в очередь."},
+                status=500,
+            )
+
+        _log_record_admin_event(
+            logging.INFO,
+            "track_mp3_enqueue",
+            (
+                f"Трек «{track.title}» из релиза «{record}» "
+                "поставлен в очередь на докачку MP3."
+            ),
+            record_id=record.pk,
+            track_id=track.pk,
+            job_id=str(job.id),
+        )
+        _log_record_admin_event(
+            logging.DEBUG,
+            "track_mp3_enqueue",
+            "Детали постановки трека в очередь.",
+            job_id=str(job.id),
+            record_id=record.pk,
+            track_id=track.pk,
+        )
+        return JsonResponse({"ok": True, "job_id": str(job.id)})
 
     def vk_schedule_view(self, request: HttpRequest) -> HttpResponse:
         if not self.has_change_permission(request):

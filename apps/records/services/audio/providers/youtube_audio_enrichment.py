@@ -161,6 +161,23 @@ class ProcessRecordPayload:
         )
 
 
+@dataclass(frozen=True)
+class ProcessTrackPayload:
+    """Контракт payload для задачи обработки одного трека."""
+
+    job_id: uuid.UUID
+    track_id: int
+    overwrite_existing: bool
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> ProcessTrackPayload:
+        return cls(
+            job_id=_ensure_uuid(payload.get("job_id"), field="job_id"),
+            track_id=_ensure_int(payload.get("track_id"), field="track_id"),
+            overwrite_existing=bool(payload.get("overwrite_existing", False)),
+        )
+
+
 class YouTubeAudioEnrichmentProvider:
     """Набор provider-level операций для YouTube enrichment."""
 
