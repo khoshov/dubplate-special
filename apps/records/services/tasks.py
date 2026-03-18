@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import Any
 
+import yt_dlp
 from celery import shared_task
 from django.conf import settings
 from django.db.models import Count, Sum
@@ -26,6 +27,7 @@ from records.services.audio.providers.youtube_audio_enrichment import (
 logger = logging.getLogger(__name__)
 _YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
 _YOUTUBE_SESSION_COMPONENT = "youtube_session"
+_YOUTUBE_SEARCH_COMPONENT = "youtube_search"
 
 
 def _log_youtube_audio_event(
@@ -55,6 +57,22 @@ def _log_youtube_session_event(
         level,
         message,
         component=_YOUTUBE_SESSION_COMPONENT,
+        event=event,
+        **context,
+    )
+
+
+def _log_youtube_search_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: Any,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_YOUTUBE_SEARCH_COMPONENT,
         event=event,
         **context,
     )
@@ -295,6 +313,8 @@ def _process_track_for_youtube_enrichment(
         "Не удалось обновить трек аудио из YouTube.",
         reason=payload["reason_code"],
         attempts=payload["attempts"],
+        youtube_url=youtube_url,
+        error=payload["error_message"],
         **log_context,
     )
     _log_youtube_audio_event(
@@ -740,6 +760,152 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
         "updated_count": refreshed_job_record.updated_count,
         "skipped_count": refreshed_job_record.skipped_count,
         "error_count": refreshed_job_record.error_count,
+    }
+
+
+@shared_task(name="records.youtube_search.find_track_urls")
+def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ищет YouTube-ссылки для треков записи и заполняет пустые поля."""
+    record_id = int(payload.get("record_id"))
+    requested_by_user_id = payload.get("requested_by_user_id")
+
+    record = Record.objects.prefetch_related("artists", "tracks").get(pk=record_id)
+    artist_names = ", ".join(artist.name for artist in record.artists.all()) or "—"
+
+    _log_youtube_search_event(
+        logging.INFO,
+        "record_start",
+        f"Запущен поиск аудио на YouTube для релиза «{record}».",
+        record_id=record.pk,
+        requested_by_user_id=requested_by_user_id,
+    )
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+    }
+    updated = skipped = not_found = 0
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        for track in record.tracks.order_by("position_index", "id"):
+            if str(track.youtube_url or "").strip():
+                skipped += 1
+                continue
+
+            query = f"{artist_names} {record.title} {track.title}"
+            try:
+                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                entry = (info.get("entries") or [None])[0]
+            except Exception as exc:  # noqa: BLE001
+                _log_youtube_search_event(
+                    logging.ERROR,
+                    "track_search_failed",
+                    f"Поиск YouTube для трека «{track.title}» завершился ошибкой.",
+                    record_id=record.pk,
+                    track_id=track.pk,
+                )
+                _log_youtube_search_event(
+                    logging.DEBUG,
+                    "track_search_failed",
+                    "Детали ошибки поиска YouTube.",
+                    record_id=record.pk,
+                    track_id=track.pk,
+                    query=query,
+                    error=str(exc),
+                )
+                not_found += 1
+                continue
+
+            if not entry:
+                not_found += 1
+                _log_youtube_search_event(
+                    logging.INFO,
+                    "track_search_empty",
+                    (
+                        f"Для трека «{track.title}» в релизе «{record}» "
+                        "не найдено результатов YouTube."
+                    ),
+                    record_id=record.pk,
+                    track_id=track.pk,
+                )
+                _log_youtube_search_event(
+                    logging.DEBUG,
+                    "track_search_empty",
+                    "Детали пустого ответа поиска YouTube.",
+                    record_id=record.pk,
+                    track_id=track.pk,
+                    query=query,
+                )
+                continue
+
+            url = entry.get("url") or entry.get("webpage_url") or ""
+            if url and not url.startswith("http"):
+                url = f"https://www.youtube.com/watch?v={url}"
+
+            if not url:
+                not_found += 1
+                _log_youtube_search_event(
+                    logging.INFO,
+                    "track_search_empty",
+                    (
+                        f"Для трека «{track.title}» в релизе «{record}» "
+                        "не удалось извлечь ссылку YouTube."
+                    ),
+                    record_id=record.pk,
+                    track_id=track.pk,
+                )
+                _log_youtube_search_event(
+                    logging.DEBUG,
+                    "track_search_empty",
+                    "Детали пустого URL в результате поиска YouTube.",
+                    record_id=record.pk,
+                    track_id=track.pk,
+                    query=query,
+                    raw_url=str(entry.get("url") or ""),
+                )
+                continue
+
+            track.youtube_url = url
+            track.save(update_fields=["youtube_url", "modified"])
+            updated += 1
+
+            _log_youtube_search_event(
+                logging.INFO,
+                "track_search_found",
+                (
+                    f"Для трека «{track.title}» из релиза «{record}» "
+                    "найдена ссылка YouTube."
+                ),
+                record_id=record.pk,
+                track_id=track.pk,
+            )
+            _log_youtube_search_event(
+                logging.DEBUG,
+                "track_search_found",
+                "Детали найденной YouTube-ссылки.",
+                record_id=record.pk,
+                track_id=track.pk,
+                query=query,
+                youtube_url=url,
+                result_title=str(entry.get("title") or ""),
+            )
+
+    _log_youtube_search_event(
+        logging.INFO,
+        "record_finish",
+        (
+            "Поиск YouTube для релиза завершён: "
+            f"updated={updated}, skipped={skipped}, not_found={not_found}."
+        ),
+        record_id=record.pk,
+    )
+    return {
+        "record_id": record.pk,
+        "updated": updated,
+        "skipped": skipped,
+        "not_found": not_found,
     }
 
 

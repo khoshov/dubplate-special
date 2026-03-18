@@ -10,7 +10,7 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.test import RequestFactory
 
-from records.admin.actions import update_audio_from_youtube
+from records.admin.actions import find_audio_on_youtube, update_audio_from_youtube
 from records.admin.record_admin import RecordAdmin
 from records.models import Record, YouTubeSessionState
 from records.services.tasks import (
@@ -98,6 +98,24 @@ class RecordingTrackService:
             }
         )
         return type("Job", (), {"id": self.job_id})()
+
+
+class RecordingSearchService:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
+
+    def enqueue_record_youtube_audio_search(
+        self,
+        *,
+        record,
+        requested_by_user_id: int | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "record_id": record.pk,
+                "requested_by_user_id": requested_by_user_id,
+            }
+        )
 
 
 def _attach_session_and_messages(request) -> None:
@@ -198,6 +216,62 @@ def test_record_admin_track_enqueue_mp3_view_enqueues_job(monkeypatch):
             "track_id": track.pk,
             "requested_by_user_id": request.user.id,
             "overwrite_existing": False,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_record_admin_youtube_search_view_enqueues_task(monkeypatch):
+    record = Record.objects.create(title="Search Record")
+    record.tracks.create(title="Track 1", youtube_url=None)
+    admin = RecordAdmin(Record, AdminSite())
+    record_service = RecordingSearchService()
+    admin.record_service = record_service
+    monkeypatch.setattr(admin, "has_change_permission", lambda request, obj=None: True)
+
+    request = RequestFactory().post(
+        f"/admin/records/record/{record.pk}/youtube-search/"
+    )
+    request.user = FakeUser()
+    request.headers = {"x-requested-with": "XMLHttpRequest"}
+    _attach_session_and_messages(request)
+
+    response = admin._search_youtube_audio_view(request, str(record.pk))
+
+    assert response.status_code == 200
+    assert record_service.calls == [
+        {
+            "record_id": record.pk,
+            "requested_by_user_id": request.user.id,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_find_audio_on_youtube_action_enqueues_for_missing_only():
+    record_with_missing = Record.objects.create(title="Missing")
+    record_with_missing.tracks.create(title="No URL", youtube_url=None)
+    record_with_urls = Record.objects.create(title="Filled")
+    record_with_urls.tracks.create(title="Has URL", youtube_url="https://youtu.be/demo")
+
+    record_service = RecordingSearchService()
+    admin = FakeAdmin(record_service=record_service)
+    request = RequestFactory().post("/admin/records/record/")
+    request.user = FakeUser()
+
+    queryset = Record.objects.filter(
+        pk__in=[record_with_missing.pk, record_with_urls.pk]
+    ).order_by("pk")
+    find_audio_on_youtube(
+        admin_obj=admin,  # type: ignore[arg-type]
+        request=request,  # type: ignore[arg-type]
+        queryset=queryset,
+    )
+
+    assert record_service.calls == [
+        {
+            "record_id": record_with_missing.pk,
+            "requested_by_user_id": request.user.id,
         }
     ]
 

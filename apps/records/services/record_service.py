@@ -55,6 +55,7 @@ from records.services.record_assembly import (
     update_record_from_payload,
 )
 from records.services.tasks import (
+    find_youtube_audio_urls_for_record,
     process_youtube_enrichment_track,
     run_youtube_enrichment_job,
 )
@@ -516,6 +517,35 @@ class RecordService:
             record_ids=[record.id],
             source=AudioEnrichmentJob.Source.MANUAL_RECORD,
             overwrite_existing=True,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_record_youtube_audio_search(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+    ) -> None:
+        """Ставит в очередь поиск YouTube-ссылок для треков записи."""
+        payload = {
+            "record_id": record.pk,
+            "requested_by_user_id": requested_by_user_id,
+        }
+        transaction.on_commit(
+            lambda: find_youtube_audio_urls_for_record.delay(payload)  # noqa: B023
+        )
+        _log_record_service_event(
+            logging.INFO,
+            "youtube_audio_search_enqueued",
+            f"Поставлен в очередь поиск аудио на YouTube для релиза «{record}».",
+            record_id=record.pk,
+            requested_by_user_id=requested_by_user_id,
+        )
+        _log_record_service_event(
+            logging.DEBUG,
+            "youtube_audio_search_enqueued",
+            "Детали постановки поиска аудио на YouTube.",
+            record_id=record.pk,
             requested_by_user_id=requested_by_user_id,
         )
 

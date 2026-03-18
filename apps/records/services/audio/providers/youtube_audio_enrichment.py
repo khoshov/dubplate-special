@@ -33,6 +33,23 @@ from records.services.audio.providers.youtube_session import YouTubeSessionServi
 logger = logging.getLogger(__name__)
 _DURATION_STRING_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
 _YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
+_AUTH_REQUIRED_HINTS = (
+    "sign in to confirm",
+    "please sign in",
+    "confirm your age",
+    "verify your age",
+    "age-restricted",
+    "login to confirm",
+    "you need to be signed in",
+    "cookies",
+)
+
+
+def _looks_like_auth_required(error_text: str) -> bool:
+    normalized = (error_text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _AUTH_REQUIRED_HINTS)
 
 
 class PayloadValidationError(ValueError):
@@ -620,17 +637,18 @@ class YouTubeAudioEnrichmentProvider:
                     info = ydl.extract_info(youtube_url, download=True)
             except DownloadError as exc:
                 error_text = str(exc)
-                if "Sign in to confirm you" in error_text:
+                if _looks_like_auth_required(error_text):
                     YouTubeSessionService.mark_state_auth_required(error_text)
                     log_event(
                         logger,
-                        logging.DEBUG,
+                        logging.WARNING,
                         "YouTube запросил повторную авторизацию во время скачивания.",
                         component=_YOUTUBE_AUDIO_COMPONENT,
                         event="download_auth_required",
                         record_id=track.record_id,
                         track_id=track.id,
                         youtube_url=youtube_url,
+                        error=error_text,
                     )
                     raise cls._build_authentication_error() from exc
                 raise RuntimeError(f"yt-dlp не смог скачать аудио: {exc}") from exc
