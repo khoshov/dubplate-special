@@ -209,10 +209,32 @@ class YouTubeAudioEnrichmentProvider:
         "youtu.be",
         "www.youtu.be",
     }
+    VALID_BANDCAMP_HOSTS = {
+        "bandcamp.com",
+        "www.bandcamp.com",
+    }
 
     @classmethod
     def is_valid_youtube_url(cls, value: str | None) -> bool:
-        """Проверяет, что строка похожа на поддерживаемый YouTube URL."""
+        """Проверяет, что строка похожа на поддерживаемый YouTube/Bandcamp URL."""
+        if not value:
+            return False
+        try:
+            parsed = urlparse(value.strip())
+        except ValueError:
+            return False
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if hostname in cls.VALID_YOUTUBE_HOSTS:
+            return True
+        if hostname in cls.VALID_BANDCAMP_HOSTS:
+            return True
+        return hostname.endswith(".bandcamp.com")
+
+    @classmethod
+    def is_youtube_url(cls, value: str | None) -> bool:
+        """Проверяет, что строка соответствует YouTube URL."""
         if not value:
             return False
         try:
@@ -621,10 +643,11 @@ class YouTubeAudioEnrichmentProvider:
         track: Track,
         overwrite: bool = False,
     ) -> str | None:
-        """Скачивает аудио из YouTube и сохраняет его в `track.audio_preview`."""
+        """Скачивает аудио из YouTube/Bandcamp и сохраняет его в `track.audio_preview`."""
         youtube_url = str(track.youtube_url or "").strip()
         if not youtube_url:
             return None
+        is_youtube_url = cls.is_youtube_url(youtube_url)
 
         existing_name = str(getattr(track.audio_preview, "name", "") or "").strip()
         if existing_name and not overwrite:
@@ -637,7 +660,7 @@ class YouTubeAudioEnrichmentProvider:
                     info = ydl.extract_info(youtube_url, download=True)
             except DownloadError as exc:
                 error_text = str(exc)
-                if _looks_like_auth_required(error_text):
+                if is_youtube_url and _looks_like_auth_required(error_text):
                     YouTubeSessionService.mark_state_auth_required(error_text)
                     log_event(
                         logger,
@@ -667,9 +690,10 @@ class YouTubeAudioEnrichmentProvider:
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()
-            YouTubeSessionService.mark_state_healthy(
-                "YouTube-сессия подтверждена успешной загрузкой аудио."
-            )
+            if is_youtube_url:
+                YouTubeSessionService.mark_state_healthy(
+                    "YouTube-сессия подтверждена успешной загрузкой аудио."
+                )
             if overwrite and old_name and old_name != saved_name:
                 try:
                     track.audio_preview.storage.delete(old_name)

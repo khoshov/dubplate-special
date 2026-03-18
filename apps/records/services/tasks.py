@@ -174,7 +174,7 @@ def _process_track_for_youtube_enrichment(
         _log_youtube_audio_event(
             NOTICE_LEVEL,
             "track_skip",
-            "Трек пропущен: ссылка на YouTube отсутствует.",
+            "Трек пропущен: ссылка на YouTube/Bandcamp отсутствует.",
             reason=payload["reason_code"],
             **log_context,
         )
@@ -189,7 +189,7 @@ def _process_track_for_youtube_enrichment(
         _log_youtube_audio_event(
             logging.WARNING,
             "track_skip",
-            "Трек пропущен: ссылка на YouTube не прошла валидацию.",
+            "Трек пропущен: ссылка на YouTube/Bandcamp не прошла валидацию.",
             reason=payload["reason_code"],
             youtube_url=youtube_url,
             **log_context,
@@ -225,9 +225,9 @@ def _process_track_for_youtube_enrichment(
         logging.DEBUG,
         "track_download_start",
         (
-            "Запущена загрузка аудио из YouTube."
+            "Запущена загрузка аудио из YouTube/Bandcamp."
             if not previous_audio_present
-            else "Запущена замена существующего mp3 данными из YouTube."
+            else "Запущена замена существующего mp3 данными из YouTube/Bandcamp."
         ),
         previous_audio_present=previous_audio_present,
         old_audio=previous_audio_name or "—",
@@ -277,14 +277,14 @@ def _process_track_for_youtube_enrichment(
         _log_youtube_audio_event(
             logging.INFO,
             "track_updated",
-            "Трек обновлён: mp3 сохранён из YouTube.",
+            "Трек обновлён: mp3 сохранён из YouTube/Bandcamp.",
             attempts=payload["attempts"],
             **log_context,
         )
         _log_youtube_audio_event(
             logging.DEBUG,
             "track_updated_details",
-            "Детали успешного обновления трека из YouTube.",
+            "Детали успешного обновления трека из YouTube/Bandcamp.",
             status=payload["status"],
             attempts=payload["attempts"],
             previous_audio_present=payload["previous_audio_present"],
@@ -310,7 +310,7 @@ def _process_track_for_youtube_enrichment(
     _log_youtube_audio_event(
         logging.ERROR,
         "track_failed",
-        "Не удалось обновить трек аудио из YouTube.",
+        "Не удалось обновить трек аудио из YouTube/Bandcamp.",
         reason=payload["reason_code"],
         attempts=payload["attempts"],
         youtube_url=youtube_url,
@@ -320,7 +320,7 @@ def _process_track_for_youtube_enrichment(
     _log_youtube_audio_event(
         logging.DEBUG,
         "track_failed_details",
-        "Детали ошибки обновления трека из YouTube.",
+        "Детали ошибки обновления трека из YouTube/Bandcamp.",
         reason=payload["reason_code"],
         attempts=payload["attempts"],
         previous_audio_present=payload["previous_audio_present"],

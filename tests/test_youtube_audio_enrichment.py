@@ -358,6 +358,18 @@ def test_youtube_provider_validates_supported_hosts():
     )
     assert (
         YouTubeAudioEnrichmentProvider.is_valid_youtube_url(
+            "https://artist.bandcamp.com/track/demo"
+        )
+        is True
+    )
+    assert (
+        YouTubeAudioEnrichmentProvider.is_valid_youtube_url(
+            "https://bandcamp.com/track/demo"
+        )
+        is True
+    )
+    assert (
+        YouTubeAudioEnrichmentProvider.is_valid_youtube_url(
             "https://example.com/watch?v=abc123"
         )
         is False

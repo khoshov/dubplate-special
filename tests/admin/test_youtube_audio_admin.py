@@ -184,7 +184,7 @@ def test_record_admin_youtube_refresh_view_enqueues_single_record_job(monkeypatc
         }
     ]
     assert any(
-        "Поставлена в очередь задача обновления треков из YouTube." in msg
+        "Поставлена в очередь задача обновления аудио треков из YouTube." in msg
         for msg in rendered_messages
     )
     assert any(

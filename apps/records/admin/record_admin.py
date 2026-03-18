@@ -468,12 +468,18 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         youtube_url = str(track.youtube_url or "").strip()
         if not youtube_url:
             return JsonResponse(
-                {"ok": False, "error": "У трека отсутствует ссылка на YouTube."},
+                {
+                    "ok": False,
+                    "error": "У трека отсутствует ссылка на YouTube или Bandcamp.",
+                },
                 status=400,
             )
         if not YouTubeAudioEnrichmentProvider.is_valid_youtube_url(youtube_url):
             return JsonResponse(
-                {"ok": False, "error": "Ссылка на YouTube не прошла валидацию."},
+                {
+                    "ok": False,
+                    "error": "Ссылка на YouTube или Bandcamp не прошла валидацию.",
+                },
                 status=400,
             )
 
