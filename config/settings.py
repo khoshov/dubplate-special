@@ -212,10 +212,6 @@ CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=150
 # YOUTUBE AUDIO ENRICHMENT
 # =================
 if RUN_ENV == "docker":
-    YOUTUBE_COOKIE_FILE = env(
-        "YOUTUBE_COOKIE_FILE",
-        default="/app/runtime/youtube-cookies.txt",
-    )
     YOUTUBE_BROWSER_PROFILE_DIR = env(
         "YOUTUBE_BROWSER_PROFILE_DIR",
         default="/app/runtime/youtube-browser-profile",
@@ -233,10 +229,6 @@ if RUN_ENV == "docker":
         default="/usr/local/bin/deno",
     )
 else:
-    YOUTUBE_COOKIE_FILE = env(
-        "YOUTUBE_COOKIE_FILE",
-        default=str(BASE_DIR / "runtime" / "youtube-cookies.txt"),
-    )
     YOUTUBE_BROWSER_PROFILE_DIR = env(
         "YOUTUBE_BROWSER_PROFILE_DIR",
         default=str(BASE_DIR / "runtime" / "youtube-browser-profile"),

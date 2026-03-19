@@ -109,7 +109,6 @@ def _maybe_refresh_youtube_session(
         refreshed=refresh_result.refreshed,
         profile_ready=refresh_result.profile_ready,
         waited=refresh_result.waited_for_existing_refresh,
-        seeded=refresh_result.seeded_from_cookie_file,
         details=refresh_result.message or "—",
     )
     if not (refresh_result.refreshed or refresh_result.waited_for_existing_refresh):
@@ -920,13 +919,11 @@ def refresh_youtube_session_profile() -> dict[str, Any]:
         refreshed=result.refreshed,
         profile_ready=result.profile_ready,
         waited=result.waited_for_existing_refresh,
-        seeded=result.seeded_from_cookie_file,
     )
     return {
         "refreshed": result.refreshed,
         "profile_ready": result.profile_ready,
         "waited_for_existing_refresh": result.waited_for_existing_refresh,
-        "seeded_from_cookie_file": result.seeded_from_cookie_file,
         "message": result.message,
     }
 

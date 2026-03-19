@@ -169,11 +169,6 @@ class AudioService:
         )
 
     @staticmethod
-    def bootstrap_youtube_session() -> YouTubeSessionRefreshResult:
-        """Создаёт persistent browser profile из текущего cookies.txt."""
-        return YouTubeSessionService.bootstrap_from_cookie_file()
-
-    @staticmethod
     def refresh_youtube_session() -> YouTubeSessionRefreshResult:
         """Обновляет persistent browser profile для YouTube."""
         return YouTubeSessionService.refresh_profile()

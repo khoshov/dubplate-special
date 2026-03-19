@@ -5,7 +5,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +84,6 @@ class YouTubeSessionRefreshResult:
     refreshed: bool
     profile_ready: bool
     waited_for_existing_refresh: bool = False
-    seeded_from_cookie_file: bool = False
     message: str = ""
 
 
@@ -116,18 +114,6 @@ class YouTubeSessionService:
         ).resolve()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         return lock_path
-
-    @classmethod
-    def cookie_file(cls) -> Path | None:
-        configured_path = str(
-            getattr(settings, "YOUTUBE_COOKIE_FILE", "") or ""
-        ).strip()
-        if not configured_path:
-            return None
-        cookie_path = Path(configured_path)
-        if cookie_path.is_file():
-            return cookie_path
-        return None
 
     @classmethod
     def browser_name(cls) -> str:
@@ -176,11 +162,6 @@ class YouTubeSessionService:
             cls.browser_keyring(),
             None,
         )
-
-    @classmethod
-    def bootstrap_from_cookie_file(cls) -> YouTubeSessionRefreshResult:
-        """Создаёт или обновляет профиль Chromium из текущего cookies.txt."""
-        return cls.refresh_profile(force_seed_from_cookie_file=True)
 
     @classmethod
     def interactive_login(
@@ -325,11 +306,7 @@ class YouTubeSessionService:
         )
 
     @classmethod
-    def refresh_profile(
-        cls,
-        *,
-        force_seed_from_cookie_file: bool = False,
-    ) -> YouTubeSessionRefreshResult:
+    def refresh_profile(cls) -> YouTubeSessionRefreshResult:
         """Открывает persistent profile и обновляет сессию YouTube."""
         lock_fd = cls._acquire_lock()
         waited_for_existing_refresh = False
@@ -348,12 +325,10 @@ class YouTubeSessionService:
 
         profile_ready = False
         navigated = False
-        seeded_from_cookie_file = False
         _log_youtube_session_event(
             logging.DEBUG,
             "refresh_start",
             "Запущено обновление persistent profile YouTube.",
-            force_seed_from_cookie_file=force_seed_from_cookie_file,
         )
         try:
             cls._clear_profile_singleton_artifacts()
@@ -372,11 +347,6 @@ class YouTubeSessionService:
                 )
                 try:
                     cls._install_network_blocker(context)
-                    if force_seed_from_cookie_file or not cls.profile_is_ready():
-                        seeded_from_cookie_file = cls._seed_context_from_cookie_file(
-                            context
-                        )
-
                     page = cls._resolve_page(context)
                     page.set_default_timeout(5_000)
                     page.set_default_navigation_timeout(8_000)
@@ -416,29 +386,36 @@ class YouTubeSessionService:
                 "refresh_failed",
                 "Не удалось обновить YouTube-сессию.",
                 error=str(exc),
-                seeded_from_cookie_file=seeded_from_cookie_file,
             )
             return YouTubeSessionRefreshResult(
                 refreshed=False,
                 profile_ready=cls.profile_is_ready(),
                 waited_for_existing_refresh=waited_for_existing_refresh,
-                seeded_from_cookie_file=seeded_from_cookie_file,
                 message=str(exc),
             )
         finally:
             cls._release_lock(lock_fd)
 
         result = YouTubeSessionRefreshResult(
-            refreshed=navigated or seeded_from_cookie_file,
+            refreshed=navigated,
             profile_ready=profile_ready,
             waited_for_existing_refresh=waited_for_existing_refresh,
-            seeded_from_cookie_file=seeded_from_cookie_file,
             message=(
                 "Профиль YouTube обновлён."
-                if navigated or seeded_from_cookie_file
+                if navigated
                 else "Профиль YouTube не удалось обновить через браузер."
             ),
         )
+        if result.profile_ready:
+            cls.mark_state_healthy(
+                result.message
+                or "YouTube-сессия подтверждена после обновления persistent profile."
+            )
+        else:
+            cls.mark_state_auth_required(
+                result.message
+                or f"Persistent profile пуст. Выполните интерактивную авторизацию по адресу {cls.ui_url()}."
+            )
         _log_youtube_session_event(
             logging.DEBUG,
             "refresh_finish",
@@ -446,7 +423,6 @@ class YouTubeSessionService:
             refreshed=result.refreshed,
             profile_ready=result.profile_ready,
             waited=result.waited_for_existing_refresh,
-            seeded_from_cookie_file=result.seeded_from_cookie_file,
             details=result.message,
         )
         return result
@@ -497,6 +473,24 @@ class YouTubeSessionService:
         state = cls._get_state()
         now = cls._now()
         state.status = state.Status.AUTH_REQUIRED
+        state.status_message = message
+        state.last_checked_at = now
+        state.last_error_at = now
+        state.save(
+            update_fields=[
+                "status",
+                "status_message",
+                "last_checked_at",
+                "last_error_at",
+                "modified",
+            ]
+        )
+
+    @classmethod
+    def mark_state_unknown(cls, message: str) -> None:
+        state = cls._get_state()
+        now = cls._now()
+        state.status = state.Status.UNKNOWN
         state.status_message = message
         state.last_checked_at = now
         state.last_error_at = now
@@ -618,59 +612,6 @@ class YouTubeSessionService:
                 return
             except (PWTimeout, PWError):
                 continue
-
-    @classmethod
-    def _seed_context_from_cookie_file(cls, context: BrowserContext) -> bool:
-        cookie_file = cls.cookie_file()
-        if cookie_file is None:
-            _log_youtube_session_event(
-                logging.DEBUG,
-                "bootstrap_cookie_file_missing",
-                "cookies.txt не найден для bootstrap YouTube-сессии.",
-            )
-            return False
-
-        jar = MozillaCookieJar(str(cookie_file))
-        jar.load(ignore_discard=True, ignore_expires=True)
-
-        cookies: list[dict[str, object]] = []
-        for cookie in jar:
-            domain = (cookie.domain or "").strip()
-            if not domain:
-                continue
-            payload: dict[str, object] = {
-                "name": cookie.name,
-                "value": cookie.value,
-                "domain": domain,
-                "path": cookie.path or "/",
-                "secure": bool(cookie.secure),
-            }
-            if cookie.expires is not None:
-                payload["expires"] = float(cookie.expires)
-            if "httponly" in {
-                key.casefold() for key in getattr(cookie, "_rest", {}).keys()
-            }:
-                payload["httpOnly"] = True
-            cookies.append(payload)
-
-        if not cookies:
-            _log_youtube_session_event(
-                logging.DEBUG,
-                "bootstrap_cookie_file_empty",
-                "В cookies.txt нет импортируемых cookies.",
-                cookie_file=str(cookie_file),
-            )
-            return False
-
-        context.add_cookies(cookies)
-        _log_youtube_session_event(
-            NOTICE_LEVEL,
-            "bootstrap_cookie_file_imported",
-            "В persistent profile импортированы cookies из cookies.txt.",
-            cookie_file=str(cookie_file),
-            cookies_count=len(cookies),
-        )
-        return True
 
     @classmethod
     def _acquire_lock(cls) -> int | None:

@@ -387,3 +387,23 @@ def test_youtube_session_banner_hides_healthy_and_unknown_states():
     state.status = YouTubeSessionState.Status.HEALTHY
     state.save()
     assert youtube_session_banner(context)["show_banner"] is False
+
+
+@pytest.mark.django_db
+def test_youtube_session_banner_shows_unknown_error_state():
+    request = RequestFactory().get("/admin/")
+    request.user = FakeUser()
+    context = {"request": request}
+
+    state = YouTubeSessionState.get_solo()
+    state.status = YouTubeSessionState.Status.UNKNOWN
+    state.status_message = "yt-dlp не смог пройти JS-проверку YouTube."
+    state.last_error_at = state.modified
+    state.save()
+
+    banner = youtube_session_banner(context)
+
+    assert banner["show_banner"] is True
+    assert banner["status_label"] == "Ошибка загрузки аудио YouTube"
+    assert banner["show_refresh_action"] is True
+    assert banner["show_login_action"] is False
