@@ -895,6 +895,23 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             return False
         return super().has_delete_permission(request, obj)
 
+    def get_deleted_objects(self, objs, request: HttpRequest):
+        """Исключает внутренние enrichment-логи из permission-check страницы удаления."""
+        deleted_objects, model_count, perms_needed, protected = (
+            super().get_deleted_objects(objs, request)
+        )
+        ignored_verbose_names = {
+            AudioEnrichmentJobRecord._meta.verbose_name,
+            AudioEnrichmentTrackResult._meta.verbose_name,
+            VKPublicationLog._meta.verbose_name,
+        }
+        filtered_perms_needed = {
+            verbose_name
+            for verbose_name in perms_needed
+            if verbose_name not in ignored_verbose_names
+        }
+        return deleted_objects, model_count, filtered_perms_needed, protected
+
     def formfield_for_manytomany(self, db_field, request: HttpRequest, **kwargs):
         """
         Делает M2M-поля необязательными в админке (чтобы не мешали созданию записи).

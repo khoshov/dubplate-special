@@ -6,13 +6,21 @@ import uuid
 import pytest
 from django.contrib import messages
 from django.contrib.admin.sites import AdminSite
+from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.test import RequestFactory
 
 from records.admin.actions import find_audio_on_youtube, update_audio_from_youtube
 from records.admin.record_admin import RecordAdmin
-from records.models import Record, YouTubeSessionState
+from records.models import (
+    AudioEnrichmentJob,
+    AudioEnrichmentJobRecord,
+    AudioEnrichmentTrackResult,
+    Record,
+    VKPublicationLog,
+    YouTubeSessionState,
+)
 from records.services.tasks import (
     login_youtube_session_profile,
     refresh_youtube_session_profile,
@@ -465,3 +473,117 @@ def test_youtube_session_banner_shows_unknown_error_state():
     assert banner["status_label"] == "Ошибка загрузки аудио YouTube"
     assert banner["show_refresh_action"] is True
     assert banner["show_login_action"] is False
+
+
+@pytest.mark.django_db
+def test_record_admin_delete_ignores_internal_enrichment_permissions():
+    admin_user = get_user_model().objects.create_superuser(
+        username="record-delete-admin",
+        email="record-delete-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Delete Me")
+    track = record.tracks.create(title="Track 1", youtube_url="https://youtu.be/demo")
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.COMPLETED,
+        requested_by_user=admin_user,
+    )
+    job_record = AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED,
+    )
+    AudioEnrichmentTrackResult.objects.create(
+        job_record=job_record,
+        track=track,
+        status=AudioEnrichmentTrackResult.Status.UPDATED,
+    )
+
+    admin = RecordAdmin(Record, AdminSite())
+    request = RequestFactory().get(f"/admin/records/record/{record.pk}/delete/")
+    request.user = admin_user
+
+    deleted_objects, model_count, perms_needed, protected = admin.get_deleted_objects(
+        [record], request
+    )
+
+    assert deleted_objects
+    assert model_count
+    assert not protected
+    assert "элемент списка задач" not in perms_needed
+    assert "результат добавления mp3 к трекам" not in perms_needed
+
+
+@pytest.mark.django_db
+def test_record_delete_cascades_enrichment_records_but_keeps_job():
+    admin_user = get_user_model().objects.create_superuser(
+        username="record-cascade-admin",
+        email="record-cascade-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Cascade Me")
+    track = record.tracks.create(title="Track 1", youtube_url="https://youtu.be/demo")
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.COMPLETED,
+        requested_by_user=admin_user,
+    )
+    job_record = AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED,
+    )
+    track_result = AudioEnrichmentTrackResult.objects.create(
+        job_record=job_record,
+        track=track,
+        status=AudioEnrichmentTrackResult.Status.UPDATED,
+    )
+
+    record.delete()
+
+    assert AudioEnrichmentJob.objects.filter(pk=job.pk).exists()
+    assert not AudioEnrichmentJobRecord.objects.filter(pk=job_record.pk).exists()
+    assert not AudioEnrichmentTrackResult.objects.filter(pk=track_result.pk).exists()
+
+
+@pytest.mark.django_db
+def test_record_admin_delete_ignores_vk_publication_log_permissions():
+    admin_user = get_user_model().objects.create_superuser(
+        username="record-vk-delete-admin",
+        email="record-vk-delete-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Delete VK Log")
+    VKPublicationLog.objects.create(
+        record=record,
+        mode=VKPublicationLog.Mode.IMMEDIATE,
+        status=VKPublicationLog.Status.SUCCESS,
+    )
+
+    admin = RecordAdmin(Record, AdminSite())
+    request = RequestFactory().get(f"/admin/records/record/{record.pk}/delete/")
+    request.user = admin_user
+
+    deleted_objects, model_count, perms_needed, protected = admin.get_deleted_objects(
+        [record], request
+    )
+
+    assert deleted_objects
+    assert model_count
+    assert not protected
+    assert "лог публикации vk" not in perms_needed
+
+
+@pytest.mark.django_db
+def test_record_delete_cascades_vk_publication_logs():
+    record = Record.objects.create(title="Cascade VK Log")
+    log = VKPublicationLog.objects.create(
+        record=record,
+        mode=VKPublicationLog.Mode.IMMEDIATE,
+        status=VKPublicationLog.Status.SUCCESS,
+    )
+
+    record.delete()
+
+    assert not VKPublicationLog.objects.filter(pk=log.pk).exists()
