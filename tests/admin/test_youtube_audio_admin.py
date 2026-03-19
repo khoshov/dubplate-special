@@ -334,6 +334,64 @@ def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, sett
 
 
 @pytest.mark.django_db
+def test_record_admin_youtube_session_login_view_skips_when_session_is_healthy(
+    monkeypatch,
+):
+    admin = RecordAdmin(Record, AdminSite())
+    queued: list[int] = []
+    state = YouTubeSessionState.get_solo()
+    state.status = YouTubeSessionState.Status.HEALTHY
+    state.save(update_fields=["status", "modified"])
+    monkeypatch.setattr(
+        login_youtube_session_profile,
+        "delay",
+        lambda **kwargs: queued.append(kwargs["timeout_sec"]),
+    )
+
+    request = RequestFactory().post("/admin/records/record/youtube-session/login/")
+    request.user = FakeUser()
+    request.META["HTTP_REFERER"] = "/admin/records/record/"
+    _attach_session_and_messages(request)
+
+    response = admin._login_youtube_session_view(request)
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+
+    assert response.status_code == 302
+    assert response["Location"] == "/admin/records/record/"
+    assert queued == []
+    assert any("уже активна" in msg for msg in rendered_messages)
+
+
+@pytest.mark.django_db
+def test_record_admin_youtube_session_login_view_skips_when_login_is_running(
+    monkeypatch,
+):
+    admin = RecordAdmin(Record, AdminSite())
+    queued: list[int] = []
+    state = YouTubeSessionState.get_solo()
+    state.status = YouTubeSessionState.Status.LOGIN_IN_PROGRESS
+    state.save(update_fields=["status", "modified"])
+    monkeypatch.setattr(
+        login_youtube_session_profile,
+        "delay",
+        lambda **kwargs: queued.append(kwargs["timeout_sec"]),
+    )
+
+    request = RequestFactory().post("/admin/records/record/youtube-session/login/")
+    request.user = FakeUser()
+    request.META["HTTP_REFERER"] = "/admin/records/record/"
+    _attach_session_and_messages(request)
+
+    response = admin._login_youtube_session_view(request)
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+
+    assert response.status_code == 302
+    assert response["Location"] == "/admin/records/record/"
+    assert queued == []
+    assert any("уже запущена" in msg for msg in rendered_messages)
+
+
+@pytest.mark.django_db
 def test_record_admin_youtube_session_recover_view_renders_page(settings):
     admin = RecordAdmin(Record, AdminSite())
     settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"

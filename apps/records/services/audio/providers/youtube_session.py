@@ -149,8 +149,15 @@ class YouTubeSessionService:
         ).strip()
 
     @classmethod
-    def profile_is_ready(cls) -> bool:
+    def profile_has_cookie_store(cls) -> bool:
         return any(cls.profile_dir().rglob("Cookies"))
+
+    @classmethod
+    def profile_is_ready(cls) -> bool:
+        if not cls.profile_has_cookie_store():
+            return False
+        state = cls._get_state()
+        return state.status == state.Status.HEALTHY
 
     @classmethod
     def resolve_cookies_from_browser(cls) -> tuple[str, str, str | None, None] | None:
@@ -177,6 +184,16 @@ class YouTubeSessionService:
                 message=(
                     "Переменная DISPLAY не задана. "
                     "Запустите команду внутри youtube_session_ui."
+                ),
+            )
+
+        if cls.profile_is_ready():
+            return YouTubeSessionLoginResult(
+                logged_in=True,
+                profile_ready=True,
+                message=(
+                    "YouTube-сессия уже подтверждена. Повторная интерактивная "
+                    "авторизация не требуется."
                 ),
             )
 
@@ -230,7 +247,6 @@ class YouTubeSessionService:
                 try:
                     # Для dedicated profile интерактивный bootstrap всегда должен
                     # требовать живой re-login, а не принимать stale cookies за успех.
-                    context.clear_cookies()
                     page = cls._resolve_page(context)
                     page.set_default_timeout(10_000)
                     page.set_default_navigation_timeout(20_000)
@@ -295,7 +311,7 @@ class YouTubeSessionService:
 
         return YouTubeSessionLoginResult(
             logged_in=logged_in,
-            profile_ready=cls.profile_is_ready(),
+            profile_ready=logged_in,
             waited_for_existing_refresh=waited_for_existing_refresh,
             timed_out=not logged_in,
             message=(
@@ -368,8 +384,9 @@ class YouTubeSessionService:
                         )
 
                     # Запрос списка cookies провоцирует запись актуального состояния профиля.
-                    context.cookies()
-                    profile_ready = cls.profile_is_ready()
+                    profile_ready = cls.has_authenticated_session_cookies(
+                        context.cookies()
+                    )
                 finally:
                     try:
                         context.close()
@@ -397,12 +414,12 @@ class YouTubeSessionService:
             cls._release_lock(lock_fd)
 
         result = YouTubeSessionRefreshResult(
-            refreshed=navigated,
+            refreshed=navigated and profile_ready,
             profile_ready=profile_ready,
             waited_for_existing_refresh=waited_for_existing_refresh,
             message=(
                 "Профиль YouTube обновлён."
-                if navigated
+                if navigated and profile_ready
                 else "Профиль YouTube не удалось обновить через браузер."
             ),
         )
@@ -642,6 +659,11 @@ class YouTubeSessionService:
     def _drop_stale_lock(cls, lock_path: Path) -> None:
         if not lock_path.exists():
             return
+        lock_pid = cls._read_lock_pid(lock_path)
+        if lock_pid is not None and not cls._pid_is_running(lock_pid):
+            with contextlib.suppress(FileNotFoundError):
+                lock_path.unlink()
+            return
         age_sec = time.time() - lock_path.stat().st_mtime
         if age_sec < _REFRESH_LOCK_STALE_SEC:
             return
@@ -657,10 +679,36 @@ class YouTubeSessionService:
         )
         lock_path = cls.lock_file()
         while time.monotonic() < deadline:
+            cls._drop_stale_lock(lock_path)
             if not lock_path.exists():
                 return True
             time.sleep(0.5)
         return False
+
+    @classmethod
+    def _read_lock_pid(cls, lock_path: Path) -> int | None:
+        try:
+            raw_value = lock_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not raw_value:
+            return None
+        try:
+            return int(raw_value)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _pid_is_running(cls, pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
 
     @classmethod
     def _clear_profile_singleton_artifacts(cls) -> None:

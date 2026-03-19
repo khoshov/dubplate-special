@@ -13,6 +13,7 @@ from django.urls import path, reverse
 from django.utils.html import format_html
 from config.logging import log_event
 
+from records.models import YouTubeSessionState
 from records.services.tasks import (
     login_youtube_session_profile,
     refresh_youtube_session_profile,
@@ -332,6 +333,21 @@ class YouTubeAudioRefreshMixin:
         """Ставит интерактивную авторизацию YouTube-сессии в очередь."""
         if request.method != "POST":
             messages.error(request, "Разрешён только POST-запрос.")
+            return redirect(self._youtube_session_redirect_target(request))
+
+        state = YouTubeSessionState.get_solo()
+        if state.status == YouTubeSessionState.Status.HEALTHY:
+            messages.info(
+                request,
+                "YouTube-сессия уже активна. Повторная интерактивная авторизация не требуется.",
+            )
+            return redirect(self._youtube_session_redirect_target(request))
+
+        if state.status == YouTubeSessionState.Status.LOGIN_IN_PROGRESS:
+            messages.warning(
+                request,
+                "Интерактивная авторизация YouTube-сессии уже запущена. Дождитесь завершения текущей попытки.",
+            )
             return redirect(self._youtube_session_redirect_target(request))
 
         timeout_sec = int(
