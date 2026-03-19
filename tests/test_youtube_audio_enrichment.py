@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from yt_dlp.utils import DownloadError
 
 from records.models import (
     AudioEnrichmentJob,
@@ -425,16 +426,13 @@ def test_youtube_provider_stops_retrying_when_authentication_is_required():
     assert isinstance(last_error, YouTubeAuthenticationRequiredError)
 
 
-def test_youtube_provider_builds_ydl_options_with_cookie_runtime_and_remote_components(
+def test_youtube_provider_builds_ydl_options_without_cookie_file_fallback(
     settings, monkeypatch
 ):
     runtime_dir = Path("runtime")
     runtime_dir.mkdir(exist_ok=True)
-    cookie_file = runtime_dir / "test-youtube-cookies.txt"
     cache_dir = runtime_dir / "test-yt-dlp-cache"
     try:
-        cookie_file.write_text("# Netscape HTTP Cookie File", encoding="utf-8")
-        settings.YOUTUBE_COOKIE_FILE = str(cookie_file)
         settings.YOUTUBE_YTDLP_CACHE_DIR = str(cache_dir)
         settings.YOUTUBE_JS_RUNTIME = "node"
         settings.YOUTUBE_JS_RUNTIME_PATH = ""
@@ -450,15 +448,61 @@ def test_youtube_provider_builds_ydl_options_with_cookie_runtime_and_remote_comp
 
         options = YouTubeAudioEnrichmentProvider._build_ydl_options(str(runtime_dir))
     finally:
-        if cookie_file.exists():
-            cookie_file.unlink()
         if cache_dir.exists():
             cache_dir.rmdir()
 
-    assert options["cookiefile"] == str(cookie_file)
     assert options["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
     assert options["remote_components"] == ["ejs:github", "ejs:npm"]
     assert options["cachedir"] == str(cache_dir)
+    assert "cookiefile" not in options
+
+
+def test_resolve_js_runtimes_prefers_configured_path(
+    settings,
+    tmp_path,
+    monkeypatch,
+):
+    runtime_file = tmp_path / "node-runtime"
+    runtime_file.write_text("", encoding="utf-8")
+    settings.YOUTUBE_JS_RUNTIME = "node"
+    settings.YOUTUBE_JS_RUNTIME_PATH = str(runtime_file)
+
+    was_called = {"which": False}
+
+    def never_called(_name: str) -> str:
+        was_called["which"] = True
+        return ""
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.shutil.which",
+        never_called,
+    )
+
+    resolved = YouTubeAudioEnrichmentProvider._resolve_js_runtimes()
+
+    assert resolved == {"node": {"path": str(runtime_file)}}
+    assert was_called["which"] is False
+
+
+def test_resolve_js_runtimes_uses_which_fallback(settings, monkeypatch):
+    settings.YOUTUBE_JS_RUNTIME = "deno"
+    settings.YOUTUBE_JS_RUNTIME_PATH = ""
+
+    called: list[str] = []
+
+    def fake_which(name: str) -> str:
+        called.append(name)
+        return "/usr/local/bin/deno"
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.shutil.which",
+        fake_which,
+    )
+
+    resolved = YouTubeAudioEnrichmentProvider._resolve_js_runtimes()
+
+    assert resolved == {"deno": {"path": "/usr/local/bin/deno"}}
+    assert called == ["deno"]
 
 
 def test_youtube_provider_prefers_browser_profile_over_cookie_file(
@@ -466,19 +510,12 @@ def test_youtube_provider_prefers_browser_profile_over_cookie_file(
 ):
     runtime_dir = Path("runtime")
     runtime_dir.mkdir(exist_ok=True)
-    cookie_file = runtime_dir / "test-youtube-cookies.txt"
-    try:
-        cookie_file.write_text("# Netscape HTTP Cookie File", encoding="utf-8")
-        settings.YOUTUBE_COOKIE_FILE = str(cookie_file)
-        monkeypatch.setattr(
-            "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
-            lambda: ("chromium", "/tmp/youtube-profile", "BASICTEXT", None),
-        )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
+        lambda: ("chromium", "/tmp/youtube-profile", "BASICTEXT", None),
+    )
 
-        options = YouTubeAudioEnrichmentProvider._build_ydl_options(str(runtime_dir))
-    finally:
-        if cookie_file.exists():
-            cookie_file.unlink()
+    options = YouTubeAudioEnrichmentProvider._build_ydl_options(str(runtime_dir))
 
     assert options["cookiesfrombrowser"] == (
         "chromium",
@@ -487,6 +524,151 @@ def test_youtube_provider_prefers_browser_profile_over_cookie_file(
         None,
     )
     assert "cookiefile" not in options
+
+
+@pytest.mark.django_db
+def test_youtube_provider_treats_invalid_cookie_log_as_auth_required(
+    settings, monkeypatch
+):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    settings.YOUTUBE_BROWSER_PROFILE_DIR = str(runtime_dir / "browser-profile")
+    temp_dir = runtime_dir / f"yt-audio-auth-{uuid.uuid4().hex}"
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            self.options["logger"].warning(
+                "WARNING: The provided YouTube account cookies are no longer valid"
+            )
+            raise DownloadError(
+                "ERROR: [youtube] demo: Requested format is not available."
+            )
+
+    marked_messages: list[str] = []
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.mark_state_auth_required",
+        lambda message: marked_messages.append(message),
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
+        lambda: None,
+    )
+
+    record = Record.objects.create(title="Cookie Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Cookie Track",
+        youtube_url="https://www.youtube.com/watch?v=cookie-track",
+    )
+
+    with pytest.raises(YouTubeAuthenticationRequiredError):
+        YouTubeAudioEnrichmentProvider.download_audio_to_track(track=track)
+
+    assert marked_messages
+    assert "cookies are no longer valid" in marked_messages[0]
+
+
+@pytest.mark.django_db
+def test_youtube_provider_marks_unknown_state_on_solver_failure(settings, monkeypatch):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    settings.YOUTUBE_BROWSER_PROFILE_DIR = str(runtime_dir / "browser-profile")
+    temp_dir = runtime_dir / f"yt-audio-solver-{uuid.uuid4().hex}"
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            self.options["logger"].warning("WARNING: Signature solving failed")
+            self.options["logger"].warning(
+                "WARNING: Only images are available for download"
+            )
+            raise DownloadError(
+                "ERROR: [youtube] demo: Requested format is not available."
+            )
+
+    marked_messages: list[str] = []
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.mark_state_unknown",
+        lambda message: marked_messages.append(message),
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YouTubeSessionService.resolve_cookies_from_browser",
+        lambda: ("chromium", "/tmp/youtube-profile", "BASICTEXT", None),
+    )
+
+    record = Record.objects.create(title="Solver Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Solver Track",
+        youtube_url="https://www.youtube.com/watch?v=solver-track",
+    )
+
+    with pytest.raises(RuntimeError, match="JS-проверку YouTube"):
+        YouTubeAudioEnrichmentProvider.download_audio_to_track(track=track)
+
+    assert marked_messages
+    assert "Signature solving failed" in marked_messages[0]
 
 
 @pytest.mark.django_db
@@ -692,7 +874,6 @@ def test_process_track_for_youtube_enrichment_recovers_after_session_refresh(
         return YouTubeSessionRefreshResult(
             refreshed=True,
             profile_ready=True,
-            seeded_from_cookie_file=False,
             message="session refreshed",
         )
 
