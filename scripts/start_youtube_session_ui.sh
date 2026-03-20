@@ -15,7 +15,7 @@ XVFB_PID=$!
 fluxbox >/tmp/youtube-session-fluxbox.log 2>&1 &
 FLUXBOX_PID=$!
 
-uv run celery -A config worker   --loglevel=info   --queues=youtube_session_login   --concurrency=1   --hostname=youtube-session-ui@%h   >/tmp/youtube-session-celery.log 2>&1 &
+uv run celery -A config worker   --loglevel=info   --queues=youtube_session_login   --concurrency=1   --hostname=youtube-session-login@%h   >/tmp/youtube-session-celery.log 2>&1 &
 CELERY_PID=$!
 
 x11vnc   -display "$DISPLAY_NUMBER"   -rfbport "$VNC_PORT"   -forever   -shared   -nopw   -localhost   >/tmp/youtube-session-x11vnc.log 2>&1 &
@@ -41,3 +41,4 @@ while true
   done
   sleep 2
 done
+

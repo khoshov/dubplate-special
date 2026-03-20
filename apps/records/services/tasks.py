@@ -908,7 +908,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
     }
 
 
-@shared_task(name="records.youtube_session.refresh", queue="youtube_session")
+@shared_task(name="records.youtube_session.refresh")
 def refresh_youtube_session_profile() -> dict[str, Any]:
     """Обновляет persistent browser profile для YouTube."""
     result = AudioService.refresh_youtube_session()

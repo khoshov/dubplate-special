@@ -23,6 +23,8 @@
 ### Docker Compose (опционально)
 - Поднять окружение: `docker compose up -d --build`
 - При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
+- Фоновая обработка выполняется обычным контейнером `celery`.
+- Контейнер `youtube_session_login` используется только для ручной интерактивной YouTube-авторизации через noVNC и поднимает внутри себя отдельный worker только для очереди `youtube_session_login`.
 
 ## Команды Redeye (2 режима запуска)
 - Для `parse_redeye` и `redeye_mp3_attach` поддерживаются оба режима: локально и в Docker.
@@ -225,3 +227,4 @@ uv run ruff check .  # Проверит все файлы в текущей ди
 ```bash
 docker compose up --build  # Соберет и запустит сервисы
 ```
+

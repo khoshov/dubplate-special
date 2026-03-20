@@ -144,7 +144,7 @@ class YouTubeSessionService:
     @classmethod
     def login_url(cls) -> str:
         return str(
-            getattr(settings, "YOUTUBE_SESSION_LOGIN_URL", "")
+            getattr(settings, "YOUTUBE_SESSION_UI_URL", "")
             or "https://accounts.google.com/ServiceLogin?service=youtube"
         ).strip()
 
@@ -183,7 +183,7 @@ class YouTubeSessionService:
                 profile_ready=cls.profile_is_ready(),
                 message=(
                     "Переменная DISPLAY не задана. "
-                    "Запустите команду внутри youtube_session_ui."
+                    "Запустите команду внутри youtube_session_login."
                 ),
             )
 
@@ -777,3 +777,5 @@ class YouTubeSessionService:
                 error=str(exc),
             )
             return False
+
+
