@@ -47,6 +47,7 @@ from records.services.social.publication_log import register_vk_publication_even
 from records.services.social.schedule import build_even_schedule
 from records.services.social.vk_service import VKService
 from .actions import (
+    find_audio_on_youtube,
     post_to_vk,
     schedule_to_vk,
     update_audio_from_youtube,
@@ -142,6 +143,7 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
     actions = [
         update_from_discogs,
         update_audio_from_youtube,
+        find_audio_on_youtube,
         update_from_redeye,
         post_to_vk,
         schedule_to_vk,
@@ -178,21 +180,17 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
     )
 
     list_display = (
-        "title",
-        "get_artists_display",
-        "label",
-        "catalog_number",
-        "barcode",
-        "stock",
-        "price",
-        "discogs_id",
-        "created",
-        "release_year",
-        "release_month",
-        "release_day",
-        "is_expected",
-        "availability_status",
+        "title_display",
+        "artists_display",
+        "label_display",
+        "catalog_number_display",
+        "barcode_display",
+        "discogs_id_display",
+        "created_display",
+        "availability_status_display",
+        "is_expected_display",
         "vk_published_at_display",
+        "record_id_display",
     )
     list_filter = (
         "condition",
@@ -322,7 +320,8 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             return [str(msg) for msg in exc.messages]
         return [str(exc)]
 
-    def get_artists_display(self, obj: Record) -> str:
+    @admin.display(description="АРТИСТЫ")
+    def artists_display(self, obj: Record) -> str:
         """Показывает первых трёх артистов, если больше — добавляет '...'."""
         artists = obj.artists.all()[:3]
         names = [a.name for a in artists]
@@ -330,9 +329,43 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             names.append("...")
         return ", ".join(names) or "-"
 
-    get_artists_display.short_description = "Артисты"
+    @admin.display(description="НАЗВАНИЕ", ordering="title")
+    def title_display(self, obj: Record) -> str:
+        return obj.title
 
-    @admin.display(description="Опубликовано", ordering="vk_published_at")
+    @admin.display(description="LABEL", ordering="label__name")
+    def label_display(self, obj: Record) -> str:
+        return str(obj.label) if obj.label else "—"
+
+    @admin.display(description="КАТАЛОЖНЫЙ НОМЕР", ordering="catalog_number")
+    def catalog_number_display(self, obj: Record) -> str:
+        return obj.catalog_number or "—"
+
+    @admin.display(description="BARCODE", ordering="barcode")
+    def barcode_display(self, obj: Record) -> str:
+        return obj.barcode or "—"
+
+    @admin.display(description="DISCOGS ID", ordering="discogs_id")
+    def discogs_id_display(self, obj: Record) -> str:
+        return str(obj.discogs_id) if obj.discogs_id else "—"
+
+    @admin.display(description="СОЗДАНО", ordering="created")
+    def created_display(self, obj: Record) -> str:
+        return timezone.localtime(obj.created).strftime("%Y-%m-%d %H:%M")
+
+    @admin.display(description="НАЛИЧИЕ", ordering="availability_status")
+    def availability_status_display(self, obj: Record) -> str:
+        return obj.get_availability_status_display() or obj.availability_status
+
+    @admin.display(description="ОЖИДАЕТСЯ", boolean=True, ordering="is_expected")
+    def is_expected_display(self, obj: Record) -> bool:
+        return bool(obj.is_expected)
+
+    @admin.display(description="RECORD ID", ordering="pk")
+    def record_id_display(self, obj: Record) -> int:
+        return int(obj.pk)
+
+    @admin.display(description="ПОСЛЕДНЯЯ ПУБЛИКАЦИЯ В ВК", ordering="vk_published_at")
     def vk_published_at_display(self, obj: Record) -> str:
         published_at = getattr(obj, "vk_published_at", None)
         if published_at is None:
@@ -435,12 +468,18 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         youtube_url = str(track.youtube_url or "").strip()
         if not youtube_url:
             return JsonResponse(
-                {"ok": False, "error": "У трека отсутствует ссылка на YouTube."},
+                {
+                    "ok": False,
+                    "error": "У трека отсутствует ссылка на YouTube или Bandcamp.",
+                },
                 status=400,
             )
         if not YouTubeAudioEnrichmentProvider.is_valid_youtube_url(youtube_url):
             return JsonResponse(
-                {"ok": False, "error": "Ссылка на YouTube не прошла валидацию."},
+                {
+                    "ok": False,
+                    "error": "Ссылка на YouTube или Bandcamp не прошла валидацию.",
+                },
                 status=400,
             )
 
@@ -856,6 +895,23 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             return False
         return super().has_delete_permission(request, obj)
 
+    def get_deleted_objects(self, objs, request: HttpRequest):
+        """Исключает внутренние enrichment-логи из permission-check страницы удаления."""
+        deleted_objects, model_count, perms_needed, protected = (
+            super().get_deleted_objects(objs, request)
+        )
+        ignored_verbose_names = {
+            AudioEnrichmentJobRecord._meta.verbose_name,
+            AudioEnrichmentTrackResult._meta.verbose_name,
+            VKPublicationLog._meta.verbose_name,
+        }
+        filtered_perms_needed = {
+            verbose_name
+            for verbose_name in perms_needed
+            if verbose_name not in ignored_verbose_names
+        }
+        return deleted_objects, model_count, filtered_perms_needed, protected
+
     def formfield_for_manytomany(self, db_field, request: HttpRequest, **kwargs):
         """
         Делает M2M-поля необязательными в админке (чтобы не мешали созданию записи).
@@ -956,7 +1012,10 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
 
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}
-        js = ("records/js/admin_local_datetime.js",)
+        js = (
+            "records/js/admin_local_datetime.js",
+            "records/admin/record_submit_row.js",
+        )
 
 
 @admin.register(Artist)

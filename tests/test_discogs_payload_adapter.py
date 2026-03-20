@@ -38,6 +38,18 @@ class DummyTrack:
         self.data = {"type_": track_type} if track_type is not None else {}
 
 
+class DummyCompositeTrack(DummyTrack):
+    def __init__(
+        self,
+        title: str,
+        *,
+        track_type: str = "index",
+        sub_tracks: list[DummyTrack] | None = None,
+    ):
+        super().__init__(title=title, track_type=track_type)
+        self.data["sub_tracks"] = sub_tracks or []
+
+
 class DummyVideo:
     def __init__(self, title: str, uri: str):
         self.title = title
@@ -368,6 +380,35 @@ def test_adapt_discogs_release_skips_headings_and_matches_video_by_position_with
         by_title["Geni (Lost In Zanzibar)"]["youtube_url"]
         == "https://www.youtube.com/watch?v=0sJCUAKoTIo"
     )
+
+
+def test_adapt_discogs_release_expands_sub_tracks_from_composite_classical_tracklist():
+    release = DummyRelease(
+        release_id=4150082,
+        year=1960,
+        released="1960",
+    )
+    release.tracklist = [
+        DummyCompositeTrack(
+            "Concerto In D Major, Op. 77",
+            track_type="heading",
+            sub_tracks=[
+                DummyTrack("Allegro Non Troppo", "A1", "22:16"),
+                DummyTrack("Adagio", "B1", "8:16"),
+                DummyTrack("Allegro Giocoso, Ma Non Troppo Vivace", "B2", "8:05"),
+            ],
+        )
+    ]
+
+    payload = adapt_discogs_release(release)
+
+    assert [track["title"] for track in payload["tracks"]] == [
+        "Allegro Non Troppo",
+        "Adagio",
+        "Allegro Giocoso, Ma Non Troppo Vivace",
+    ]
+    assert [track["position"] for track in payload["tracks"]] == ["A1", "B1", "B2"]
+    assert [track["position_index"] for track in payload["tracks"]] == [1, 2, 3]
 
 
 def test_adapt_discogs_release_matches_remastered_titles_and_skips_full_album_video():

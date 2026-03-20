@@ -455,6 +455,25 @@ def _extract_discogs_track_type(track_obj: Any) -> str:
     return ""
 
 
+def _extract_discogs_sub_tracks(track_obj: Any) -> List[Any]:
+    if isinstance(track_obj, Mapping):
+        sub_tracks = track_obj.get("sub_tracks")
+        if isinstance(sub_tracks, list):
+            return sub_tracks
+        return []
+
+    data = getattr(track_obj, "data", None)
+    if isinstance(data, Mapping):
+        sub_tracks = data.get("sub_tracks")
+        if isinstance(sub_tracks, list):
+            return sub_tracks
+
+    nested = getattr(track_obj, "sub_tracks", None)
+    if isinstance(nested, list):
+        return nested
+    return []
+
+
 def _extract_discogs_video_rows(release: Any) -> List[Dict[str, Any]]:
     raw_videos = getattr(release, "videos", None) or []
     release_artist_clues = _extract_discogs_release_artist_clues(release)
@@ -671,6 +690,53 @@ def _normalize_tracks(seq: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _append_discogs_track_rows(
+    *,
+    track_obj: Any,
+    tracks_src: List[Dict[str, Any]],
+    video_rows: List[Dict[str, Any]],
+    used_video_indexes: set[int],
+) -> None:
+    track_type = _extract_discogs_track_type(track_obj)
+
+    if track_type == "track":
+        if isinstance(track_obj, Mapping):
+            title_track = _to_str(track_obj.get("title"))
+            track_position = _to_str(track_obj.get("position"))
+            track_duration = _to_optional_str(track_obj.get("duration"))
+        else:
+            title_track = _to_str(getattr(track_obj, "title", ""))
+            track_position = _to_str(getattr(track_obj, "position", ""))
+            track_duration = _to_optional_str(getattr(track_obj, "duration", None))
+
+        if not title_track:
+            return
+
+        tracks_src.append(
+            {
+                "position": track_position,
+                "title": title_track,
+                "duration": track_duration,
+                "youtube_url": _match_discogs_video_url_for_track(
+                    title_track,
+                    video_rows,
+                    used_indexes=used_video_indexes,
+                    track_position=track_position,
+                ),
+                "position_index": len(tracks_src) + 1,
+            }
+        )
+        return
+
+    for sub_track in _extract_discogs_sub_tracks(track_obj):
+        _append_discogs_track_rows(
+            track_obj=sub_track,
+            tracks_src=tracks_src,
+            video_rows=video_rows,
+            used_video_indexes=used_video_indexes,
+        )
+
+
 def _normalize_discogs_carrier(value: Any) -> Optional[str]:
     text = _to_optional_str(value)
     if not text:
@@ -880,35 +946,11 @@ def adapt_discogs_release(release: Any) -> Dict[str, Any]:
     used_video_indexes: set[int] = set()
     tracks_src: List[Dict[str, Any]] = []
     for track_obj in getattr(release, "tracklist", []) or []:
-        track_type = _extract_discogs_track_type(track_obj)
-        if track_type and track_type != "track":
-            continue
-
-        if isinstance(track_obj, Mapping):
-            title_track = _to_str(track_obj.get("title"))
-            track_position = _to_str(track_obj.get("position"))
-            track_duration = _to_optional_str(track_obj.get("duration"))
-        else:
-            title_track = _to_str(getattr(track_obj, "title", ""))
-            track_position = _to_str(getattr(track_obj, "position", ""))
-            track_duration = _to_optional_str(getattr(track_obj, "duration", None))
-
-        if not title_track:
-            continue
-
-        tracks_src.append(
-            {
-                "position": track_position,
-                "title": title_track,
-                "duration": track_duration,
-                "youtube_url": _match_discogs_video_url_for_track(
-                    title_track,
-                    video_rows,
-                    used_indexes=used_video_indexes,
-                    track_position=track_position,
-                ),
-                "position_index": len(tracks_src) + 1,
-            }
+        _append_discogs_track_rows(
+            track_obj=track_obj,
+            tracks_src=tracks_src,
+            video_rows=video_rows,
+            used_video_indexes=used_video_indexes,
         )
     src["tracks"] = tracks_src
 

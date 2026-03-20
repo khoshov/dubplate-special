@@ -22,7 +22,7 @@
 }
 
 #tracks-group .track-inline col.col-position_index {
-  width: 7.5em;
+  width: 4.5em;
 }
 
 #tracks-group .track-inline col.col-position {
@@ -73,6 +73,7 @@
 
 #tracks-group .track-inline th.column-position_index,
 #tracks-group .track-inline th.column-position,
+#tracks-group .track-inline th.column-title,
 #tracks-group .track-inline th.column-duration,
 #tracks-group .track-inline th.column-youtube_url,
 #tracks-group .track-inline th.column-audio_preview_actions {
@@ -84,6 +85,15 @@
 #tracks-group .track-inline td.field-position,
 #tracks-group .track-inline td.field-duration {
   text-align: right;
+}
+
+#tracks-group .track-inline td.field-position_index {
+  text-align: center;
+}
+
+#tracks-group .track-inline td.field-position_index p {
+  margin: 0;
+  text-align: center;
 }
 
 #tracks-group .track-inline td.field-position input,

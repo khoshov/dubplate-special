@@ -6,13 +6,14 @@ from typing import Any
 from django.contrib import messages
 from django.conf import settings
 from django.db import transaction
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
 from config.logging import log_event
 
+from records.models import YouTubeSessionState
 from records.services.tasks import (
     login_youtube_session_profile,
     refresh_youtube_session_profile,
@@ -129,6 +130,11 @@ class YouTubeAudioRefreshMixin:
                 name="records_record_youtube_audio_refresh",
             ),
             path(
+                "<path:object_id>/youtube-search/",
+                self.admin_site.admin_view(self._search_youtube_audio_view),
+                name="records_record_youtube_audio_search",
+            ),
+            path(
                 "youtube-session/refresh/",
                 self.admin_site.admin_view(self._refresh_youtube_session_view),
                 name="records_record_youtube_session_refresh",
@@ -150,7 +156,7 @@ class YouTubeAudioRefreshMixin:
     def _refresh_youtube_audio_view(
         self: Any, request: HttpRequest, object_id: str
     ) -> HttpResponse:
-        """Обработчик кнопки «Обновить треки из YouTube»."""
+        """Обработчик кнопки «Обновить аудио треков из YouTube»."""
         if request.method != "POST":
             messages.error(request, "Разрешён только POST-запрос.")
             return redirect(reverse("admin:records_record_change", args=[object_id]))
@@ -169,7 +175,7 @@ class YouTubeAudioRefreshMixin:
             _log_admin_mixin_event(
                 logging.INFO,
                 "youtube_audio_refresh_enqueued",
-                "Поставлена в очередь задача обновления треков из YouTube по кнопке записи.",
+                "Поставлена в очередь задача обновления аудио треков из YouTube по кнопке записи.",
                 record_id=obj.pk,
                 job_id=job.id,
                 requested_by_user_id=getattr(request.user, "id", None),
@@ -180,7 +186,7 @@ class YouTubeAudioRefreshMixin:
             )
             messages.success(
                 request,
-                "Поставлена в очередь задача обновления треков из YouTube.",
+                "Поставлена в очередь задача обновления аудио треков из YouTube.",
             )
             messages.info(
                 request,
@@ -193,14 +199,97 @@ class YouTubeAudioRefreshMixin:
             _log_admin_mixin_event(
                 logging.ERROR,
                 "youtube_audio_refresh_failed",
-                "Не удалось поставить в очередь задачу обновления треков из YouTube по кнопке записи.",
+                "Не удалось поставить в очередь задачу обновления аудио треков из YouTube по кнопке записи.",
                 record_id=obj.pk,
                 error=str(exc),
             )
             logger.exception("Детали ошибки запуска YouTube job по кнопке записи.")
             messages.error(
                 request,
-                f"Не удалось запустить обновление треков из YouTube: {exc!s}",
+                f"Не удалось запустить обновление аудио треков из YouTube: {exc!s}",
+            )
+
+        return redirect(reverse("admin:records_record_change", args=[obj.pk]))
+
+    @transaction.atomic
+    def _search_youtube_audio_view(
+        self: Any, request: HttpRequest, object_id: str
+    ) -> HttpResponse:
+        """Обработчик кнопки «Найти аудио на YouTube»."""
+        _log_admin_mixin_event(
+            logging.DEBUG,
+            "youtube_audio_search_request",
+            "Получен запрос на поиск аудио на YouTube.",
+            record_id=object_id,
+            method=request.method,
+        )
+        if request.method != "POST":
+            error_payload = {
+                "ok": False,
+                "error": "Разрешён только POST-запрос.",
+            }
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse(error_payload, status=405)
+            messages.error(request, "Разрешён только POST-запрос.")
+            return redirect(reverse("admin:records_record_change", args=[object_id]))
+
+        obj = get_object_or_404(self.model, pk=object_id)
+
+        if not self.has_change_permission(request, obj):
+            error_payload = {
+                "ok": False,
+                "error": "Недостаточно прав для обновления этой записи.",
+            }
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse(error_payload, status=403)
+            messages.error(request, "Недостаточно прав для обновления этой записи.")
+            return redirect(reverse("admin:records_record_change", args=[obj.pk]))
+
+        try:
+            self.record_service.enqueue_record_youtube_audio_search(
+                record=obj,
+                requested_by_user_id=getattr(request.user, "id", None),
+            )
+            _log_admin_mixin_event(
+                logging.INFO,
+                "youtube_audio_search_enqueued",
+                f"Поставлен в очередь поиск аудио на YouTube для релиза «{obj}».",
+                record_id=obj.pk,
+                requested_by_user_id=getattr(request.user, "id", None),
+            )
+            _log_admin_mixin_event(
+                logging.DEBUG,
+                "youtube_audio_search_enqueued",
+                "Детали постановки поиска аудио на YouTube.",
+                record_id=obj.pk,
+                requested_by_user_id=getattr(request.user, "id", None),
+            )
+            messages.success(
+                request,
+                "Поставлена в очередь задача поиска аудио на YouTube.",
+            )
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse({"ok": True})
+        except Exception as exc:  # noqa: BLE001
+            _log_admin_mixin_event(
+                logging.ERROR,
+                "youtube_audio_search_failed",
+                "Не удалось поставить в очередь задачу поиска аудио на YouTube.",
+                record_id=obj.pk,
+                error=str(exc),
+            )
+            logger.exception("Детали ошибки запуска поиска YouTube.")
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "error": "Не удалось запустить поиск аудио на YouTube.",
+                    },
+                    status=500,
+                )
+            messages.error(
+                request,
+                f"Не удалось запустить поиск аудио на YouTube: {exc!s}",
             )
 
         return redirect(reverse("admin:records_record_change", args=[obj.pk]))
@@ -244,6 +333,21 @@ class YouTubeAudioRefreshMixin:
         """Ставит интерактивную авторизацию YouTube-сессии в очередь."""
         if request.method != "POST":
             messages.error(request, "Разрешён только POST-запрос.")
+            return redirect(self._youtube_session_redirect_target(request))
+
+        state = YouTubeSessionState.get_solo()
+        if state.status == YouTubeSessionState.Status.HEALTHY:
+            messages.info(
+                request,
+                "YouTube-сессия уже активна. Повторная интерактивная авторизация не требуется.",
+            )
+            return redirect(self._youtube_session_redirect_target(request))
+
+        if state.status == YouTubeSessionState.Status.LOGIN_IN_PROGRESS:
+            messages.warning(
+                request,
+                "Интерактивная авторизация YouTube-сессии уже запущена. Дождитесь завершения текущей попытки.",
+            )
             return redirect(self._youtube_session_redirect_target(request))
 
         timeout_sec = int(

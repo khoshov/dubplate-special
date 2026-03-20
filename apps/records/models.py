@@ -927,7 +927,7 @@ class Track(TimeStampedModel):
     position = models.CharField(
         max_length=10,
         blank=True,
-        verbose_name=_("Position"),
+        verbose_name=_("Позиция"),
         help_text=_(
             "Original position from the source (e.g., 'A1', 'B2'); may be empty."
         ),
@@ -939,20 +939,20 @@ class Track(TimeStampedModel):
     position_index = models.PositiveIntegerField(
         default=0,
         db_index=True,
-        verbose_name=_("Order"),
+        verbose_name=_("№ п.п."),
         help_text=_(
             "Sequential order across the release (1..N), independent of sides."
         ),
     )
 
-    title = models.CharField(max_length=255, verbose_name=_("Track title"))
+    title = models.CharField(max_length=255, verbose_name=_("Название трека"))
 
     # Длительность сохраняем как строку (например, '05:58'), так как у разных источников форматы разнятся.
     duration = models.CharField(
         max_length=10,
         null=True,
         blank=True,
-        verbose_name=_("Duration"),
+        verbose_name=_("Длительность"),
         help_text=_("Optional; e.g., '05:58'."),
     )
 
@@ -961,7 +961,7 @@ class Track(TimeStampedModel):
         max_length=512,
         null=True,
         blank=True,
-        verbose_name=_("Track video URL"),
+        verbose_name=_("Track URL"),
         help_text=_("Optional preview/video URL (e.g., YouTube)."),
     )
 

@@ -33,6 +33,64 @@ from records.services.audio.providers.youtube_session import YouTubeSessionServi
 logger = logging.getLogger(__name__)
 _DURATION_STRING_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
 _YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
+_AUTH_REQUIRED_HINTS = (
+    "sign in to confirm",
+    "please sign in",
+    "not a bot",
+    "confirm your age",
+    "verify your age",
+    "age-restricted",
+    "login to confirm",
+    "you need to be signed in",
+    "cookies",
+)
+_SOLVER_FAILED_HINTS = (
+    "signature solving failed",
+    "n challenge solving failed",
+    "nsig extraction failed",
+    "only images are available",
+    "error solving challenge",
+    "unable to decode n-parameter",
+)
+_DIAGNOSTIC_HINTS = (
+    _AUTH_REQUIRED_HINTS
+    + _SOLVER_FAILED_HINTS
+    + (
+        "requested format is not available",
+        "provided youtube account cookies are no longer valid",
+    )
+)
+
+
+@dataclass(frozen=True)
+class YTDLPExecutionContext:
+    """Диагностический контекст одного вызова yt-dlp."""
+
+    cookie_source: str
+    browser_profile_dir: str
+    browser_profile_ready: bool
+    js_runtime: str
+    js_runtime_path: str
+    remote_components: tuple[str, ...]
+
+
+def _looks_like_auth_required(error_text: str) -> bool:
+    normalized = (error_text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _AUTH_REQUIRED_HINTS)
+
+
+def _looks_like_format_unavailable(error_text: str) -> bool:
+    normalized = (error_text or "").strip().lower()
+    return "requested format is not available" in normalized
+
+
+def _looks_like_solver_failed(error_text: str) -> bool:
+    normalized = (error_text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in _SOLVER_FAILED_HINTS)
 
 
 class PayloadValidationError(ValueError):
@@ -61,41 +119,34 @@ def _ensure_uuid(value: Any, *, field: str) -> uuid.UUID:
 class _YTDLPLogger:
     """Адаптер логгера для yt-dlp."""
 
-    def debug(self, message: str) -> None:
+    def __init__(self, collector: list[str] | None = None) -> None:
+        self._collector = collector
+
+    def _write(self, message: str) -> None:
+        normalized = str(message or "").strip()
+        if not normalized:
+            return
+        if self._collector is not None:
+            self._collector.append(normalized)
         log_event(
             logger,
             logging.DEBUG,
-            f"yt-dlp: {message}",
+            f"yt-dlp: {normalized}",
             component=_YOUTUBE_AUDIO_COMPONENT,
             event="ytdlp_raw",
         )
+
+    def debug(self, message: str) -> None:
+        self._write(message)
 
     def info(self, message: str) -> None:
-        log_event(
-            logger,
-            logging.DEBUG,
-            f"yt-dlp: {message}",
-            component=_YOUTUBE_AUDIO_COMPONENT,
-            event="ytdlp_raw",
-        )
+        self._write(message)
 
     def warning(self, message: str) -> None:
-        log_event(
-            logger,
-            logging.DEBUG,
-            f"yt-dlp: {message}",
-            component=_YOUTUBE_AUDIO_COMPONENT,
-            event="ytdlp_raw",
-        )
+        self._write(message)
 
     def error(self, message: str) -> None:
-        log_event(
-            logger,
-            logging.DEBUG,
-            f"yt-dlp: {message}",
-            component=_YOUTUBE_AUDIO_COMPONENT,
-            event="ytdlp_raw",
-        )
+        self._write(message)
 
 
 @dataclass(frozen=True)
@@ -192,10 +243,32 @@ class YouTubeAudioEnrichmentProvider:
         "youtu.be",
         "www.youtu.be",
     }
+    VALID_BANDCAMP_HOSTS = {
+        "bandcamp.com",
+        "www.bandcamp.com",
+    }
 
     @classmethod
     def is_valid_youtube_url(cls, value: str | None) -> bool:
-        """Проверяет, что строка похожа на поддерживаемый YouTube URL."""
+        """Проверяет, что строка похожа на поддерживаемый YouTube/Bandcamp URL."""
+        if not value:
+            return False
+        try:
+            parsed = urlparse(value.strip())
+        except ValueError:
+            return False
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        hostname = (parsed.hostname or "").lower()
+        if hostname in cls.VALID_YOUTUBE_HOSTS:
+            return True
+        if hostname in cls.VALID_BANDCAMP_HOSTS:
+            return True
+        return hostname.endswith(".bandcamp.com")
+
+    @classmethod
+    def is_youtube_url(cls, value: str | None) -> bool:
+        """Проверяет, что строка соответствует YouTube URL."""
         if not value:
             return False
         try:
@@ -466,18 +539,6 @@ class YouTubeAudioEnrichmentProvider:
         return None
 
     @classmethod
-    def _resolve_cookie_file(cls) -> str | None:
-        configured_path = str(
-            getattr(settings, "YOUTUBE_COOKIE_FILE", "") or ""
-        ).strip()
-        if not configured_path:
-            return None
-        cookie_path = Path(configured_path)
-        if cookie_path.is_file():
-            return str(cookie_path)
-        return None
-
-    @classmethod
     def _resolve_cookies_from_browser(
         cls,
     ) -> tuple[str, str, str | None, None] | None:
@@ -532,7 +593,83 @@ class YouTubeAudioEnrichmentProvider:
         return str(cache_path)
 
     @classmethod
-    def _build_ydl_options(cls, temp_dir: str) -> dict[str, Any]:
+    def _build_execution_context(cls) -> YTDLPExecutionContext:
+        cookies_from_browser = cls._resolve_cookies_from_browser()
+        js_runtimes = cls._resolve_js_runtimes()
+        remote_components = tuple(cls._resolve_remote_components())
+
+        cookie_source = "browser_profile" if cookies_from_browser else "none"
+
+        js_runtime = next(iter(js_runtimes), "")
+        js_runtime_path = ""
+        if js_runtime:
+            js_runtime_path = str(js_runtimes[js_runtime].get("path") or "")
+
+        browser_profile_dir = str(
+            getattr(settings, "YOUTUBE_BROWSER_PROFILE_DIR", "") or ""
+        ).strip()
+        return YTDLPExecutionContext(
+            cookie_source=cookie_source,
+            browser_profile_dir=browser_profile_dir,
+            browser_profile_ready=bool(cookies_from_browser),
+            js_runtime=js_runtime or "auto",
+            js_runtime_path=js_runtime_path,
+            remote_components=remote_components,
+        )
+
+    @staticmethod
+    def _summarize_diagnostic_messages(messages: list[str], *, limit: int = 4) -> str:
+        filtered: list[str] = []
+        for raw_message in messages:
+            normalized = str(raw_message or "").strip()
+            if not normalized:
+                continue
+            normalized_lower = normalized.lower()
+            if not any(hint in normalized_lower for hint in _DIAGNOSTIC_HINTS):
+                continue
+            if normalized in filtered:
+                continue
+            filtered.append(normalized)
+        if not filtered:
+            return ""
+        return " | ".join(filtered[-limit:])
+
+    @classmethod
+    def _classify_download_failure(
+        cls,
+        *,
+        error_text: str,
+        raw_messages: list[str],
+    ) -> str:
+        combined_text = "\n".join(
+            value
+            for value in [error_text, cls._summarize_diagnostic_messages(raw_messages)]
+            if value
+        )
+        if _looks_like_auth_required(combined_text):
+            return "auth_required"
+        if _looks_like_solver_failed(combined_text):
+            return "solver_failed"
+        if _looks_like_format_unavailable(combined_text):
+            return "formats_unavailable"
+        return "download_error"
+
+    @classmethod
+    def _build_solver_failed_message(cls, diagnostic_excerpt: str) -> str:
+        base_message = (
+            "yt-dlp не смог пройти JS-проверку YouTube и не получил аудио-форматы."
+        )
+        if diagnostic_excerpt:
+            return f"{base_message} Диагностика: {diagnostic_excerpt}"
+        return base_message
+
+    @classmethod
+    def _build_ydl_options(
+        cls,
+        temp_dir: str,
+        *,
+        raw_messages: list[str] | None = None,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "format": "bestaudio/best",
             "outtmpl": cls._build_output_template(temp_dir),
@@ -544,7 +681,7 @@ class YouTubeAudioEnrichmentProvider:
             "overwrites": True,
             "nopart": True,
             "prefer_ffmpeg": True,
-            "logger": _YTDLPLogger(),
+            "logger": _YTDLPLogger(raw_messages),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -557,10 +694,6 @@ class YouTubeAudioEnrichmentProvider:
         cookies_from_browser = cls._resolve_cookies_from_browser()
         if cookies_from_browser:
             options["cookiesfrombrowser"] = cookies_from_browser
-        else:
-            cookie_file = cls._resolve_cookie_file()
-            if cookie_file:
-                options["cookiefile"] = cookie_file
 
         js_runtimes = cls._resolve_js_runtimes()
         if js_runtimes:
@@ -577,24 +710,68 @@ class YouTubeAudioEnrichmentProvider:
         return options
 
     @classmethod
+    def _detect_auth_required(
+        cls,
+        *,
+        youtube_url: str,
+        base_error: str,
+        raw_messages: list[str] | None = None,
+    ) -> bool:
+        combined_text = "\n".join(
+            value
+            for value in [
+                base_error,
+                cls._summarize_diagnostic_messages(raw_messages or []),
+            ]
+            if value
+        )
+        if _looks_like_auth_required(combined_text):
+            return True
+
+        if not _looks_like_format_unavailable(combined_text):
+            return False
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="yt-auth-check-") as temp_dir:
+                options = cls._build_ydl_options(temp_dir, raw_messages=raw_messages)
+                options.update(
+                    {
+                        "download": False,
+                        "extract_flat": True,
+                        "skip_download": True,
+                    }
+                )
+                with YoutubeDL(options) as ydl:
+                    ydl.extract_info(youtube_url, download=False)
+        except DownloadError as exc:
+            probe_error = "\n".join(
+                value
+                for value in [
+                    str(exc),
+                    cls._summarize_diagnostic_messages(raw_messages or []),
+                ]
+                if value
+            )
+            return _looks_like_auth_required(probe_error)
+        except Exception:  # noqa: BLE001
+            return False
+
+        return False
+
+    @classmethod
     def _build_authentication_error(cls) -> YouTubeAuthenticationRequiredError:
-        configured_path = str(
-            getattr(settings, "YOUTUBE_COOKIE_FILE", "") or ""
-        ).strip()
         profile_dir = str(
             getattr(settings, "YOUTUBE_BROWSER_PROFILE_DIR", "") or ""
         ).strip()
-        if configured_path:
-            message = (
-                "YouTube потребовал cookies для доступа к ролику. "
-                f"Проверьте профиль браузера {profile_dir or '—'} "
-                f"или файл cookies.txt: {configured_path}."
-            )
-        else:
-            message = (
-                "YouTube потребовал cookies для доступа к ролику. "
-                "Укажите путь к browser profile или к YOUTUBE_COOKIE_FILE."
-            )
+        ui_url = str(
+            getattr(settings, "YOUTUBE_SESSION_UI_URL", "")
+            or "http://localhost:6080/vnc.html?autoconnect=1&resize=scale"
+        ).strip()
+        message = (
+            "YouTube потребовал действующую браузерную сессию для доступа к ролику. "
+            f"Проверьте persistent profile ({profile_dir or '—'}). "
+            f"Если сессия не готова, завершите интерактивный логин по адресу {ui_url}."
+        )
         return YouTubeAuthenticationRequiredError(message)
 
     @classmethod
@@ -604,35 +781,106 @@ class YouTubeAudioEnrichmentProvider:
         track: Track,
         overwrite: bool = False,
     ) -> str | None:
-        """Скачивает аудио из YouTube и сохраняет его в `track.audio_preview`."""
+        """Скачивает аудио из YouTube/Bandcamp и сохраняет его в `track.audio_preview`."""
         youtube_url = str(track.youtube_url or "").strip()
         if not youtube_url:
             return None
+        is_youtube_url = cls.is_youtube_url(youtube_url)
 
         existing_name = str(getattr(track.audio_preview, "name", "") or "").strip()
         if existing_name and not overwrite:
             return existing_name
 
         with tempfile.TemporaryDirectory(prefix="yt-audio-") as temp_dir:
-            ydl_options = cls._build_ydl_options(temp_dir)
+            raw_messages: list[str] = []
+            execution_context = cls._build_execution_context()
+            ydl_options = cls._build_ydl_options(
+                temp_dir,
+                raw_messages=raw_messages,
+            )
             try:
                 with YoutubeDL(ydl_options) as ydl:
                     info = ydl.extract_info(youtube_url, download=True)
             except DownloadError as exc:
                 error_text = str(exc)
-                if "Sign in to confirm you" in error_text:
-                    YouTubeSessionService.mark_state_auth_required(error_text)
+                diagnostic_excerpt = cls._summarize_diagnostic_messages(raw_messages)
+                failure_kind = cls._classify_download_failure(
+                    error_text=error_text,
+                    raw_messages=raw_messages,
+                )
+                if is_youtube_url and cls._detect_auth_required(
+                    youtube_url=youtube_url,
+                    base_error=error_text,
+                    raw_messages=raw_messages,
+                ):
+                    auth_message = error_text
+                    if diagnostic_excerpt:
+                        auth_message = f"{error_text} Диагностика: {diagnostic_excerpt}"
+                    YouTubeSessionService.mark_state_auth_required(auth_message)
                     log_event(
                         logger,
-                        logging.DEBUG,
+                        logging.WARNING,
                         "YouTube запросил повторную авторизацию во время скачивания.",
                         component=_YOUTUBE_AUDIO_COMPONENT,
                         event="download_auth_required",
                         record_id=track.record_id,
                         track_id=track.id,
                         youtube_url=youtube_url,
+                        error=error_text,
+                        diagnostic=diagnostic_excerpt or "—",
+                        cookie_source=execution_context.cookie_source,
+                        browser_profile_ready=execution_context.browser_profile_ready,
+                        js_runtime=execution_context.js_runtime,
+                        js_runtime_path=execution_context.js_runtime_path or "—",
+                        remote_components=",".join(execution_context.remote_components)
+                        or "—",
                     )
                     raise cls._build_authentication_error() from exc
+                if is_youtube_url and failure_kind == "solver_failed":
+                    solver_message = cls._build_solver_failed_message(
+                        diagnostic_excerpt
+                    )
+                    YouTubeSessionService.mark_state_unknown(solver_message)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "yt-dlp не смог получить аудио-форматы YouTube из-за JS-проверки.",
+                        component=_YOUTUBE_AUDIO_COMPONENT,
+                        event="download_solver_failed",
+                        record_id=track.record_id,
+                        track_id=track.id,
+                        youtube_url=youtube_url,
+                        error=error_text,
+                        diagnostic=diagnostic_excerpt or "—",
+                        cookie_source=execution_context.cookie_source,
+                        browser_profile_ready=execution_context.browser_profile_ready,
+                        js_runtime=execution_context.js_runtime,
+                        js_runtime_path=execution_context.js_runtime_path or "—",
+                        remote_components=",".join(execution_context.remote_components)
+                        or "—",
+                    )
+                    raise RuntimeError(
+                        f"yt-dlp не смог скачать аудио: {solver_message}"
+                    ) from exc
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "Не удалось скачать аудио через yt-dlp.",
+                    component=_YOUTUBE_AUDIO_COMPONENT,
+                    event="download_failed",
+                    record_id=track.record_id,
+                    track_id=track.id,
+                    youtube_url=youtube_url,
+                    failure_kind=failure_kind,
+                    error=error_text,
+                    diagnostic=diagnostic_excerpt or "—",
+                    cookie_source=execution_context.cookie_source,
+                    browser_profile_ready=execution_context.browser_profile_ready,
+                    js_runtime=execution_context.js_runtime,
+                    js_runtime_path=execution_context.js_runtime_path or "—",
+                    remote_components=",".join(execution_context.remote_components)
+                    or "—",
+                )
                 raise RuntimeError(f"yt-dlp не смог скачать аудио: {exc}") from exc
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -649,9 +897,10 @@ class YouTubeAudioEnrichmentProvider:
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()
-            YouTubeSessionService.mark_state_healthy(
-                "YouTube-сессия подтверждена успешной загрузкой аудио."
-            )
+            if is_youtube_url:
+                YouTubeSessionService.mark_state_healthy(
+                    "YouTube-сессия подтверждена успешной загрузкой аудио."
+                )
             if overwrite and old_name and old_name != saved_name:
                 try:
                     track.audio_preview.storage.delete(old_name)

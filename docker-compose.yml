@@ -47,30 +47,7 @@ services:
       redis:
         condition: service_healthy
 
-  celery_youtube_session:
-    build: .
-    env_file:
-      - .env
-    environment:
-      RUN_ENV: docker
-    command: uv run celery -A config worker --loglevel=info --queues=youtube_session --concurrency=1 --hostname=youtube-session@%h
-    volumes:
-      - ./apps:/app/apps
-      - ./config:/app/config
-      - ./locale:/app/locale
-      - ./media:/app/media
-      - ./runtime:/app/runtime
-      - ./templates:/app/templates
-      - ./manage.py:/app/manage.py
-      - ./pytest.ini:/app/pytest.ini
-      - ./tests:/app/tests
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  youtube_session_ui:
+  youtube_session_login:
     build: .
     env_file:
       - .env
@@ -119,3 +96,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+
+

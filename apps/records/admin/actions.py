@@ -5,7 +5,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from django.contrib import admin, messages
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Q
 from django.http import HttpRequest, HttpResponseRedirect
 from django.utils.text import Truncator
 from django.utils import timezone
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .record_admin import RecordAdmin
 
 logger = logging.getLogger(__name__)
-_ADMIN_ACTIONS_COMPONENT = "records_admin_actions"
+_ADMIN_ACTIONS_COMPONENT = "действия админки"
 
 
 def _log_admin_action_event(
@@ -302,7 +302,7 @@ def update_from_discogs(
     )
 
 
-@admin.action(description="Обновить треки из YouTube")
+@admin.action(description="Обновить аудио треков из YouTube")
 def update_audio_from_youtube(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
@@ -311,7 +311,7 @@ def update_audio_from_youtube(
     if total == 0:
         admin_obj.message_user(
             request,
-            "Выберите записи для обновления треков из YouTube.",
+            "Выберите записи для обновления аудио треков из YouTube.",
             level=messages.WARNING,
         )
         return
@@ -326,14 +326,14 @@ def update_audio_from_youtube(
         _log_admin_action_event(
             logging.ERROR,
             "youtube_audio_enqueue_failed",
-            "Не удалось поставить в очередь задачу обновления треков из YouTube.",
+            "Не удалось поставить в очередь задачу обновления аудио треков из YouTube.",
             record_ids=",".join(str(record_id) for record_id in record_ids),
             error=str(exc),
         )
         logger.exception("Детали ошибки запуска YouTube job из admin action.")
         admin_obj.message_user(
             request,
-            f"Не удалось запустить обновление треков из YouTube: {exc!s}",
+            f"Не удалось запустить обновление аудио треков из YouTube: {exc!s}",
             level=messages.ERROR,
         )
         return
@@ -342,7 +342,7 @@ def update_audio_from_youtube(
     _log_admin_action_event(
         logging.INFO,
         "youtube_audio_enqueued",
-        "Поставлена в очередь задача обновления треков из YouTube из admin action.",
+        "Поставлена в очередь задача обновления аудио треков из YouTube из admin action.",
         job_id=job.id,
         records_total=total,
         record_ids=",".join(str(record_id) for record_id in record_ids),
@@ -351,7 +351,7 @@ def update_audio_from_youtube(
     admin_obj.message_user(
         request,
         (
-            f"Поставлена в очередь задача обновления треков из YouTube "
+            f"Поставлена в очередь задача обновления аудио треков из YouTube "
             f"для {total} записей."
         ),
         level=messages.SUCCESS,
@@ -363,6 +363,103 @@ def update_audio_from_youtube(
             report_url,
         ),
         level=messages.INFO,
+    )
+
+
+@admin.action(description="Найти аудио на YouTube")
+def find_audio_on_youtube(
+    admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
+) -> None:
+    total = queryset.count()
+    if total == 0:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для поиска аудио на YouTube.",
+            level=messages.WARNING,
+        )
+        return
+
+    ok = skip = fail = 0
+    skipped: list[str] = []
+    failed: list[str] = []
+    record_service = admin_obj.record_service
+    user_id = getattr(request.user, "id", None)
+    username = getattr(request.user, "username", "unknown")
+
+    _log_admin_action_event(
+        logging.INFO,
+        "youtube_search_start",
+        "Запущен поиск аудио на YouTube для выбранных записей.",
+        records_total=total,
+        username=username,
+    )
+
+    for record in queryset:
+        missing = record.tracks.filter(
+            Q(youtube_url__isnull=True) | Q(youtube_url="")
+        ).exists()
+        if not missing:
+            skip += 1
+            skipped.append(f"#{record.pk} «{record}»: ссылки уже заполнены")
+            continue
+        try:
+            record_service.enqueue_record_youtube_audio_search(
+                record=record,
+                requested_by_user_id=user_id,
+            )
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            fail += 1
+            failed.append(f"#{record.pk} «{record}»: {exc!s}")
+            _log_admin_action_event(
+                logging.ERROR,
+                "youtube_search_failed",
+                "Не удалось поставить запись в очередь поиска YouTube.",
+                record_id=record.pk,
+                error=str(exc),
+            )
+            logger.exception("Детали ошибки постановки поиска YouTube.")
+
+    if ok:
+        admin_obj.message_user(
+            request,
+            f"Поиск YouTube запущен для {ok} из {total} записей.",
+            level=messages.SUCCESS,
+        )
+    if skip:
+        admin_obj.message_user(
+            request,
+            f"Пропущено (ссылки уже есть): {skip}.",
+            level=messages.WARNING,
+        )
+        admin_obj.message_user(
+            request,
+            "Пропущено:\n• " + "\n• ".join(skipped),
+            level=messages.INFO,
+        )
+    if fail:
+        admin_obj.message_user(
+            request,
+            f"Ошибок при постановке в очередь: {fail}.",
+            level=messages.ERROR,
+        )
+        admin_obj.message_user(
+            request,
+            format_html_join(
+                "", "<br>&nbsp;&nbsp;&bull; {}", ((item,) for item in failed)
+            ),
+            level=messages.ERROR,
+        )
+
+    _log_admin_action_event(
+        logging.INFO,
+        "youtube_search_finish",
+        "Поиск аудио на YouTube для выбранных записей завершён.",
+        ok=ok,
+        skipped=skip,
+        failed=fail,
+        records_total=total,
+        username=username,
     )
 
 

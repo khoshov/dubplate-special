@@ -494,15 +494,18 @@ class VKService:
         message = _render_record_message(record, message_template)
         all_attachments = self._collect_release_attachments(record, with_audio=True)
 
-        logger.info(
-            "VK: публикую релиз.",
-            extra=build_log_extra(
-                component=_VK_SERVICE_COMPONENT,
-                event="post_start",
-                record_id=getattr(record, "pk", None),
-                attachments_total=len(all_attachments),
-                attachments=",".join(all_attachments) if all_attachments else "—",
-            ),
+        record_id = getattr(record, "pk", None)
+        attachments_str = ",".join(all_attachments) if all_attachments else "—"
+        log_event(
+            logger,
+            logging.INFO,
+            f"VK: публикую релиз (record_id={record_id}) с {len(all_attachments)} "
+            f"вложениями: {attachments_str}",
+            component=_VK_SERVICE_COMPONENT,
+            event="post_start",
+            record_id=record_id,
+            attachments_total=len(all_attachments),
+            attachments=attachments_str,
         )
         publish_date_ts = int(publish_at.timestamp()) if publish_at else None
         return self._wall_post(
@@ -571,6 +574,8 @@ class VKService:
 
         # 2) аудио
         audio_attachments: list[str] = []
+        missing_file_count = 0
+        upload_failed_count = 0
         tracks = getattr(record, "tracks", None)
 
         if tracks is not None and hasattr(tracks, "all"):
@@ -584,16 +589,53 @@ class VKService:
 
             # лимит VK: 10 вложений; если фото есть — оставляем 1 под фото
             limit = 10 - (1 if attachments else 0)
+            total_tracks = tracks.count()
+            eligible_tracks = audio_qs.count()
+            attempt_limit = max(0, limit)
+            attempts = min(eligible_tracks, attempt_limit)
+            skipped_due_to_limit = max(0, eligible_tracks - attempts)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "VK: аудио-кандидаты подготовлены.",
+                component=_VK_SERVICE_COMPONENT,
+                event="audio_candidates_prepared",
+                record_id=getattr(record, "pk", None),
+                tracks_total=total_tracks,
+                tracks_with_audio=eligible_tracks,
+                attempt_limit=attempt_limit,
+                skipped_due_to_limit=skipped_due_to_limit,
+            )
 
-            for track in audio_qs[: max(0, limit)]:
+            for track in audio_qs[:attempt_limit]:
                 preview = getattr(track, "audio_preview", None)
                 p = Path(getattr(preview, "path", "")) if preview else None
 
                 if p and p.exists():
-                    att = self._upload_audio(p, artists, getattr(track, "title", ""))
+                    att = self._upload_audio(
+                        p,
+                        artists,
+                        getattr(track, "title", ""),
+                        record_id=getattr(record, "pk", None),
+                        track_id=getattr(track, "pk", None),
+                    )
                     if att:
                         audio_attachments.append(att)
+                    else:
+                        upload_failed_count += 1
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "VK: аудио не загружено — трек пропущен.",
+                            component=_VK_SERVICE_COMPONENT,
+                            event="track_audio_upload_failed",
+                            record_id=getattr(record, "pk", None),
+                            track_id=getattr(track, "pk", None),
+                            track_title=getattr(track, "title", ""),
+                            audio_path=str(p),
+                        )
                 else:
+                    missing_file_count += 1
                     logger.warning(
                         "VK: у записи отсутствует mp3-файл на диске — трек пропущен.",
                         extra=build_log_extra(
@@ -601,8 +643,28 @@ class VKService:
                             event="track_audio_missing",
                             record_id=getattr(record, "pk", None),
                             track_id=getattr(track, "pk", None),
+                            track_title=getattr(track, "title", ""),
+                            audio_path=str(p) if p else "—",
                         ),
                     )
+
+            log_event(
+                logger,
+                logging.INFO,
+                (
+                    "VK: аудио-итог — загружено "
+                    f"{len(audio_attachments)}, пропущено {missing_file_count} "
+                    f"(нет файла), ошибок загрузки {upload_failed_count}."
+                ),
+                component=_VK_SERVICE_COMPONENT,
+                event="audio_summary",
+                record_id=getattr(record, "pk", None),
+                uploaded=len(audio_attachments),
+                missing_file=missing_file_count,
+                upload_failed=upload_failed_count,
+                tracks_with_audio=eligible_tracks,
+                attempt_limit=attempt_limit,
+            )
 
         # 3) требование VK: если есть аудио — обязано быть фото
         if audio_attachments and not attachments:
@@ -712,7 +774,15 @@ class VKService:
             },
         )
 
-    def _upload_audio(self, audio_path: Path, artist: str, title: str) -> str | None:
+    def _upload_audio(
+        self,
+        audio_path: Path,
+        artist: str,
+        title: str,
+        *,
+        record_id: int | None = None,
+        track_id: int | None = None,
+    ) -> str | None:
         """
         Загружает MP3 и возвращает 'audio<owner_id>_<id>' или None, если Audio API недоступен.
         """
@@ -727,6 +797,9 @@ class VKService:
                     "Audio API отключён для приложения (код 270). Аудио пропущено.",
                     component=_VK_SERVICE_COMPONENT,
                     event="audio_api_disabled",
+                    record_id=record_id,
+                    track_id=track_id,
+                    audio_path=str(audio_path),
                 )
             else:
                 log_event(
@@ -736,6 +809,9 @@ class VKService:
                     component=_VK_SERVICE_COMPONENT,
                     event="audio_upload_url_failed",
                     error=str(e),
+                    record_id=record_id,
+                    track_id=track_id,
+                    audio_path=str(audio_path),
                 )
             return None
 
@@ -753,6 +829,9 @@ class VKService:
                     component=_VK_SERVICE_COMPONENT,
                     event="audio_upload_http_failed",
                     error=str(e),
+                    record_id=record_id,
+                    track_id=track_id,
+                    audio_path=str(audio_path),
                 ),
             )
             return None
@@ -768,6 +847,9 @@ class VKService:
                 component=_VK_SERVICE_COMPONENT,
                 event="audio_save_failed",
                 error=str(e),
+                record_id=record_id,
+                track_id=track_id,
+                audio_path=str(audio_path),
             )
             return None
 
