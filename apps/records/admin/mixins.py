@@ -83,26 +83,40 @@ class RedeyeAudioRefreshMixin:
             return redirect(reverse("admin:records_record_change", args=[obj.pk]))
 
         try:
-            added_count: int = self.record_service.attach_audio_from_redeye(
-                obj, force=False
+            job = self.record_service.enqueue_record_redeye_audio_enrichment(
+                record=obj,
+                requested_by_user_id=getattr(request.user, "id", None),
+                overwrite_existing=False,
             )
             _log_admin_mixin_event(
                 logging.INFO,
-                "redeye_audio_refresh_finished",
-                "Завершено обновление аудио из Redeye по кнопке записи.",
+                "redeye_audio_refresh_enqueued",
+                "Поставлена в очередь задача обновления аудио из Redeye по кнопке записи.",
                 record_id=obj.pk,
-                updated_tracks=added_count,
+                job_id=job.id,
                 overwrite=False,
+                requested_by_user_id=getattr(request.user, "id", None),
             )
-            if added_count > 0:
-                messages.success(request, f"Добавлены mp3-превью: {added_count}.")
-            else:
-                messages.info(request, "Новых mp3-превью не найдено.")
+            report_url = reverse(
+                "admin:records_audioenrichmentjob_change",
+                args=[job.id],
+            )
+            messages.success(
+                request,
+                "Поставлена в очередь задача обновления аудио из Redeye.",
+            )
+            messages.info(
+                request,
+                format_html(
+                    'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+                    report_url,
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
             _log_admin_mixin_event(
                 logging.ERROR,
                 "redeye_audio_refresh_failed",
-                "Не удалось выполнить обновление аудио из Redeye по кнопке записи.",
+                "Не удалось поставить в очередь задачу обновления аудио из Redeye по кнопке записи.",
                 record_id=obj.pk,
                 error=str(exc),
             )

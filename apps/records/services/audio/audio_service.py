@@ -206,6 +206,15 @@ class AudioService:
         record: Record,
     ) -> tuple[AudioEnrichmentJobRecord, bool]:
         """Захватывает обработку записи для YouTube enrichment."""
+        return AudioService.acquire_audio_record_lock(job=job, record=record)
+
+    @staticmethod
+    def acquire_audio_record_lock(
+        *,
+        job: AudioEnrichmentJob,
+        record: Record,
+    ) -> tuple[AudioEnrichmentJobRecord, bool]:
+        """Захватывает обработку записи для фоновой audio-enrichment задачи."""
         return YouTubeAudioEnrichmentProvider.acquire_record_lock(
             job=job,
             record=record,
@@ -213,6 +222,11 @@ class AudioService:
 
     @staticmethod
     def mark_youtube_record_running(job_record: AudioEnrichmentJobRecord) -> None:
+        """Переводит job-record в состояние running."""
+        AudioService.mark_audio_record_running(job_record)
+
+    @staticmethod
+    def mark_audio_record_running(job_record: AudioEnrichmentJobRecord) -> None:
         """Переводит job-record в состояние running."""
         YouTubeAudioEnrichmentProvider.mark_record_running(job_record)
 
@@ -227,6 +241,26 @@ class AudioService:
         reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
     ) -> AudioEnrichmentJobRecord:
         """Фиксирует итог обработки записи в рамках YouTube job."""
+        return AudioService.mark_audio_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            force_failed=force_failed,
+            reason_code=reason_code,
+        )
+
+    @staticmethod
+    def mark_audio_record_finished(
+        *,
+        job_record: AudioEnrichmentJobRecord,
+        updated_count: int,
+        skipped_count: int,
+        error_count: int,
+        force_failed: bool = False,
+        reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+    ) -> AudioEnrichmentJobRecord:
+        """Фиксирует итог обработки записи в рамках audio-enrichment job."""
         return YouTubeAudioEnrichmentProvider.mark_record_finished(
             job_record=job_record,
             updated_count=updated_count,

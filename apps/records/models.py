@@ -601,6 +601,9 @@ class AudioEnrichmentJob(TimeStampedModel):
 
     class Source(models.TextChoices):
         DISCOGS_IMPORT = "discogs_import", _("Discogs import")
+        REDEYE_IMPORT = "redeye_import", _("Redeye import")
+        REDEYE_MANUAL_LIST = "redeye_manual_list", _("Redeye manual list action")
+        REDEYE_MANUAL_RECORD = "redeye_manual_record", _("Redeye manual record form")
         MANUAL_LIST = "manual_list", _("Manual list action")
         MANUAL_RECORD = "manual_record", _("Manual record form")
 

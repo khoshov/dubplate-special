@@ -84,14 +84,14 @@ def test_get_readonly_fields_add_allows_discogs_id_editing() -> None:
     assert "discogs_id" not in readonly
 
 
-def test_get_readonly_fields_change_keeps_discogs_id_readonly() -> None:
+def test_get_readonly_fields_change_allows_discogs_id_editing() -> None:
     admin = RecordAdmin(Record, AdminSite())
     request = RequestFactory().get("/admin/records/record/1/change/")
     obj = Record(title="Test")
 
     readonly = admin.get_readonly_fields(request, obj=obj)
 
-    assert "discogs_id" in readonly
+    assert "discogs_id" not in readonly
 
 
 def test_get_inline_instances_add_hides_structured_format_block() -> None:

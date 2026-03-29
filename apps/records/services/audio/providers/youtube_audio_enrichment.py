@@ -894,6 +894,22 @@ class YouTubeAudioEnrichmentProvider:
                 resolved_duration = cls._extract_track_duration(info)
                 if resolved_duration:
                     track.duration = resolved_duration
+            if overwrite and old_name:
+                try:
+                    track.audio_preview.storage.delete(old_name)
+                    track.audio_preview.name = ""
+                except Exception as exc:  # noqa: BLE001
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "Не удалось удалить прежний mp3 перед обновлением трека.",
+                        component=_YOUTUBE_AUDIO_COMPONENT,
+                        event="old_audio_delete_before_overwrite_failed",
+                        record_id=track.record_id,
+                        track_id=track.pk,
+                        old_audio=old_name,
+                        error=str(exc),
+                    )
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()

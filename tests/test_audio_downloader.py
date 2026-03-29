@@ -59,8 +59,57 @@ def test_download_audio_to_track_deletes_old_file_on_overwrite(settings, monkeyp
         assert old_exists_before is True
         assert saved_name
         assert saved_name == track.audio_preview.name
-        assert saved_name != old_name
         assert track.audio_preview.storage.exists(saved_name) is True
-        assert track.audio_preview.storage.exists(old_name) is False
+        with track.audio_preview.open("rb") as fh:
+            assert fh.read() == b"mp3-data"
+    finally:
+        shutil.rmtree(media_root, ignore_errors=True)
+
+
+@pytest.mark.django_db
+def test_download_audio_to_track_overwrite_replaces_same_named_file(
+    settings, monkeypatch
+):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    media_root = runtime_dir / f"media-audio-same-name-{uuid.uuid4().hex}"
+    media_root.mkdir()
+
+    monkeypatch.setattr(
+        downloader,
+        "http_get",
+        lambda *args, **kwargs: _FakeResponse(),
+    )
+    monkeypatch.setattr(
+        downloader,
+        "make_audio_filename",
+        lambda title, url, content_type: "same-name.mp3",
+    )
+
+    try:
+        settings.MEDIA_ROOT = str(media_root)
+        record = Record.objects.create(title="Overwrite Same Name Record")
+        track = Track.objects.create(
+            record=record,
+            position="A1",
+            position_index=1,
+            title="Overwrite Same Name Track",
+        )
+        track.audio_preview.save("same-name.mp3", ContentFile(b"old-mp3"), save=True)
+        old_name = track.audio_preview.name
+
+        saved_name = downloader.download_audio_to_track(
+            track,
+            "https://example.com/audio.mp3",
+            overwrite=True,
+            allow_http=False,
+        )
+
+        track.refresh_from_db()
+
+        assert saved_name == old_name
+        assert track.audio_preview.name == saved_name
+        with track.audio_preview.open("rb") as fh:
+            assert fh.read() == b"mp3-data"
     finally:
         shutil.rmtree(media_root, ignore_errors=True)

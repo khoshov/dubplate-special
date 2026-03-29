@@ -777,5 +777,3 @@ class YouTubeSessionService:
                 error=str(exc),
             )
             return False
-
-

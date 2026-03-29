@@ -57,6 +57,7 @@ from records.services.record_assembly import (
 from records.services.tasks import (
     find_youtube_audio_urls_for_record,
     process_youtube_enrichment_track,
+    run_redeye_audio_enrichment_job,
     run_youtube_enrichment_job,
 )
 
@@ -520,6 +521,49 @@ class RecordService:
             requested_by_user_id=requested_by_user_id,
         )
 
+    def enqueue_redeye_audio_import(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь Redeye enrichment после импорта записи."""
+        return self.enqueue_redeye_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.REDEYE_IMPORT,
+            overwrite_existing=False,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_manual_redeye_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит массовый ручной Redeye enrichment в очередь."""
+        return self.enqueue_redeye_audio_enrichment(
+            record_ids=record_ids,
+            source=AudioEnrichmentJob.Source.REDEYE_MANUAL_LIST,
+            overwrite_existing=False,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_record_redeye_audio_enrichment(
+        self,
+        *,
+        record: Record,
+        requested_by_user_id: int | None = None,
+        overwrite_existing: bool = False,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь single-record ручной Redeye enrichment."""
+        return self.enqueue_redeye_audio_enrichment(
+            record_ids=[record.id],
+            source=AudioEnrichmentJob.Source.REDEYE_MANUAL_RECORD,
+            overwrite_existing=overwrite_existing,
+            requested_by_user_id=requested_by_user_id,
+        )
+
     def enqueue_record_youtube_audio_search(
         self,
         *,
@@ -630,6 +674,51 @@ class RecordService:
         )
         return job
 
+    def enqueue_redeye_audio_enrichment(
+        self,
+        *,
+        record_ids: list[int],
+        source: str,
+        overwrite_existing: bool,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Создаёт job report и enqueue-ит background task для Redeye."""
+        normalized_record_ids = sorted({int(record_id) for record_id in record_ids})
+        if not normalized_record_ids:
+            raise ValueError(
+                "Список record_ids для Redeye enrichment не должен быть пустым."
+            )
+
+        job = AudioEnrichmentJob.objects.create(
+            source=source,
+            status=AudioEnrichmentJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=overwrite_existing,
+            total_records=len(normalized_record_ids),
+        )
+        payload = {
+            "job_id": str(job.id),
+            "record_ids": normalized_record_ids,
+            "overwrite_existing": overwrite_existing,
+            "requested_by_user_id": requested_by_user_id,
+            "source": source,
+        }
+        transaction.on_commit(
+            lambda: run_redeye_audio_enrichment_job.delay(payload)  # noqa: B023
+        )
+        _log_record_service_event(
+            logging.INFO,
+            "redeye_audio_job_enqueued",
+            "Поставлена в очередь задача обновления аудио из Redeye.",
+            job_id=job.id,
+            source=source,
+            overwrite=overwrite_existing,
+            records_total=len(normalized_record_ids),
+            record_ids=",".join(str(record_id) for record_id in normalized_record_ids),
+            requested_by_user_id=requested_by_user_id,
+        )
+        return job
+
     def import_from_redeye(
         self,
         catalog_number: Optional[str] = None,
@@ -682,8 +771,13 @@ class RecordService:
                     resolved_page_url = self._ensure_redeye_source_for_record(
                         existing, normalized_catalog_number
                     )
-                    self.attach_audio_from_redeye(
-                        existing, force=False, page_url=resolved_page_url
+                    enrichment_job = self.enqueue_redeye_audio_import(
+                        record=existing,
+                    )
+                    setattr(
+                        existing,
+                        "_redeye_enrichment_job_id",
+                        str(enrichment_job.id),
                     )
                 except Exception as err:  # noqa: BLE001 — логируем любую ошибку привязки
                     _log_record_service_event(
@@ -692,6 +786,7 @@ class RecordService:
                         "Докачка аудио из Redeye для существующей записи завершилась с ошибкой.",
                         record_id=existing.id,
                         catalog_number=normalized_catalog_number,
+                        source_url=resolved_page_url,
                         error=str(err),
                     )
             return existing, False
@@ -775,7 +870,8 @@ class RecordService:
 
         if download_audio_decision:
             try:
-                self.attach_audio_from_redeye(record, force=False)
+                enrichment_job = self.enqueue_redeye_audio_import(record=record)
+                setattr(record, "_redeye_enrichment_job_id", str(enrichment_job.id))
             except Exception as err:  # noqa: BLE001
                 _log_record_service_event(
                     logging.WARNING,

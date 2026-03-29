@@ -352,6 +352,30 @@ def _delete_replaced_audio_file(
         )
 
 
+def _delete_existing_audio_before_overwrite(
+    track: TrackLike,
+    *,
+    old_name: str,
+) -> None:
+    """Удаляет текущий mp3 из storage перед сохранением нового файла."""
+    if not old_name:
+        return
+
+    try:
+        track.audio_preview.storage.delete(old_name)
+        if hasattr(track.audio_preview, "name"):
+            track.audio_preview.name = ""
+    except Exception as error:  # noqa: BLE001
+        _log_downloader_event(
+            logging.WARNING,
+            "overwrite_delete_failed",
+            "Не удалось удалить прежний mp3 перед перезаписью.",
+            track_id=getattr(track, "pk", None),
+            old_file=old_name,
+            error=str(error),
+        )
+
+
 def download_audio_to_track(
     track: TrackLike,
     url: str,
@@ -425,6 +449,8 @@ def download_audio_to_track(
             return None
 
         old_name = str(existing_name or "").strip()
+        if overwrite:
+            _delete_existing_audio_before_overwrite(track, old_name=old_name)
         saved_name = _save_temp_to_filefield(track, url, tmp_path, content_type)
         if overwrite:
             _delete_replaced_audio_file(

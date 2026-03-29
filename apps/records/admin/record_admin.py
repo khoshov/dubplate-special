@@ -964,6 +964,18 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
                     report_url,
                 ),
             )
+        redeye_job_id = getattr(obj, "_redeye_enrichment_job_id", None)
+        if redeye_job_id:
+            report_url = reverse(
+                "admin:records_audioenrichmentjob_change", args=[redeye_job_id]
+            )
+            messages.info(
+                request,
+                format_html(
+                    'Поставлена в очередь задача Redeye enrichment: <a href="{}">Открыть job report</a>.',
+                    report_url,
+                ),
+            )
         return super().response_add(request, obj, post_url_continue=post_url_continue)
 
     def save_related(self, request, form, formsets, change) -> None:
