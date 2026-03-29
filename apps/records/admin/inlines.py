@@ -82,7 +82,7 @@ class TrackInline(admin.TabularInline):
                 (
                     '<div class="track-audio-controls" data-has-audio="0">'
                     '<button type="button" class="button js-track-enqueue-mp3"'
-                    ' data-enqueue-mp3-url="{enqueue_url}">Загрузить mp3</button>'
+                    ' data-enqueue-mp3-url="{enqueue_url}">Загрузить mp3 по URL</button>'
                     "</div>"
                 ),
                 enqueue_url=enqueue_url,

@@ -10,7 +10,7 @@ from django.core.files.base import ContentFile
 from django.urls import reverse
 
 from records.admin.inlines import TrackInline
-from records.models import Record, Track
+from records.models import AudioEnrichmentJobRecord, Record, Track
 
 
 def _make_superuser():
@@ -78,6 +78,31 @@ def test_change_page_renders_mp3_delete_button_and_editable_fields(client) -> No
 
 
 @pytest.mark.django_db
+def test_change_page_renders_mp3_upload_button_with_new_label(client) -> None:
+    admin_user = _make_superuser()
+    client.force_login(admin_user)
+    record = Record.objects.create(title="Upload mp3")
+    track = Track.objects.create(
+        record=record,
+        position_index=1,
+        position="A1",
+        title="Preview",
+        youtube_url="https://www.youtube.com/watch?v=test123",
+    )
+
+    response = client.get(reverse("admin:records_record_change", args=[record.pk]))
+
+    assert response.status_code == 200
+    content = response.content.decode("utf-8")
+    expected_url = reverse(
+        "admin:records_record_track_enqueue_mp3",
+        args=[record.pk, track.pk],
+    )
+    assert expected_url in content
+    assert "Загрузить mp3 по URL" in content
+
+
+@pytest.mark.django_db
 def test_change_page_uses_uniform_input_size_per_track_column(client) -> None:
     admin_user = _make_superuser()
     client.force_login(admin_user)
@@ -140,3 +165,18 @@ def test_delete_track_mp3_view_deletes_file_and_clears_field(client) -> None:
     track.refresh_from_db()
     assert not track.audio_preview
     assert track.audio_preview.storage.exists(saved_name) is False
+
+    report = AudioEnrichmentJobRecord.objects.get(record=record)
+    assert report.operation_name == "Удаление аудио у трека"
+    assert report.scope == AudioEnrichmentJobRecord.Scope.TRACK
+    assert report.result == "Аудио у трека удалено"
+    assert report.track_results_json == [
+        {
+            "track_id": str(track.pk),
+            "track_title": track.title,
+            "action": "Удаление аудио у трека",
+            "status": "Удалено",
+            "source": "Не указан",
+            "message": "Аудио у трека удалено.",
+        }
+    ]

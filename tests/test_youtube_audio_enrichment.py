@@ -8,6 +8,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.management import call_command
+from django.utils import timezone
 from yt_dlp.utils import DownloadError
 
 from records.models import (
@@ -132,6 +133,7 @@ def test_import_from_discogs_enqueues_youtube_job(monkeypatch):
     )
 
     job = AudioEnrichmentJob.objects.get()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
 
     assert created is True
     assert str(job.id) == record._discogs_enrichment_job_id
@@ -140,6 +142,12 @@ def test_import_from_discogs_enqueues_youtube_job(monkeypatch):
     assert job.requested_by_user_id == user.id
     assert job.overwrite_existing is False
     assert job.total_records == 1
+    assert job_record.operation_name == "Импорт релиза из Discogs"
+    assert job_record.release_source_name == "Discogs"
+    assert job_record.audio_source_summary == "YouTube/Bandcamp"
+    assert job_record.stage == "Постановка задачи добавления аудио"
+    assert job_record.result == "Релиз создан"
+    assert job_record.queued_at is not None
     assert captured_payloads == [
         {
             "job_id": str(job.id),
@@ -234,6 +242,8 @@ def test_run_youtube_enrichment_job_queues_record_tasks(monkeypatch):
     assert job.status == AudioEnrichmentJob.Status.RUNNING
     assert job.started_at is not None
     assert job_record.status == AudioEnrichmentJobRecord.Status.QUEUED
+    assert job_record.operation_name == "Добавление аудио по URL (YouTube/Bandcamp)"
+    assert job_record.stage == "Ожидает выполнения"
     assert queued_payloads == [
         {
             "job_id": str(job.id),
@@ -280,11 +290,93 @@ def test_run_redeye_audio_enrichment_job_queues_record_tasks(monkeypatch):
     assert job.status == AudioEnrichmentJob.Status.RUNNING
     assert job.started_at is not None
     assert job_record.status == AudioEnrichmentJobRecord.Status.QUEUED
+    assert job_record.operation_name == "Добавление аудио из Redeye"
+    assert job_record.audio_source_summary == "Redeye"
     assert queued_payloads == [
         {
             "job_id": str(job.id),
             "record_id": record.id,
             "overwrite_existing": False,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_find_youtube_audio_urls_for_record_updates_release_report(monkeypatch):
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.QUEUED,
+        total_records=1,
+    )
+    record = Record.objects.create(title="Searchable Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Need URL",
+    )
+    AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.QUEUED,
+        operation_name="Поиск аудио на YouTube",
+        scope=AudioEnrichmentJobRecord.Scope.RELEASE,
+        audio_source_summary="YouTube",
+        stage="Ожидает выполнения",
+        result="Операция создана",
+        result_message="Поставлена задача поиска аудио на YouTube.",
+        tracks_total=1,
+        queued_at=timezone.now(),
+    )
+
+    class _FakeYoutubeDL:
+        def __init__(self, _opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _query, download=False):
+            assert download is False
+            return {"entries": [{"url": "abc123", "title": "Found Track"}]}
+
+    monkeypatch.setattr(tasks_module.yt_dlp, "YoutubeDL", _FakeYoutubeDL)
+
+    result = tasks_module.find_youtube_audio_urls_for_record(
+        {
+            "job_id": str(job.id),
+            "record_id": record.id,
+            "requested_by_user_id": None,
+        }
+    )
+
+    track.refresh_from_db()
+    job.refresh_from_db()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
+
+    assert result == {
+        "record_id": record.pk,
+        "updated": 1,
+        "skipped": 0,
+        "not_found": 0,
+    }
+    assert track.youtube_url == "https://www.youtube.com/watch?v=abc123"
+    assert job.status == AudioEnrichmentJob.Status.COMPLETED
+    assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED
+    assert job_record.stage == "Завершение операции"
+    assert job_record.result == "Ссылки YouTube найдены"
+    assert job_record.updated_count == 1
+    assert job_record.track_results_json == [
+        {
+            "track_id": str(track.pk),
+            "track_title": track.title,
+            "action": "Поиск аудио на YouTube",
+            "status": "Найдено",
+            "source": "YouTube",
+            "message": "Ссылка YouTube найдена.",
         }
     ]
 
@@ -343,6 +435,20 @@ def test_process_youtube_enrichment_record_updates_track(monkeypatch):
     assert job.skipped_count == 0
     assert job.error_count == 0
     assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED
+    assert job_record.operation_name == "Добавление аудио по URL (YouTube/Bandcamp)"
+    assert job_record.stage == "Завершение операции"
+    assert job_record.result == "Аудио добавлено полностью"
+    assert job_record.tracks_total == 1
+    assert job_record.track_results_json == [
+        {
+            "track_id": str(track.pk),
+            "track_title": track.title,
+            "action": "Добавление аудио к треку",
+            "status": "Добавлено",
+            "source": "YouTube",
+            "message": "Аудио добавлено.",
+        }
+    ]
     assert track_result.status == AudioEnrichmentTrackResult.Status.UPDATED
     assert track_result.final_audio_name.endswith("ready-track.mp3")
     assert track_result.attempts == 1
@@ -387,6 +493,18 @@ def test_process_youtube_enrichment_record_skips_track_without_youtube_url():
     }
     assert job.status == AudioEnrichmentJob.Status.COMPLETED_WITH_ERRORS
     assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+    assert job_record.stage == "Завершение операции"
+    assert job_record.result == "Аудио добавлено частично"
+    assert job_record.track_results_json == [
+        {
+            "track_id": str(track.pk),
+            "track_title": track.title,
+            "action": "Добавление аудио к треку",
+            "status": "Пропущено",
+            "source": "Не указан",
+            "message": AudioEnrichmentTrackResult.Reason.MISSING_YOUTUBE_URL,
+        }
+    ]
     assert track_result.status == AudioEnrichmentTrackResult.Status.SKIPPED
     assert (
         track_result.reason_code
@@ -782,6 +900,7 @@ def test_youtube_provider_fills_missing_track_duration_from_metadata(
 
         assert saved_name
         assert track.duration == "03:05"
+        assert track.audio_source == Track.AudioSource.YOUTUBE
         assert track.audio_preview.name.endswith("duration-track.mp3")
     finally:
         shutil.rmtree(media_root, ignore_errors=True)
@@ -923,8 +1042,73 @@ def test_youtube_provider_overwrite_replaces_same_named_file(settings, monkeypat
         track.refresh_from_db()
 
         assert saved_name == old_name
+        assert track.audio_source == Track.AudioSource.YOUTUBE
         with track.audio_preview.open("rb") as fh:
             assert fh.read() == b"new-mp3-data"
+    finally:
+        shutil.rmtree(media_root, ignore_errors=True)
+
+
+@pytest.mark.django_db
+def test_bandcamp_provider_sets_audio_source(settings, monkeypatch):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    media_root = runtime_dir / f"media-bandcamp-source-{uuid.uuid4().hex}"
+    temp_dir = runtime_dir / f"bandcamp-audio-{uuid.uuid4().hex}"
+    media_root.mkdir()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            return {"duration": 200}
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            (self.path / "downloaded.mp3").write_bytes(b"bandcamp-mp3-data")
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+
+    try:
+        settings.MEDIA_ROOT = str(media_root)
+        record = Record.objects.create(title="Bandcamp Source Record")
+        track = Track.objects.create(
+            record=record,
+            position="A1",
+            position_index=1,
+            title="Bandcamp Source Track",
+            youtube_url="https://artist.bandcamp.com/track/test-track",
+        )
+
+        saved_name = YouTubeAudioEnrichmentProvider.download_audio_to_track(track=track)
+
+        track.refresh_from_db()
+
+        assert saved_name
+        assert track.audio_source == Track.AudioSource.BANDCAMP
     finally:
         shutil.rmtree(media_root, ignore_errors=True)
 
@@ -1137,7 +1321,7 @@ def test_enqueue_manual_youtube_audio_enrichment_requires_non_empty_record_ids()
 
     with pytest.raises(
         ValueError,
-        match="Список record_ids для YouTube enrichment не должен быть пустым.",
+        match="Список record_ids для добавления аудио по URL не должен быть пустым.",
     ):
         service.enqueue_youtube_audio_enrichment(
             record_ids=[],

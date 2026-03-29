@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 import yt_dlp
 from celery import shared_task
 from django.conf import settings
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from records.models import (
@@ -16,6 +17,8 @@ from records.models import (
     AudioEnrichmentTrackResult,
     Record,
     Track,
+    VKPublicationJob,
+    VKPublicationJobRecord,
 )
 from config.logging import NOTICE_LEVEL, build_log_extra, log_event
 from records.services.audio.audio_service import AudioService
@@ -23,11 +26,14 @@ from records.services.audio.providers.youtube_audio_enrichment import (
     YouTubeAuthenticationRequiredError,
     YouTubeAudioEnrichmentProvider,
 )
+from records.services.social.vk_service import VKService
+from vk_api.exceptions import ApiError
 
 logger = logging.getLogger(__name__)
 _YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
 _YOUTUBE_SESSION_COMPONENT = "youtube_session"
 _YOUTUBE_SEARCH_COMPONENT = "youtube_search"
+_VK_PUBLICATION_COMPONENT = "vk_publication"
 
 
 def _log_youtube_audio_event(
@@ -76,6 +82,496 @@ def _log_youtube_search_event(
         event=event,
         **context,
     )
+
+
+def _log_vk_publication_event(
+    level: int,
+    event: str,
+    message: str,
+    **context: Any,
+) -> None:
+    log_event(
+        logger,
+        level,
+        message,
+        component=_VK_PUBLICATION_COMPONENT,
+        event=event,
+        **context,
+    )
+
+
+def _build_release_report_track_item(
+    *,
+    track: Track,
+    status: str,
+    message: str,
+    source_label: str | None = None,
+) -> dict[str, str]:
+    resolved_source_label = (
+        source_label or track.get_audio_source_display() or "Не указан"
+    )
+    return {
+        "track_id": str(track.pk),
+        "track_title": str(track.title),
+        "action": "Добавление аудио к треку",
+        "status": status,
+        "source": resolved_source_label,
+        "message": message,
+    }
+
+
+def _refresh_vk_publication_job_status(job: VKPublicationJob) -> VKPublicationJob:
+    aggregate = job.job_records.aggregate(
+        success_sum=Count(
+            "id",
+            filter=Q(
+                status__in=(
+                    VKPublicationJobRecord.Status.COMPLETED,
+                    VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+                )
+            ),
+        ),
+        error_sum=Count("id", filter=Q(status=VKPublicationJobRecord.Status.FAILED)),
+        record_total=Count("id"),
+    )
+    statuses = set(job.job_records.values_list("status", flat=True))
+
+    job.total_records = int(aggregate["record_total"] or 0)
+    job.success_count = int(aggregate["success_sum"] or 0)
+    job.error_count = int(aggregate["error_sum"] or 0)
+    job.skipped_count = 0
+
+    active_statuses = {
+        VKPublicationJobRecord.Status.QUEUED,
+        VKPublicationJobRecord.Status.RUNNING,
+    }
+    if statuses & active_statuses:
+        job.status = VKPublicationJob.Status.RUNNING
+        if job.started_at is None:
+            job.started_at = timezone.now()
+        job.finished_at = None
+    elif not statuses:
+        job.status = VKPublicationJob.Status.QUEUED
+        job.finished_at = None
+    elif (
+        VKPublicationJobRecord.Status.FAILED in statuses
+        or VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS in statuses
+    ):
+        job.status = VKPublicationJob.Status.COMPLETED_WITH_ERRORS
+        job.finished_at = timezone.now()
+    else:
+        job.status = VKPublicationJob.Status.COMPLETED
+        job.finished_at = timezone.now()
+
+    job.save(
+        update_fields=[
+            "status",
+            "total_records",
+            "success_count",
+            "skipped_count",
+            "error_count",
+            "started_at",
+            "finished_at",
+            "modified",
+        ]
+    )
+    return job
+
+
+def _parse_vk_run_job_payload(
+    payload: dict[str, Any],
+) -> tuple[uuid.UUID, int | None, str]:
+    return (
+        uuid.UUID(str(payload["job_id"])),
+        (
+            int(payload["requested_by_user_id"])
+            if payload.get("requested_by_user_id") is not None
+            else None
+        ),
+        str(payload["source"]),
+    )
+
+
+def _parse_vk_process_record_payload(
+    payload: dict[str, Any],
+) -> tuple[uuid.UUID, uuid.UUID]:
+    return (
+        uuid.UUID(str(payload["job_id"])),
+        uuid.UUID(str(payload["job_record_id"])),
+    )
+
+
+def _get_vk_retry_delta(
+    planned_publish_at: datetime | None,
+    job: VKPublicationJob,
+) -> timedelta:
+    if planned_publish_at is None:
+        return timedelta(minutes=5)
+    if job.total_records <= 1:
+        return timedelta(minutes=5)
+    return timedelta(minutes=30)
+
+
+def _resolve_vk_release_source_name(record: Record) -> str:
+    if record.sources.filter(provider="redeye").exists():
+        return "Redeye"
+    if record.sources.filter(provider="discogs").exists() or bool(record.discogs_id):
+        return "Discogs"
+    return "Не указан"
+
+
+def _resolve_vk_audio_source_summary(record: Record) -> str:
+    source_values = list(
+        record.tracks.exclude(audio_source="unknown")
+        .exclude(audio_source="")
+        .values_list("audio_source", flat=True)
+        .distinct()
+    )
+    labels_map = dict(Track.AudioSource.choices)
+    labels = [str(labels_map.get(value, "")).strip() for value in source_values]
+    labels = [label for label in labels if label]
+    return ", ".join(labels) if labels else "Не указан"
+
+
+def _build_vk_report_result(
+    *,
+    publication_result: Any,
+    shifted: bool,
+) -> tuple[str, str, str, str]:
+    warning_parts: list[str] = []
+
+    if shifted:
+        warning_parts.append("Время публикации автоматически изменено.")
+
+    if publication_result.photo_expected and not publication_result.photo_uploaded:
+        warning_parts.append(
+            "Изображение релиза не загружено, поэтому аудио не добавлялось."
+        )
+        return (
+            VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+            "Изображение релиза не загружено, поэтому аудио не добавлялось",
+            "Публикация выполнена только текстом: изображение релиза не загружено, аудио не добавлялось.",
+            " ".join(warning_parts).strip(),
+        )
+
+    if publication_result.audio_failed_count > 0:
+        warning_parts.append("Не все аудио удалось загрузить.")
+        uploaded = int(publication_result.audio_uploaded_count or 0)
+        expected = int(publication_result.audio_expected_count or 0)
+        return (
+            VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+            "Пост опубликован с изображением, но не со всеми аудио",
+            f"Пост опубликован с изображением, аудио загружено {uploaded} из {expected}.",
+            " ".join(warning_parts).strip(),
+        )
+
+    if (
+        publication_result.photo_uploaded
+        and publication_result.audio_uploaded_count > 0
+    ):
+        result_message = "Пост опубликован с изображением и аудио."
+        return (
+            (
+                VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
+                if shifted
+                else VKPublicationJobRecord.Status.COMPLETED
+            ),
+            "Пост опубликован с изображением и аудио",
+            result_message,
+            " ".join(warning_parts).strip(),
+        )
+
+    if publication_result.photo_uploaded:
+        result_message = "Пост опубликован с изображением."
+        return (
+            (
+                VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
+                if shifted
+                else VKPublicationJobRecord.Status.COMPLETED
+            ),
+            "Пост опубликован с изображением",
+            result_message,
+            " ".join(warning_parts).strip(),
+        )
+
+    result_message = "Пост опубликован только текстом."
+    return (
+        VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+        "Пост опубликован только текстом",
+        result_message,
+        " ".join(warning_parts).strip(),
+    )
+
+
+def _post_to_vk_with_retry(
+    *,
+    vk_service: VKService,
+    record: Record,
+    publish_at: datetime | None,
+    delta: timedelta,
+    max_retries: int,
+) -> tuple[Any, datetime | None, bool]:
+    attempts = 0
+    current_at = publish_at
+    shifted = False
+
+    while True:
+        try:
+            publication_result = vk_service.post_record_with_audio_details(
+                record=record,
+                publish_at=current_at,
+            )
+            return publication_result, current_at, shifted
+        except ApiError as exc:
+            if exc.code != 214 or current_at is None:
+                raise
+            attempts += 1
+            shifted = True
+            if attempts > max_retries:
+                raise
+            current_at = current_at + delta
+
+
+@shared_task(name="records.vk_publication.run_job")
+def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ставит fan-out обработку VK job по списку записей."""
+    job_id, requested_by_user_id, source = _parse_vk_run_job_payload(payload)
+
+    job = VKPublicationJob.objects.get(pk=job_id)
+    job.source = source
+    job.requested_by_user_id = requested_by_user_id
+    job.status = VKPublicationJob.Status.RUNNING
+    if job.started_at is None:
+        job.started_at = timezone.now()
+    job.save(
+        update_fields=[
+            "source",
+            "requested_by_user",
+            "status",
+            "started_at",
+            "modified",
+        ]
+    )
+    _log_vk_publication_event(
+        logging.INFO,
+        "job_start",
+        "===== Запущена задача публикации записей в VK =====",
+        job_id=job.id,
+        source=source,
+        records_total=job.total_records,
+        requested_by_user_id=requested_by_user_id,
+    )
+
+    queued_records = 0
+    for job_record in job.job_records.select_related("record").order_by(
+        "created", "id"
+    ):
+        queued_records += 1
+        process_vk_publication_record.delay(
+            {
+                "job_id": str(job.id),
+                "job_record_id": str(job_record.id),
+            }
+        )
+
+    refreshed = _refresh_vk_publication_job_status(job)
+    _log_vk_publication_event(
+        logging.INFO,
+        "job_enqueued",
+        "===== Задача публикации записей в VK поставлена на обработку =====",
+        job_id=refreshed.id,
+        source=source,
+        status=refreshed.status,
+        queued_records=queued_records,
+    )
+    return {
+        "job_id": str(refreshed.id),
+        "status": refreshed.status,
+        "queued_records": queued_records,
+    }
+
+
+@shared_task(name="records.vk_publication.process_record")
+def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
+    """Публикует одну запись в VK и обновляет job report."""
+    job_id, job_record_id = _parse_vk_process_record_payload(payload)
+
+    job = VKPublicationJob.objects.get(pk=job_id)
+    job_record = VKPublicationJobRecord.objects.select_related("record", "job").get(
+        pk=job_record_id
+    )
+    record = job_record.record
+
+    if job_record.status == VKPublicationJobRecord.Status.RUNNING:
+        return {
+            "job_id": str(job.id),
+            "record_id": record.pk,
+            "status": job_record.status,
+        }
+
+    job_record.status = VKPublicationJobRecord.Status.RUNNING
+    job_record.stage = "Подготовка данных публикации"
+    job_record.release_source_name = _resolve_vk_release_source_name(record)
+    job_record.audio_source_summary = _resolve_vk_audio_source_summary(record)
+    if job_record.started_at is None:
+        job_record.started_at = timezone.now()
+    job_record.save(
+        update_fields=[
+            "status",
+            "stage",
+            "release_source_name",
+            "audio_source_summary",
+            "started_at",
+            "modified",
+        ]
+    )
+
+    _log_vk_publication_event(
+        logging.INFO,
+        "record_start",
+        "----- Запущена публикация записи в VK -----",
+        job_id=job.id,
+        job_record_id=job_record.id,
+        record_id=record.pk,
+        mode=job_record.mode,
+        planned_publish_at=job_record.planned_publish_at.isoformat()
+        if job_record.planned_publish_at
+        else None,
+    )
+
+    try:
+        vk_service = VKService.from_settings()
+        delta = _get_vk_retry_delta(job_record.planned_publish_at, job)
+        job_record.stage = "Публикация поста в VK"
+        job_record.save(update_fields=["stage", "modified"])
+        publication_result, final_publish_at, shifted = _post_to_vk_with_retry(
+            vk_service=vk_service,
+            record=record,
+            publish_at=job_record.planned_publish_at,
+            delta=delta,
+            max_retries=10,
+        )
+        published_at = (
+            final_publish_at or job_record.planned_publish_at or timezone.now()
+        )
+        Record.objects.filter(pk=record.pk).update(vk_published_at=published_at)
+        result_status, result, result_message, warning_message = (
+            _build_vk_report_result(
+                publication_result=publication_result,
+                shifted=shifted,
+            )
+        )
+        job_record.status = result_status
+        job_record.operation_name = (
+            "Отложенная публикация в VK"
+            if job_record.mode == VKPublicationJobRecord.Mode.SCHEDULED
+            else "Публикация в VK"
+        )
+        job_record.result = result
+        job_record.result_message = result_message
+        job_record.warning_message = warning_message
+        job_record.stage = "Завершение операции"
+        job_record.photo_expected = publication_result.photo_expected
+        job_record.photo_uploaded = publication_result.photo_uploaded
+        job_record.audio_expected_count = publication_result.audio_expected_count
+        job_record.audio_uploaded_count = publication_result.audio_uploaded_count
+        job_record.audio_failed_count = publication_result.audio_failed_count
+        job_record.failed_track_titles = publication_result.failed_track_titles
+        job_record.effective_publish_at = final_publish_at
+        job_record.vk_post_id = publication_result.post_id
+        job_record.error_message = ""
+        job_record.finished_at = timezone.now()
+        job_record.save(
+            update_fields=[
+                "status",
+                "operation_name",
+                "result",
+                "result_message",
+                "warning_message",
+                "stage",
+                "photo_expected",
+                "photo_uploaded",
+                "audio_expected_count",
+                "audio_uploaded_count",
+                "audio_failed_count",
+                "failed_track_titles",
+                "effective_publish_at",
+                "vk_post_id",
+                "error_message",
+                "finished_at",
+                "modified",
+            ]
+        )
+        _log_vk_publication_event(
+            logging.INFO,
+            "record_finish",
+            "----- Публикация записи в VK завершена -----",
+            job_id=job.id,
+            job_record_id=job_record.id,
+            record_id=record.pk,
+            vk_post_id=publication_result.post_id,
+            shifted=shifted,
+            effective_publish_at=final_publish_at.isoformat()
+            if final_publish_at
+            else None,
+            result=result,
+            warning_message=warning_message or "—",
+        )
+    except Exception as exc:  # noqa: BLE001
+        job_record.status = VKPublicationJobRecord.Status.FAILED
+        job_record.operation_name = (
+            "Отложенная публикация в VK"
+            if job_record.mode == VKPublicationJobRecord.Mode.SCHEDULED
+            else "Публикация в VK"
+        )
+        job_record.result = "Публикация завершилась с ошибкой"
+        job_record.result_message = f"Публикация на стену VK не удалась. Причина: {exc}"
+        job_record.error_message = str(exc)
+        job_record.stage = "Завершение операции"
+        job_record.finished_at = timezone.now()
+        job_record.save(
+            update_fields=[
+                "status",
+                "operation_name",
+                "result",
+                "result_message",
+                "error_message",
+                "stage",
+                "finished_at",
+                "modified",
+            ]
+        )
+        _log_vk_publication_event(
+            logging.ERROR,
+            "record_failed",
+            "Во время публикации записи в VK произошла ошибка.",
+            job_id=job.id,
+            job_record_id=job_record.id,
+            record_id=record.pk,
+            error=str(exc),
+        )
+        logger.exception(
+            "Стектрейс ошибки публикации записи в VK.",
+            extra=build_log_extra(
+                component=_VK_PUBLICATION_COMPONENT,
+                event="record_failed_traceback",
+                job_id=job.id,
+                job_record_id=job_record.id,
+                record_id=record.pk,
+            ),
+        )
+
+    refreshed = _refresh_vk_publication_job_status(job)
+    refreshed_job_record = VKPublicationJobRecord.objects.get(pk=job_record.pk)
+    return {
+        "job_id": str(refreshed.id),
+        "record_id": record.pk,
+        "status": refreshed_job_record.status,
+        "vk_post_id": refreshed_job_record.vk_post_id,
+        "effective_publish_at": refreshed_job_record.effective_publish_at.isoformat()
+        if refreshed_job_record.effective_publish_at
+        else None,
+    }
 
 
 def _maybe_refresh_youtube_session(
@@ -695,11 +1191,24 @@ def process_redeye_audio_enrichment_record(
             )
         )
         skipped_count = max(tracks_total - updated_count, 0)
+        result_message = (
+            f"Добавление аудио из Redeye завершено: добавлено {updated_count} из "
+            f"{tracks_total} треков."
+        )
+        warning_message = ""
+        if skipped_count > 0:
+            warning_message = (
+                f"Не для всех треков удалось добавить аудио из Redeye: "
+                f"пропущено {skipped_count}."
+            )
         audio_service.mark_audio_record_finished(
             job_record=job_record,
             updated_count=updated_count,
             skipped_count=skipped_count,
             error_count=error_count,
+            result_message=result_message,
+            warning_message=warning_message,
+            audio_source_summary="Redeye",
         )
         refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
         _log_youtube_audio_event(
@@ -747,6 +1256,9 @@ def process_redeye_audio_enrichment_record(
             error_count=error_count,
             force_failed=True,
             reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+            result_message="Добавление аудио из Redeye завершилось с ошибкой.",
+            error_message=str(exc),
+            audio_source_summary="Redeye",
         )
 
     refreshed = _refresh_job_status(job)
@@ -808,6 +1320,7 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
     )
 
     updated_count = skipped_count = error_count = 0
+    track_results_summary: list[dict[str, str]] = []
     try:
         tracks = list(record.tracks.order_by("position_index", "id"))
         for track in tracks:
@@ -825,16 +1338,70 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
 
             if track_payload["status"] == AudioEnrichmentTrackResult.Status.UPDATED:
                 updated_count += 1
+                track_results_summary.append(
+                    _build_release_report_track_item(
+                        track=track,
+                        status="Добавлено",
+                        message="Аудио добавлено.",
+                        source_label=(
+                            "YouTube"
+                            if YouTubeAudioEnrichmentProvider.is_youtube_url(
+                                track.youtube_url
+                            )
+                            else "Bandcamp"
+                        ),
+                    )
+                )
             elif track_payload["status"] == AudioEnrichmentTrackResult.Status.SKIPPED:
                 skipped_count += 1
+                track_results_summary.append(
+                    _build_release_report_track_item(
+                        track=track,
+                        status="Пропущено",
+                        message=str(track_payload["reason_code"] or "Пропущено."),
+                    )
+                )
             else:
                 error_count += 1
+                track_results_summary.append(
+                    _build_release_report_track_item(
+                        track=track,
+                        status="Ошибка",
+                        message=str(
+                            track_payload["error_message"] or "Ошибка обработки."
+                        ),
+                    )
+                )
+
+        result_message = (
+            "Добавление аудио по URL завершено: "
+            f"добавлено {updated_count}, пропущено {skipped_count}, ошибок {error_count}."
+        )
+        audio_sources = sorted(
+            {
+                track.get_audio_source_display()
+                for track in tracks
+                if track.audio_source != Track.AudioSource.UNKNOWN
+            }
+        )
+        warning_message = ""
+        if skipped_count > 0 or error_count > 0:
+            warning_message = (
+                "Не для всех треков удалось добавить аудио по URL "
+                f"(пропущено {skipped_count}, ошибок {error_count})."
+            )
 
         audio_service.mark_youtube_record_finished(
             job_record=job_record,
             updated_count=updated_count,
             skipped_count=skipped_count,
             error_count=error_count,
+            track_results_json=track_results_summary,
+            result_message=result_message,
+            warning_message=warning_message,
+            audio_source_summary=", ".join(audio_sources)
+            if audio_sources
+            else "Не указан",
         )
         refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
         _log_youtube_audio_event(
@@ -882,6 +1449,10 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
             error_count=error_count,
             force_failed=True,
             reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+            track_results_json=track_results_summary,
+            result_message="Добавление аудио по URL завершилось с ошибкой.",
+            error_message=str(exc),
+            audio_source_summary=job_record.audio_source_summary or "Не указан",
         )
 
     refreshed = _refresh_job_status(job)
@@ -932,6 +1503,22 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
             or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
         }
 
+    job_record.operation_name = "Добавление аудио к треку"
+    job_record.scope = AudioEnrichmentJobRecord.Scope.TRACK
+    job_record.stage = "Ожидает выполнения"
+    job_record.tracks_total = 1
+    if not job_record.queued_at:
+        job_record.queued_at = timezone.now()
+    job_record.save(
+        update_fields=[
+            "operation_name",
+            "scope",
+            "stage",
+            "tracks_total",
+            "queued_at",
+            "modified",
+        ]
+    )
     audio_service.mark_youtube_record_running(job_record)
     _log_youtube_audio_event(
         logging.INFO,
@@ -946,6 +1533,7 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     updated_count = skipped_count = error_count = 0
+    track_results_summary: list[dict[str, str]] = []
     try:
         track_payload = _process_track_for_youtube_enrichment(
             job_id=job.id,
@@ -961,16 +1549,55 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
 
         if track_payload["status"] == AudioEnrichmentTrackResult.Status.UPDATED:
             updated_count += 1
+            track_results_summary.append(
+                _build_release_report_track_item(
+                    track=track,
+                    status="Добавлено",
+                    message="Аудио добавлено.",
+                    source_label=(
+                        "YouTube"
+                        if YouTubeAudioEnrichmentProvider.is_youtube_url(
+                            track.youtube_url
+                        )
+                        else "Bandcamp"
+                    ),
+                )
+            )
         elif track_payload["status"] == AudioEnrichmentTrackResult.Status.SKIPPED:
             skipped_count += 1
+            track_results_summary.append(
+                _build_release_report_track_item(
+                    track=track,
+                    status="Пропущено",
+                    message=str(track_payload["reason_code"] or "Пропущено."),
+                )
+            )
         else:
             error_count += 1
+            track_results_summary.append(
+                _build_release_report_track_item(
+                    track=track,
+                    status="Ошибка",
+                    message=str(track_payload["error_message"] or "Ошибка обработки."),
+                )
+            )
 
         audio_service.mark_youtube_record_finished(
             job_record=job_record,
             updated_count=updated_count,
             skipped_count=skipped_count,
             error_count=error_count,
+            track_results_json=track_results_summary,
+            result_message=(
+                "Добавление аудио к треку завершено: "
+                f"добавлено {updated_count}, пропущено {skipped_count}, ошибок {error_count}."
+            ),
+            warning_message=(
+                "Не удалось добавить аудио к треку."
+                if skipped_count > 0 or error_count > 0
+                else ""
+            ),
+            audio_source_summary=track.get_audio_source_display() or "Не указан",
         )
         refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
         _log_youtube_audio_event(
@@ -1018,6 +1645,10 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
             error_count=error_count,
             force_failed=True,
             reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+            track_results_json=track_results_summary,
+            result_message="Добавление аудио к треку завершилось с ошибкой.",
+            error_message=str(exc),
+            audio_source_summary=job_record.audio_source_summary or "Не указан",
         )
 
     refreshed = _refresh_job_status(job)
@@ -1038,9 +1669,39 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
     """Ищет YouTube-ссылки для треков записи и заполняет пустые поля."""
     record_id = int(payload.get("record_id"))
     requested_by_user_id = payload.get("requested_by_user_id")
+    job_id_raw = payload.get("job_id")
 
     record = Record.objects.prefetch_related("artists", "tracks").get(pk=record_id)
     artist_names = ", ".join(artist.name for artist in record.artists.all()) or "—"
+    job = None
+    job_record = None
+    track_results_summary: list[dict[str, str]] = []
+
+    if job_id_raw:
+        job = AudioEnrichmentJob.objects.get(pk=uuid.UUID(str(job_id_raw)))
+        if job.status != AudioEnrichmentJob.Status.RUNNING:
+            job.status = AudioEnrichmentJob.Status.RUNNING
+            if job.started_at is None:
+                job.started_at = timezone.now()
+            job.save(update_fields=["status", "started_at", "modified"])
+
+        job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
+        if job_record.status != AudioEnrichmentJobRecord.Status.RUNNING:
+            job_record.status = AudioEnrichmentJobRecord.Status.RUNNING
+            job_record.stage = "Поиск аудио для треков"
+            if job_record.started_at is None:
+                job_record.started_at = timezone.now()
+            if job_record.queued_at is None:
+                job_record.queued_at = timezone.now()
+            job_record.save(
+                update_fields=[
+                    "status",
+                    "stage",
+                    "started_at",
+                    "queued_at",
+                    "modified",
+                ]
+            )
 
     _log_youtube_search_event(
         logging.INFO,
@@ -1062,6 +1723,16 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         for track in record.tracks.order_by("position_index", "id"):
             if str(track.youtube_url or "").strip():
                 skipped += 1
+                track_results_summary.append(
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Поиск аудио на YouTube",
+                        "status": "Пропущено",
+                        "source": "YouTube",
+                        "message": "Ссылка уже заполнена.",
+                    }
+                )
                 continue
 
             query = f"{artist_names} {record.title} {track.title}"
@@ -1086,6 +1757,16 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     error=str(exc),
                 )
                 not_found += 1
+                track_results_summary.append(
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Поиск аудио на YouTube",
+                        "status": "Ошибка",
+                        "source": "YouTube",
+                        "message": str(exc),
+                    }
+                )
                 continue
 
             if not entry:
@@ -1107,6 +1788,16 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     record_id=record.pk,
                     track_id=track.pk,
                     query=query,
+                )
+                track_results_summary.append(
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Поиск аудио на YouTube",
+                        "status": "Не найдено",
+                        "source": "YouTube",
+                        "message": "Поиск не вернул результатов.",
+                    }
                 )
                 continue
 
@@ -1135,11 +1826,31 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     query=query,
                     raw_url=str(entry.get("url") or ""),
                 )
+                track_results_summary.append(
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Поиск аудио на YouTube",
+                        "status": "Не найдено",
+                        "source": "YouTube",
+                        "message": "Не удалось извлечь ссылку YouTube.",
+                    }
+                )
                 continue
 
             track.youtube_url = url
             track.save(update_fields=["youtube_url", "modified"])
             updated += 1
+            track_results_summary.append(
+                {
+                    "track_id": str(track.pk),
+                    "track_title": track.title,
+                    "action": "Поиск аудио на YouTube",
+                    "status": "Найдено",
+                    "source": "YouTube",
+                    "message": "Ссылка YouTube найдена.",
+                }
+            )
 
             _log_youtube_search_event(
                 logging.INFO,
@@ -1171,6 +1882,61 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         ),
         record_id=record.pk,
     )
+    if job_record is not None and job is not None:
+        total_skipped = skipped + not_found
+        if updated > 0 and total_skipped == 0:
+            status = AudioEnrichmentJobRecord.Status.COMPLETED
+            result = "Ссылки YouTube найдены"
+            warning_message = ""
+        elif updated > 0:
+            status = AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+            result = "Ссылки YouTube найдены частично"
+            warning_message = (
+                f"Не для всех треков найдены ссылки YouTube: "
+                f"пропущено {skipped}, не найдено {not_found}."
+            )
+        else:
+            status = AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+            result = "Ссылки YouTube не найдены"
+            warning_message = (
+                f"Поиск завершён без новых ссылок: пропущено {skipped}, "
+                f"не найдено {not_found}."
+            )
+
+        job_record.status = status
+        job_record.stage = "Завершение операции"
+        job_record.result = result
+        job_record.result_message = (
+            f"Поиск аудио на YouTube завершён: найдено {updated}, "
+            f"пропущено {skipped}, не найдено {not_found}."
+        )
+        job_record.warning_message = warning_message
+        job_record.error_message = ""
+        job_record.audio_source_summary = "YouTube"
+        job_record.updated_count = updated
+        job_record.skipped_count = total_skipped
+        job_record.error_count = 0
+        job_record.track_results_json = track_results_summary
+        job_record.finished_at = timezone.now()
+        job_record.save(
+            update_fields=[
+                "status",
+                "stage",
+                "result",
+                "result_message",
+                "warning_message",
+                "error_message",
+                "audio_source_summary",
+                "updated_count",
+                "skipped_count",
+                "error_count",
+                "track_results_json",
+                "finished_at",
+                "modified",
+            ]
+        )
+        _refresh_job_status(job)
+
     return {
         "record_id": record.pk,
         "updated": updated,

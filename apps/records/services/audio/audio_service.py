@@ -239,6 +239,11 @@ class AudioService:
         error_count: int,
         force_failed: bool = False,
         reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+        track_results_json: list[dict[str, str]] | None = None,
+        result_message: str = "",
+        warning_message: str = "",
+        error_message: str = "",
+        audio_source_summary: str = "",
     ) -> AudioEnrichmentJobRecord:
         """Фиксирует итог обработки записи в рамках YouTube job."""
         return AudioService.mark_audio_record_finished(
@@ -248,6 +253,11 @@ class AudioService:
             error_count=error_count,
             force_failed=force_failed,
             reason_code=reason_code,
+            track_results_json=track_results_json,
+            result_message=result_message,
+            warning_message=warning_message,
+            error_message=error_message,
+            audio_source_summary=audio_source_summary,
         )
 
     @staticmethod
@@ -259,6 +269,11 @@ class AudioService:
         error_count: int,
         force_failed: bool = False,
         reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+        track_results_json: list[dict[str, str]] | None = None,
+        result_message: str = "",
+        warning_message: str = "",
+        error_message: str = "",
+        audio_source_summary: str = "",
     ) -> AudioEnrichmentJobRecord:
         """Фиксирует итог обработки записи в рамках audio-enrichment job."""
         return YouTubeAudioEnrichmentProvider.mark_record_finished(
@@ -268,4 +283,9 @@ class AudioService:
             error_count=error_count,
             force_failed=force_failed,
             reason_code=reason_code,
+            track_results_json=track_results_json,
+            result_message=result_message,
+            warning_message=warning_message,
+            error_message=error_message,
+            audio_source_summary=audio_source_summary,
         )

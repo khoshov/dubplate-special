@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import html
+import json
 import uuid
 
 import pytest
+from django.contrib import admin as django_admin
 from django.contrib import messages
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.test import RequestFactory
+from django.urls import reverse
+from django.utils import timezone
 
 from records.admin.actions import (
     find_audio_on_youtube,
@@ -143,21 +147,37 @@ class RecordingTrackService:
 
 
 class RecordingSearchService:
-    def __init__(self):
+    def __init__(self, job_id: uuid.UUID | None = None):
         self.calls: list[dict[str, object]] = []
+        self.job_id = job_id or uuid.uuid4()
 
     def enqueue_record_youtube_audio_search(
         self,
         *,
         record,
         requested_by_user_id: int | None = None,
-    ) -> None:
+    ):
         self.calls.append(
             {
                 "record_id": record.pk,
                 "requested_by_user_id": requested_by_user_id,
             }
         )
+        return type("Job", (), {"id": self.job_id})()
+
+    def enqueue_manual_youtube_audio_search(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ):
+        self.calls.append(
+            {
+                "record_ids": record_ids,
+                "requested_by_user_id": requested_by_user_id,
+            }
+        )
+        return type("Job", (), {"id": self.job_id})()
 
 
 def _attach_session_and_messages(request) -> None:
@@ -195,8 +215,9 @@ def test_update_audio_from_youtube_action_enqueues_manual_job():
         }
     ]
     assert any(level == messages.SUCCESS for _, level in admin.messages)
+    assert "задача добавления аудио по URL (YouTube/Bandcamp)" in messages_text
     assert "для 2 записей" in messages_text
-    assert f"/admin/records/audioenrichmentjob/{job_id}/change/" in messages_text
+    assert f"/admin/records/releasereport/?job__id__exact={job_id}" in messages_text
 
 
 @pytest.mark.django_db
@@ -228,7 +249,7 @@ def test_update_from_redeye_action_enqueues_manual_job():
     ]
     assert any(level == messages.SUCCESS for _, level in admin.messages)
     assert "Redeye для 2 записей" in messages_text
-    assert f"/admin/records/audioenrichmentjob/{job_id}/change/" in messages_text
+    assert f"/admin/records/releasereport/?job__id__exact={job_id}" in messages_text
 
 
 @pytest.mark.django_db
@@ -258,11 +279,11 @@ def test_record_admin_youtube_refresh_view_enqueues_single_record_job(monkeypatc
         }
     ]
     assert any(
-        "Поставлена в очередь задача обновления аудио треков из YouTube." in msg
+        "Поставлена в очередь задача добавления аудио по URL (YouTube/Bandcamp)." in msg
         for msg in rendered_messages
     )
     assert any(
-        f"/admin/records/audioenrichmentjob/{job_id}/change/" in msg
+        f"/admin/records/releasereport/?job__id__exact={job_id}" in msg
         for msg in rendered_messages
     )
 
@@ -297,7 +318,7 @@ def test_record_admin_redeye_refresh_view_enqueues_single_record_job(monkeypatch
         for msg in rendered_messages
     )
     assert any(
-        f"/admin/records/audioenrichmentjob/{job_id}/change/" in msg
+        f"/admin/records/releasereport/?job__id__exact={job_id}" in msg
         for msg in rendered_messages
     )
 
@@ -334,7 +355,8 @@ def test_record_admin_youtube_search_view_enqueues_task(monkeypatch):
     record = Record.objects.create(title="Search Record")
     record.tracks.create(title="Track 1", youtube_url=None)
     admin = RecordAdmin(Record, AdminSite())
-    record_service = RecordingSearchService()
+    job_id = uuid.uuid4()
+    record_service = RecordingSearchService(job_id=job_id)
     admin.record_service = record_service
     monkeypatch.setattr(admin, "has_change_permission", lambda request, obj=None: True)
 
@@ -348,6 +370,7 @@ def test_record_admin_youtube_search_view_enqueues_task(monkeypatch):
     response = admin._search_youtube_audio_view(request, str(record.pk))
 
     assert response.status_code == 200
+    assert json.loads(response.content) == {"ok": True, "job_id": str(job_id)}
     assert record_service.calls == [
         {
             "record_id": record.pk,
@@ -363,7 +386,8 @@ def test_find_audio_on_youtube_action_enqueues_for_missing_only():
     record_with_urls = Record.objects.create(title="Filled")
     record_with_urls.tracks.create(title="Has URL", youtube_url="https://youtu.be/demo")
 
-    record_service = RecordingSearchService()
+    job_id = uuid.uuid4()
+    record_service = RecordingSearchService(job_id=job_id)
     admin = FakeAdmin(record_service=record_service)
     request = RequestFactory().post("/admin/records/record/")
     request.user = FakeUser()
@@ -377,12 +401,130 @@ def test_find_audio_on_youtube_action_enqueues_for_missing_only():
         queryset=queryset,
     )
 
+    messages_text = html.unescape("\n".join(msg for msg, _ in admin.messages))
+
     assert record_service.calls == [
         {
-            "record_id": record_with_missing.pk,
+            "record_ids": [record_with_missing.pk],
             "requested_by_user_id": request.user.id,
         }
     ]
+    assert f"/admin/records/releasereport/?job__id__exact={job_id}" in messages_text
+
+
+@pytest.mark.django_db
+def test_release_report_notification_is_shown_once():
+    user = get_user_model().objects.create_superuser(
+        username="release-notify-admin",
+        email="release-notify-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Release Notify")
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.COMPLETED_WITH_ERRORS,
+        requested_by_user=user,
+        overwrite_existing=False,
+        total_records=1,
+        total_tracks=1,
+    )
+    report = AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+        operation_name="Добавление аудио по URL (YouTube/Bandcamp)",
+        scope=AudioEnrichmentJobRecord.Scope.RELEASE,
+        result="Аудио добавлено частично",
+        result_message="Аудио добавлено частично: один трек не был загружен.",
+        notify_in_admin=True,
+        finished_at=timezone.now(),
+    )
+
+    request = RequestFactory().get("/admin/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    django_admin.site.each_context(request)
+
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+    assert any(
+        "Операция «Добавление аудио по URL (YouTube/Bandcamp)» для релиза «Release Notify» завершена"
+        in msg
+        for msg in rendered_messages
+    )
+    report.refresh_from_db()
+    assert report.admin_notification_shown_at is not None
+
+    second_request = RequestFactory().get("/admin/")
+    second_request.user = user
+    second_request.session = {}
+    second_request._messages = FallbackStorage(second_request)
+
+    django_admin.site.each_context(second_request)
+
+    second_messages = [str(msg) for msg in messages.get_messages(second_request)]
+    assert second_messages == []
+
+
+@pytest.mark.django_db
+def test_release_report_full_success_notification_uses_success_level():
+    user = get_user_model().objects.create_superuser(
+        username="release-success-admin",
+        email="release-success-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Release Success")
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.COMPLETED,
+        requested_by_user=user,
+        overwrite_existing=False,
+        total_records=1,
+        total_tracks=1,
+    )
+    AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED,
+        operation_name="Добавление аудио по URL (YouTube/Bandcamp)",
+        scope=AudioEnrichmentJobRecord.Scope.RELEASE,
+        result="Аудио добавлено полностью",
+        result_message="Аудио добавлено полностью.",
+        notify_in_admin=True,
+        finished_at=timezone.now(),
+    )
+
+    request = RequestFactory().get("/admin/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    django_admin.site.each_context(request)
+
+    rendered_messages = list(messages.get_messages(request))
+    assert len(rendered_messages) == 1
+    assert rendered_messages[0].level == messages.SUCCESS
+    assert "Операция «Добавление аудио по URL (YouTube/Bandcamp)»" in str(
+        rendered_messages[0]
+    )
+
+
+@pytest.mark.django_db
+def test_legacy_audio_enrichment_jobrecord_url_redirects_to_release_report(client):
+    admin_user = get_user_model().objects.create_superuser(
+        username="legacy-redirect-admin",
+        email="legacy-redirect-admin@example.com",
+        password="pass",
+    )
+    client.force_login(admin_user)
+
+    response = client.get("/admin/records/audioenrichmentjobrecord/")
+
+    assert response.status_code == 302
+    assert response["Location"].endswith(
+        reverse("admin:records_releasereport_changelist")
+    )
 
 
 @pytest.mark.django_db
@@ -612,8 +754,8 @@ def test_record_admin_delete_ignores_internal_enrichment_permissions():
     assert deleted_objects
     assert model_count
     assert not protected
-    assert "элемент списка задач" not in perms_needed
-    assert "результат добавления mp3 к трекам" not in perms_needed
+    assert "лог добавления релиза и аудио" not in perms_needed
+    assert "результат обработки аудио трека" not in perms_needed
 
 
 @pytest.mark.django_db

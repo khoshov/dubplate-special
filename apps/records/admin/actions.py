@@ -7,20 +7,38 @@ from typing import TYPE_CHECKING, Callable
 from django.contrib import admin, messages
 from django.db.models import QuerySet, Q
 from django.http import HttpRequest, HttpResponseRedirect
-from django.utils.text import Truncator
-from django.utils import timezone
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
 from config.logging import NOTICE_LEVEL, log_event
 
-from records.models import Record, VKPublicationLog
-from records.services.social.publication_log import register_vk_publication_event
+from records.models import Record
 
 if TYPE_CHECKING:
     from .record_admin import RecordAdmin
 
 logger = logging.getLogger(__name__)
 _ADMIN_ACTIONS_COMPONENT = "действия админки"
+
+
+def _release_report_changelist_url(*, job_id: object) -> str:
+    return (
+        f"{reverse('admin:records_releasereport_changelist')}?job__id__exact={job_id}"
+    )
+
+
+def _release_report_detail_url(*, report_id: object) -> str:
+    return reverse("admin:records_releasereport_change", args=[report_id])
+
+
+def _vk_report_changelist_url(*, job_id: object) -> str:
+    return (
+        f"{reverse('admin:records_vkpublicationreport_changelist')}"
+        f"?job__id__exact={job_id}"
+    )
+
+
+def _vk_report_detail_url(*, report_id: object) -> str:
+    return reverse("admin:records_vkpublicationreport_change", args=[report_id])
 
 
 def _log_admin_action_event(
@@ -193,69 +211,68 @@ def post_to_vk(
         records_total=queryset.count(),
         username=getattr(request.user, "username", "?"),
     )
+    record_ids = list(queryset.values_list("pk", flat=True))
+    if not record_ids:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для публикации в VK.",
+            level=messages.WARNING,
+        )
+        return
 
-    def _get_id(record: Record) -> str | None:
-        return str(getattr(record, "pk", None))
-
-    def _do_post(record: Record) -> int:
-        title = getattr(record, "title", "")
-        cover = getattr(record, "cover_image", None)
-        cover_path = getattr(cover, "path", None) if cover else None
+    try:
+        job = admin_obj.record_service.enqueue_vk_immediate_publication(
+            record_ids=record_ids,
+            requested_by_user_id=getattr(request.user, "id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
         _log_admin_action_event(
-            logging.DEBUG,
-            "vk_publish_attempt",
-            "Подготовлена публикация записи в VK.",
-            record_id=getattr(record, "pk", None),
-            title=Truncator(title).chars(80),
-            has_cover=bool(cover_path),
-            cover_path=cover_path or "—",
+            logging.ERROR,
+            "vk_publish_enqueue_failed",
+            "Не удалось поставить публикацию в VK в очередь.",
+            error=str(exc),
+            record_ids=",".join(str(record_id) for record_id in record_ids),
         )
-
-        post_id = vk_service.post_record_with_audio(record=record)
-        _log_admin_action_event(
-            logging.INFO,
-            "vk_publish_success",
-            "Запись опубликована в VK.",
-            record_id=getattr(record, "pk", None),
-            post_id=post_id,
-            title=Truncator(title).chars(80),
+        logger.exception(
+            "Детали ошибки запуска VK job из admin action.",
+            extra={
+                "component": _ADMIN_ACTIONS_COMPONENT,
+                "event": "vk_publish_enqueue_failed",
+            },
         )
-        return post_id
-
-    def _on_success(record: Record, result: object) -> None:
-        post_id = int(result)
-        register_vk_publication_event(
-            record=record,
-            mode=VKPublicationLog.Mode.IMMEDIATE,
-            status=VKPublicationLog.Status.SUCCESS,
-            effective_publish_at=timezone.now(),
-            vk_post_id=post_id,
+        admin_obj.message_user(
+            request,
+            f"Не удалось поставить публикацию в VK в очередь: {exc!s}",
+            level=messages.ERROR,
         )
+        return
 
-    def _on_error(record: Record, error: Exception) -> None:
-        register_vk_publication_event(
-            record=record,
-            mode=VKPublicationLog.Mode.IMMEDIATE,
-            status=VKPublicationLog.Status.FAILED,
-            error_message=str(error),
+    first_report = job.job_records.order_by("created", "id").first()
+    report_url = (
+        _vk_report_detail_url(report_id=first_report.pk)
+        if len(record_ids) == 1 and first_report is not None
+        else _vk_report_changelist_url(job_id=job.pk)
+    )
+    if len(record_ids) == 1:
+        record = queryset.first()
+        admin_obj.message_user(
+            request,
+            f"Релиз «{record}» отправлен на публикацию на стену VK.",
+            level=messages.SUCCESS,
         )
-
-    _batch_update(
-        admin_obj,
+    else:
+        admin_obj.message_user(
+            request,
+            f"{len(record_ids)} релизов отправлены на публикацию на стену VK.",
+            level=messages.SUCCESS,
+        )
+    admin_obj.message_user(
         request,
-        queryset,
-        start_log="Публикация записей в VK",
-        empty_msg="Выберите записи для публикации в VK.",
-        ok_msg="Опубликовано в VK: {ok} из {total}.",
-        skip_msg="Пропущено (не выбрано): {n}.",
-        skip_header="Пропущено:",
-        fail_msg="С ошибками публикации: {n}.",
-        fail_header="Ошибки:",
-        id_label="record_id",
-        get_id=_get_id,
-        do_update=_do_post,
-        on_success=_on_success,
-        on_error=_on_error,
+        format_html(
+            'Логи публикации: <a href="{}">Открыть лог</a>.',
+            report_url,
+        ),
+        level=messages.INFO,
     )
 
 
@@ -299,19 +316,43 @@ def update_from_discogs(
         id_label="Discogs ID",
         get_id=lambda record: record.discogs_id,
         do_update=lambda record: record_service.update_from_discogs(record=record),
+        on_success=lambda record, _result: record_service.create_sync_release_report(
+            record=record,
+            requested_by_user_id=getattr(request.user, "id", None),
+            source="manual_list",
+            operation_name="Обновление релиза из Discogs",
+            scope="release",
+            release_source_name="Discogs",
+            audio_source_summary="Не указан",
+            result="Релиз обновлен",
+            result_message="Обновление релиза из Discogs завершено успешно.",
+        ),
+        on_error=lambda record, exc: record_service.create_sync_release_report(
+            record=record,
+            requested_by_user_id=getattr(request.user, "id", None),
+            source="manual_list",
+            operation_name="Обновление релиза из Discogs",
+            scope="release",
+            release_source_name="Discogs",
+            audio_source_summary="Не указан",
+            status="failed",
+            result="Операция завершилась с ошибкой",
+            result_message="Обновление релиза из Discogs завершилось с ошибкой.",
+            error_message=str(exc),
+        ),
     )
 
 
-@admin.action(description="Обновить аудио треков из YouTube")
+@admin.action(description="Добавление аудио по URL (YouTube/Bandcamp)")
 def update_audio_from_youtube(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
-    """Ставит массовую YouTube-задачу в очередь с overwrite=true."""
+    """Ставит массовую задачу добавления аудио по URL в очередь с overwrite=true."""
     total = queryset.count()
     if total == 0:
         admin_obj.message_user(
             request,
-            "Выберите записи для обновления аудио треков из YouTube.",
+            "Выберите записи для добавления аудио по URL (YouTube/Bandcamp).",
             level=messages.WARNING,
         )
         return
@@ -326,23 +367,23 @@ def update_audio_from_youtube(
         _log_admin_action_event(
             logging.ERROR,
             "youtube_audio_enqueue_failed",
-            "Не удалось поставить в очередь задачу обновления аудио треков из YouTube.",
+            "Не удалось поставить в очередь задачу добавления аудио по URL (YouTube/Bandcamp).",
             record_ids=",".join(str(record_id) for record_id in record_ids),
             error=str(exc),
         )
         logger.exception("Детали ошибки запуска YouTube job из admin action.")
         admin_obj.message_user(
             request,
-            f"Не удалось запустить обновление аудио треков из YouTube: {exc!s}",
+            f"Не удалось запустить добавление аудио по URL (YouTube/Bandcamp): {exc!s}",
             level=messages.ERROR,
         )
         return
 
-    report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    report_url = _release_report_changelist_url(job_id=job.id)
     _log_admin_action_event(
         logging.INFO,
         "youtube_audio_enqueued",
-        "Поставлена в очередь задача обновления аудио треков из YouTube из admin action.",
+        "Поставлена в очередь задача добавления аудио по URL (YouTube/Bandcamp) из admin action.",
         job_id=job.id,
         records_total=total,
         record_ids=",".join(str(record_id) for record_id in record_ids),
@@ -350,16 +391,13 @@ def update_audio_from_youtube(
     )
     admin_obj.message_user(
         request,
-        (
-            f"Поставлена в очередь задача обновления аудио треков из YouTube "
-            f"для {total} записей."
-        ),
+        f"Поставлена в очередь задача добавления аудио по URL (YouTube/Bandcamp) для {total} записей.",
         level=messages.SUCCESS,
     )
     admin_obj.message_user(
         request,
         format_html(
-            'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+            'Логи операции: <a href="{}">Открыть лог</a>.',
             report_url,
         ),
         level=messages.INFO,
@@ -381,10 +419,10 @@ def find_audio_on_youtube(
 
     ok = skip = fail = 0
     skipped: list[str] = []
-    failed: list[str] = []
     record_service = admin_obj.record_service
     user_id = getattr(request.user, "id", None)
     username = getattr(request.user, "username", "unknown")
+    record_ids_to_search: list[int] = []
 
     _log_admin_action_event(
         logging.INFO,
@@ -402,20 +440,25 @@ def find_audio_on_youtube(
             skip += 1
             skipped.append(f"#{record.pk} «{record}»: ссылки уже заполнены")
             continue
+        record_ids_to_search.append(record.pk)
+
+    job = None
+    if record_ids_to_search:
         try:
-            record_service.enqueue_record_youtube_audio_search(
-                record=record,
+            job = record_service.enqueue_manual_youtube_audio_search(
+                record_ids=record_ids_to_search,
                 requested_by_user_id=user_id,
             )
-            ok += 1
+            ok = len(record_ids_to_search)
         except Exception as exc:  # noqa: BLE001
-            fail += 1
-            failed.append(f"#{record.pk} «{record}»: {exc!s}")
+            fail = len(record_ids_to_search)
             _log_admin_action_event(
                 logging.ERROR,
                 "youtube_search_failed",
-                "Не удалось поставить запись в очередь поиска YouTube.",
-                record_id=record.pk,
+                "Не удалось поставить записи в очередь поиска YouTube.",
+                record_ids=",".join(
+                    str(record_id) for record_id in record_ids_to_search
+                ),
                 error=str(exc),
             )
             logger.exception("Детали ошибки постановки поиска YouTube.")
@@ -426,6 +469,16 @@ def find_audio_on_youtube(
             f"Поиск YouTube запущен для {ok} из {total} записей.",
             level=messages.SUCCESS,
         )
+        if job is not None:
+            report_url = _release_report_changelist_url(job_id=job.id)
+            admin_obj.message_user(
+                request,
+                format_html(
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
+                    report_url,
+                ),
+                level=messages.INFO,
+            )
     if skip:
         admin_obj.message_user(
             request,
@@ -440,14 +493,7 @@ def find_audio_on_youtube(
     if fail:
         admin_obj.message_user(
             request,
-            f"Ошибок при постановке в очередь: {fail}.",
-            level=messages.ERROR,
-        )
-        admin_obj.message_user(
-            request,
-            format_html_join(
-                "", "<br>&nbsp;&nbsp;&bull; {}", ((item,) for item in failed)
-            ),
+            f"Не удалось поставить в очередь поиск аудио на YouTube: {fail}.",
             level=messages.ERROR,
         )
 
@@ -498,7 +544,7 @@ def update_from_redeye(
         )
         return
 
-    report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    report_url = _release_report_changelist_url(job_id=job.id)
     _log_admin_action_event(
         logging.INFO,
         "redeye_audio_enqueued",
@@ -516,7 +562,7 @@ def update_from_redeye(
     admin_obj.message_user(
         request,
         format_html(
-            'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+            'Логи операции: <a href="{}">Открыть лог</a>.',
             report_url,
         ),
         level=messages.INFO,

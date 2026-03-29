@@ -375,8 +375,8 @@ class Record(TimeStampedModel):
         return variants[0]
 
     class Meta:
-        verbose_name = _("Record")
-        verbose_name_plural = _("Records")
+        verbose_name = _("Релиз")
+        verbose_name_plural = _("Релизы")
         ordering = ("title",)
 
 
@@ -387,7 +387,7 @@ class StructuredFormat(TimeStampedModel):
         Record,
         on_delete=models.CASCADE,
         related_name="structured_formats",
-        verbose_name=_("Запись"),
+        verbose_name=_("Релиз"),
     )
     variant_of_format = models.PositiveSmallIntegerField(
         verbose_name=_("Вариант формата")
@@ -453,7 +453,7 @@ class VKPublicationLog(TimeStampedModel):
         Record,
         on_delete=models.CASCADE,
         related_name="vk_publication_logs",
-        verbose_name=_("Запись"),
+        verbose_name=_("Релиз"),
     )
     mode = models.CharField(
         max_length=16,
@@ -503,6 +503,253 @@ class VKPublicationLog(TimeStampedModel):
         return f"VK [{status}] ({mode}) record_id={record_id}"
 
 
+class VKPublicationJob(TimeStampedModel):
+    """Фоновая операция публикации записей в VK."""
+
+    class Source(models.TextChoices):
+        MANUAL_LIST = "manual_list", _("Публикация выбранных релизов")
+        SCHEDULED_LIST = "scheduled_list", _("Отложенная публикация списка релизов")
+        SCHEDULED_SINGLE = "scheduled_single", _("Отложенная публикация одного релиза")
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", _("Ожидает выполнения")
+        RUNNING = "running", _("Выполняется")
+        COMPLETED = "completed", _("Завершено")
+        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Завершено с замечаниями")
+        FAILED = "failed", _("Завершено с ошибкой")
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name=_("ID"),
+    )
+    source = models.CharField(
+        max_length=32,
+        choices=Source.choices,
+        verbose_name=_("Источник операции"),
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+        verbose_name=_("Статус"),
+    )
+    requested_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="vk_publication_jobs",
+        verbose_name=_("Запросил"),
+    )
+    total_records = models.PositiveIntegerField(default=0, verbose_name=_("Релизов"))
+    success_count = models.PositiveIntegerField(default=0, verbose_name=_("Успешно"))
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Пропущено"))
+    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Ошибок"))
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Запущено"),
+    )
+    finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Завершено в"),
+    )
+
+    class Meta:
+        verbose_name = _("Задача публикации в VK")
+        verbose_name_plural = _("Задачи публикации в VK")
+        ordering = ("-created",)
+
+    def __str__(self) -> str:
+        return f"VKJob {self.id} [{self.status}]"
+
+
+class VKPublicationReport(TimeStampedModel):
+    """Состояние обработки одной записи в рамках VK job."""
+
+    class Mode(models.TextChoices):
+        IMMEDIATE = "IMMEDIATE", _("Сразу")
+        SCHEDULED = "SCHEDULED", _("Отложено")
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", _("Ожидает выполнения")
+        RUNNING = "running", _("Выполняется")
+        COMPLETED = "completed", _("Завершено")
+        COMPLETED_WITH_WARNINGS = (
+            "completed_with_warnings",
+            _("Завершено с замечаниями"),
+        )
+        FAILED = "failed", _("Завершено с ошибкой")
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        verbose_name=_("ID"),
+    )
+    job = models.ForeignKey(
+        "VKPublicationJob",
+        on_delete=models.CASCADE,
+        related_name="job_records",
+        verbose_name=_("Задача"),
+    )
+    record = models.ForeignKey(
+        "Record",
+        on_delete=models.CASCADE,
+        related_name="vk_publication_job_records",
+        verbose_name=_("Релиз"),
+    )
+    mode = models.CharField(
+        max_length=16,
+        choices=Mode.choices,
+        db_index=True,
+        verbose_name=_("Режим публикации"),
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+        verbose_name=_("Статус"),
+    )
+    operation_name = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Операция"),
+    )
+    release_source_name = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        verbose_name=_("Источник релиза"),
+    )
+    audio_source_summary = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Источники аудио"),
+    )
+    stage = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Этап"),
+    )
+    result = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Итог"),
+    )
+    result_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Описание результата"),
+    )
+    warning_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Предупреждение"),
+    )
+    planned_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Запланировано на"),
+    )
+    effective_publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Фактическое время публикации"),
+    )
+    queued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Поставлено в очередь"),
+    )
+    notify_in_admin = models.BooleanField(
+        default=False,
+        verbose_name=_("Показывать уведомление в админке"),
+    )
+    admin_notification_shown_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Уведомление показано"),
+    )
+    vk_post_id = models.BigIntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("ID поста VK"),
+    )
+    photo_expected = models.BooleanField(
+        default=False,
+        verbose_name=_("Ожидалась загрузка изображения"),
+    )
+    photo_uploaded = models.BooleanField(
+        default=False,
+        verbose_name=_("Изображение загружено"),
+    )
+    audio_expected_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Ожидалось аудио"),
+    )
+    audio_uploaded_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Загружено аудио"),
+    )
+    audio_failed_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Не загружено аудио"),
+    )
+    failed_track_titles = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Треки с проблемами"),
+    )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Текст ошибки"),
+    )
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Запущено"),
+    )
+    finished_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Завершено в"),
+    )
+
+    class Meta:
+        verbose_name = _("Лог публикации VK")
+        verbose_name_plural = _("Логи публикации VK")
+        ordering = ("-created",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "record"],
+                name="uq_vk_publication_job_record",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"VKJobRecord job={self.job_id} record={self.record_id} [{self.status}]"
+
+
 class RecordSource(models.Model):
     """
     Нормализованные ссылки на внешние источники конкретной записи (Record).
@@ -536,7 +783,7 @@ class RecordSource(models.Model):
         "Record",
         on_delete=models.CASCADE,
         related_name="sources",
-        verbose_name=_("Record"),
+        verbose_name=_("Релиз"),
     )
     provider = models.CharField(
         max_length=24,
@@ -578,8 +825,8 @@ class RecordSource(models.Model):
     updated_at = models.DateTimeField(auto_now=True, verbose_name=_("Updated at"))
 
     class Meta:
-        verbose_name = _("Record source")
-        verbose_name_plural = _("Record sources")
+        verbose_name = _("Источник релиза")
+        verbose_name_plural = _("Источники релиза")
         # На одну запись по провайдеру и роли — одна «главная» ссылка
         constraints = [
             models.UniqueConstraint(
@@ -596,23 +843,29 @@ class RecordSource(models.Model):
         return f"{self.get_provider_display()}:{self.get_role_display()} → {self.url}"
 
 
-class AudioEnrichmentJob(TimeStampedModel):
+class ReleaseJob(TimeStampedModel):
     """Фоновая операция докачки аудио из YouTube."""
 
     class Source(models.TextChoices):
-        DISCOGS_IMPORT = "discogs_import", _("Discogs import")
-        REDEYE_IMPORT = "redeye_import", _("Redeye import")
-        REDEYE_MANUAL_LIST = "redeye_manual_list", _("Redeye manual list action")
-        REDEYE_MANUAL_RECORD = "redeye_manual_record", _("Redeye manual record form")
-        MANUAL_LIST = "manual_list", _("Manual list action")
-        MANUAL_RECORD = "manual_record", _("Manual record form")
+        DISCOGS_IMPORT = "discogs_import", _("Импорт релиза из Discogs")
+        REDEYE_IMPORT = "redeye_import", _("Импорт релиза из Redeye")
+        REDEYE_MANUAL_LIST = (
+            "redeye_manual_list",
+            _("Добавление аудио из Redeye для списка"),
+        )
+        REDEYE_MANUAL_RECORD = (
+            "redeye_manual_record",
+            _("Добавление аудио из Redeye для релиза"),
+        )
+        MANUAL_LIST = "manual_list", _("Добавление аудио по URL для списка")
+        MANUAL_RECORD = "manual_record", _("Добавление аудио по URL для релиза")
 
     class Status(models.TextChoices):
-        QUEUED = "queued", _("Queued")
-        RUNNING = "running", _("Running")
-        COMPLETED = "completed", _("Completed")
-        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Completed with errors")
-        FAILED = "failed", _("Failed")
+        QUEUED = "queued", _("Ожидает выполнения")
+        RUNNING = "running", _("Выполняется")
+        COMPLETED = "completed", _("Завершено")
+        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Завершено с замечаниями")
+        FAILED = "failed", _("Завершено с ошибкой")
 
     id = models.UUIDField(
         primary_key=True,
@@ -623,14 +876,14 @@ class AudioEnrichmentJob(TimeStampedModel):
     source = models.CharField(
         max_length=32,
         choices=Source.choices,
-        verbose_name=_("Source"),
+        verbose_name=_("Источник операции"),
     )
     status = models.CharField(
         max_length=32,
         choices=Status.choices,
         default=Status.QUEUED,
         db_index=True,
-        verbose_name=_("Status"),
+        verbose_name=_("Статус"),
     )
     requested_by_user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -638,54 +891,58 @@ class AudioEnrichmentJob(TimeStampedModel):
         null=True,
         blank=True,
         related_name="audio_enrichment_jobs",
-        verbose_name=_("Requested by"),
+        verbose_name=_("Запросил"),
     )
     overwrite_existing = models.BooleanField(
         default=False,
-        verbose_name=_("Overwrite existing"),
+        verbose_name=_("Перезаписывать существующее аудио"),
     )
-    total_records = models.PositiveIntegerField(default=0, verbose_name=_("Records"))
-    total_tracks = models.PositiveIntegerField(default=0, verbose_name=_("Tracks"))
-    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Updated"))
-    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Skipped"))
-    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Errors"))
+    total_records = models.PositiveIntegerField(default=0, verbose_name=_("Релизов"))
+    total_tracks = models.PositiveIntegerField(default=0, verbose_name=_("Треков"))
+    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Обновлено"))
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Пропущено"))
+    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Ошибок"))
     started_at = models.DateTimeField(
         null=True,
         blank=True,
         db_index=True,
-        verbose_name=_("Started at"),
+        verbose_name=_("Запущено"),
     )
     finished_at = models.DateTimeField(
         null=True,
         blank=True,
         db_index=True,
-        verbose_name=_("Finished at"),
+        verbose_name=_("Завершено в"),
     )
 
     class Meta:
-        verbose_name = _("Задача по добавлению mp3 к трекам")
-        verbose_name_plural = _("Задачи по добавлению mp3 к трекам")
+        verbose_name = _("Задача обработки релиза")
+        verbose_name_plural = _("Задачи обработки релизов")
         ordering = ("-created",)
 
     def __str__(self) -> str:
         return f"AudioJob {self.id} [{self.status}]"
 
 
-class AudioEnrichmentJobRecord(TimeStampedModel):
+class ReleaseReport(TimeStampedModel):
     """Состояние обработки одной записи в рамках job."""
 
+    class Scope(models.TextChoices):
+        RELEASE = "release", _("Релиз")
+        TRACK = "track", _("Трек")
+
     class Status(models.TextChoices):
-        QUEUED = "queued", _("Queued")
-        RUNNING = "running", _("Running")
-        COMPLETED = "completed", _("Completed")
-        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Completed with errors")
-        FAILED = "failed", _("Failed")
-        SKIPPED = "skipped", _("Skipped")
+        QUEUED = "queued", _("Ожидает выполнения")
+        RUNNING = "running", _("Выполняется")
+        COMPLETED = "completed", _("Завершено")
+        COMPLETED_WITH_ERRORS = "completed_with_errors", _("Завершено с замечаниями")
+        FAILED = "failed", _("Завершено с ошибкой")
+        SKIPPED = "skipped", _("Пропущено")
 
     class Reason(models.TextChoices):
-        NONE = "", _("None")
-        ALREADY_RUNNING = "already_running", _("Already running")
-        VALIDATION_ERROR = "validation_error", _("Validation error")
+        NONE = "", _("Не указана")
+        ALREADY_RUNNING = "already_running", _("Операция уже выполняется")
+        VALIDATION_ERROR = "validation_error", _("Недостаточно данных для выполнения")
 
     id = models.UUIDField(
         primary_key=True,
@@ -694,50 +951,124 @@ class AudioEnrichmentJobRecord(TimeStampedModel):
         verbose_name=_("ID"),
     )
     job = models.ForeignKey(
-        "AudioEnrichmentJob",
+        "ReleaseJob",
         on_delete=models.CASCADE,
         related_name="job_records",
-        verbose_name=_("Job"),
+        verbose_name=_("Задача"),
     )
     record = models.ForeignKey(
         "Record",
         on_delete=models.CASCADE,
         related_name="audio_enrichment_job_records",
-        verbose_name=_("Record"),
+        verbose_name=_("Релиз"),
     )
     status = models.CharField(
         max_length=32,
         choices=Status.choices,
         default=Status.QUEUED,
         db_index=True,
-        verbose_name=_("Status"),
+        verbose_name=_("Статус"),
     )
     reason_code = models.CharField(
         max_length=64,
         choices=Reason.choices,
         default=Reason.NONE,
         blank=True,
-        verbose_name=_("Reason code"),
+        verbose_name=_("Причина"),
     )
-    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Updated"))
-    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Skipped"))
-    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Errors"))
+    operation_name = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Операция"),
+    )
+    scope = models.CharField(
+        max_length=16,
+        choices=Scope.choices,
+        default=Scope.RELEASE,
+        db_index=True,
+        verbose_name=_("Область"),
+    )
+    release_source_name = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        verbose_name=_("Источник релиза"),
+    )
+    audio_source_summary = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Источники аудио"),
+    )
+    stage = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Этап"),
+    )
+    result = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("Итог"),
+    )
+    result_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Сообщение итога"),
+    )
+    tracks_total = models.PositiveIntegerField(default=0, verbose_name=_("Треков"))
+    updated_count = models.PositiveIntegerField(default=0, verbose_name=_("Обновлено"))
+    skipped_count = models.PositiveIntegerField(default=0, verbose_name=_("Пропущено"))
+    error_count = models.PositiveIntegerField(default=0, verbose_name=_("Ошибок"))
+    track_results_json = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Результаты по трекам"),
+    )
+    warning_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Текст предупреждения"),
+    )
+    error_message = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Текст ошибки"),
+    )
+    queued_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Поставлено в очередь"),
+    )
+    notify_in_admin = models.BooleanField(
+        default=False,
+        verbose_name=_("Показывать уведомление в админке"),
+    )
+    admin_notification_shown_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("Уведомление показано"),
+    )
     started_at = models.DateTimeField(
         null=True,
         blank=True,
         db_index=True,
-        verbose_name=_("Started at"),
+        verbose_name=_("Запущено"),
     )
     finished_at = models.DateTimeField(
         null=True,
         blank=True,
         db_index=True,
-        verbose_name=_("Finished at"),
+        verbose_name=_("Завершено в"),
     )
 
     class Meta:
-        verbose_name = _("Элемент списка задач")
-        verbose_name_plural = _("Список задач")
+        verbose_name = _("Лог добавления релиза и аудио")
+        verbose_name_plural = _("Логи добавления релизов и аудио")
         ordering = ("-created",)
         constraints = [
             models.UniqueConstraint(
@@ -746,7 +1077,8 @@ class AudioEnrichmentJobRecord(TimeStampedModel):
             ),
             models.UniqueConstraint(
                 fields=["record"],
-                condition=Q(status__in=["queued", "running"]),
+                condition=Q(status__in=["queued", "running"])
+                & ~Q(operation_name="Поиск аудио на YouTube"),
                 name="uq_audio_enrichment_active_record",
             ),
         ]
@@ -761,17 +1093,23 @@ class AudioEnrichmentTrackResult(TimeStampedModel):
     """Результат обработки одного трека в рамках job-record."""
 
     class Status(models.TextChoices):
-        UPDATED = "updated", _("Updated")
-        SKIPPED = "skipped", _("Skipped")
-        FAILED = "failed", _("Failed")
+        UPDATED = "updated", _("Обновлено")
+        SKIPPED = "skipped", _("Пропущено")
+        FAILED = "failed", _("Ошибка")
 
     class Reason(models.TextChoices):
-        NONE = "", _("None")
-        MISSING_YOUTUBE_URL = "missing_youtube_url", _("Missing YouTube URL")
-        INVALID_URL = "invalid_url", _("Invalid URL")
-        ALREADY_PRESENT = "already_present", _("Already present")
-        DOWNLOAD_ERROR = "download_error", _("Download error")
-        RETRY_EXHAUSTED = "retry_exhausted", _("Retry exhausted")
+        NONE = "", _("Не указана")
+        MISSING_YOUTUBE_URL = (
+            "missing_youtube_url",
+            _("Отсутствует ссылка на YouTube или Bandcamp"),
+        )
+        INVALID_URL = (
+            "invalid_url",
+            _("Ссылка на YouTube или Bandcamp не прошла валидацию"),
+        )
+        ALREADY_PRESENT = "already_present", _("Аудио уже прикреплено")
+        DOWNLOAD_ERROR = "download_error", _("Ошибка загрузки аудио")
+        RETRY_EXHAUSTED = "retry_exhausted", _("Попытки загрузки исчерпаны")
 
     id = models.UUIDField(
         primary_key=True,
@@ -780,53 +1118,53 @@ class AudioEnrichmentTrackResult(TimeStampedModel):
         verbose_name=_("ID"),
     )
     job_record = models.ForeignKey(
-        "AudioEnrichmentJobRecord",
+        "ReleaseReport",
         on_delete=models.CASCADE,
         related_name="track_results",
-        verbose_name=_("Job record"),
+        verbose_name=_("Лог операции"),
     )
     track = models.ForeignKey(
         "Track",
         on_delete=models.CASCADE,
         related_name="audio_enrichment_track_results",
-        verbose_name=_("Track"),
+        verbose_name=_("Трек"),
     )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
-        verbose_name=_("Status"),
+        verbose_name=_("Статус"),
     )
     reason_code = models.CharField(
         max_length=64,
         choices=Reason.choices,
         default=Reason.NONE,
         blank=True,
-        verbose_name=_("Reason code"),
+        verbose_name=_("Причина"),
     )
     attempts = models.PositiveSmallIntegerField(
         default=1,
         validators=[MinValueValidator(1), MaxValueValidator(3)],
-        verbose_name=_("Attempts"),
+        verbose_name=_("Попыток"),
     )
     previous_audio_present = models.BooleanField(
         default=False,
-        verbose_name=_("Previous audio present"),
+        verbose_name=_("Аудио было прикреплено ранее"),
     )
     final_audio_name = models.CharField(
         max_length=512,
         blank=True,
         default="",
-        verbose_name=_("Final audio name"),
+        verbose_name=_("Итоговое имя файла"),
     )
     error_message = models.TextField(
         blank=True,
         default="",
-        verbose_name=_("Error message"),
+        verbose_name=_("Текст ошибки"),
     )
 
     class Meta:
-        verbose_name = _("Результат добавления mp3 к трекам")
-        verbose_name_plural = _("Результаты добавления mp3 к трекам")
+        verbose_name = _("Результат обработки аудио трека")
+        verbose_name_plural = _("Результаты обработки аудио треков")
         ordering = ("created",)
         constraints = [
             models.UniqueConstraint(
@@ -919,11 +1257,17 @@ class Track(TimeStampedModel):
       - при отсутствии буквенных сторон мы сохраняем пустой `position`, но `position_index` остаётся обязательным.
     """
 
+    class AudioSource(models.TextChoices):
+        UNKNOWN = "unknown", _("Не указан")
+        YOUTUBE = "youtube", _("YouTube")
+        BANDCAMP = "bandcamp", _("Bandcamp")
+        REDEYE = "redeye", _("Redeye")
+
     record = models.ForeignKey(
         Record,
         on_delete=models.CASCADE,
         related_name="tracks",
-        verbose_name=_("Record"),
+        verbose_name=_("Релиз"),
     )
     # Человекочитаемая позиция со стороны (если есть у источника).
     # Примеры: 'A1', 'B2', '1', 'A', ''.
@@ -979,6 +1323,12 @@ class Track(TimeStampedModel):
         verbose_name=_("mp3"),
         help_text=_("Local preview file stored in media (optional)."),
     )
+    audio_source = models.CharField(
+        max_length=16,
+        choices=AudioSource.choices,
+        default=AudioSource.UNKNOWN,
+        verbose_name=_("Источник аудио"),
+    )
 
     def __str__(self) -> str:
         """
@@ -989,7 +1339,13 @@ class Track(TimeStampedModel):
         return f"{prefix}{self.title}"
 
     class Meta:
-        verbose_name = _("Track")
-        verbose_name_plural = _("Tracks")
+        verbose_name = _("Трек")
+        verbose_name_plural = _("Треки")
         # сначала сортируем по порядковому номеру; при равенстве — по текстовой позиции.
         ordering = ("record", "position_index", "position")
+
+
+# Временные алиасы для постепенного перехода со старых имён моделей.
+AudioEnrichmentJob = ReleaseJob
+AudioEnrichmentJobRecord = ReleaseReport
+VKPublicationJobRecord = VKPublicationReport

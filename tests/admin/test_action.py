@@ -3,9 +3,11 @@ import uuid
 
 import pytest
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 
-from records.admin.actions import _batch_update, update_from_redeye
-from records.models import Record
+from records.admin.actions import _batch_update, update_from_discogs, update_from_redeye
+from records.models import AudioEnrichmentJobRecord, Record
+from records.services.record_service import RecordService
 
 
 class FakeAdmin:
@@ -42,6 +44,19 @@ class _RecordingRecordService:
             }
         )
         return type("Job", (), {"id": self.job_id})()
+
+
+class _RecordingDiscogsUpdateService:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
+
+    def update_from_discogs(self, *, record):
+        self.calls.append({"record_id": record.pk})
+        return record
+
+    def create_sync_release_report(self, **kwargs):
+        self.calls.append({"report": kwargs})
+        return RecordService.create_sync_release_report(**kwargs)
 
 
 class _FailingRecordService:
@@ -109,9 +124,12 @@ def test_update_from_redeye_action_enqueues_job():
             "requested_by_user_id": req.user.id,
         }
     ]
-    assert "Поставлена в очередь задача обновления аудио из Redeye для 1 записей." in all_messages
     assert (
-        f"/admin/records/audioenrichmentjob/{admin.record_service.job_id}/change/"
+        "Поставлена в очередь задача обновления аудио из Redeye для 1 записей."
+        in all_messages
+    )
+    assert (
+        f"/admin/records/releasereport/?job__id__exact={admin.record_service.job_id}"
         in all_messages
     )
 
@@ -157,4 +175,33 @@ def test_update_from_redeye_action_enqueues_even_without_catalog_validation():
         }
     ]
     all_messages = "\n".join(str(msg) for msg, _ in admin.messages)
-    assert "Поставлена в очередь задача обновления аудио из Redeye для 2 записей." in all_messages
+    assert (
+        "Поставлена в очередь задача обновления аудио из Redeye для 2 записей."
+        in all_messages
+    )
+
+
+@pytest.mark.django_db
+def test_update_from_discogs_action_creates_release_report():
+    record = Record.objects.create(title="R1", discogs_id=123)
+    qs = Record.objects.filter(pk=record.pk)
+    admin = FakeAdmin()
+    admin.record_service = _RecordingDiscogsUpdateService()
+    req = FakeRequest()
+    req.user = get_user_model().objects.create_user(
+        username="discogs-action-user",
+        email="discogs-action-user@example.com",
+        password="pass",
+    )
+
+    update_from_discogs(
+        admin_obj=admin,  # type: ignore[arg-type]
+        request=req,  # type: ignore[arg-type]
+        queryset=qs,
+    )
+
+    report = AudioEnrichmentJobRecord.objects.get(record=record)
+    assert report.operation_name == "Обновление релиза из Discogs"
+    assert report.result == "Релиз обновлен"
+    assert report.status == AudioEnrichmentJobRecord.Status.COMPLETED
+    assert report.scope == AudioEnrichmentJobRecord.Scope.RELEASE

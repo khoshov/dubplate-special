@@ -248,6 +248,72 @@ class YouTubeAudioEnrichmentProvider:
         "www.bandcamp.com",
     }
 
+    @staticmethod
+    def _resolve_release_report_metadata(
+        *,
+        job: AudioEnrichmentJob,
+        record: Record,
+    ) -> dict[str, object]:
+        operation_name = "Добавление аудио по URL (YouTube/Bandcamp)"
+        release_source_name = ""
+        audio_source_summary = "YouTube/Bandcamp"
+        result = "Операция создана"
+        result_message = "Операция поставлена в очередь."
+
+        if job.source == AudioEnrichmentJob.Source.DISCOGS_IMPORT:
+            operation_name = "Импорт релиза из Discogs"
+            release_source_name = "Discogs"
+            result = "Релиз создан"
+            result_message = (
+                "Релиз создан. Поставлена задача добавления аудио по URL "
+                "(YouTube/Bandcamp)."
+            )
+        elif job.source == AudioEnrichmentJob.Source.REDEYE_IMPORT:
+            operation_name = "Импорт релиза из Redeye"
+            release_source_name = "Redeye"
+            audio_source_summary = "Redeye"
+            result = "Релиз создан"
+            result_message = (
+                "Релиз создан. Поставлена задача добавления аудио из Redeye."
+            )
+        elif job.source in {
+            AudioEnrichmentJob.Source.REDEYE_MANUAL_LIST,
+            AudioEnrichmentJob.Source.REDEYE_MANUAL_RECORD,
+        }:
+            operation_name = "Добавление аудио из Redeye"
+            audio_source_summary = "Redeye"
+
+        return {
+            "operation_name": operation_name,
+            "scope": AudioEnrichmentJobRecord.Scope.RELEASE,
+            "release_source_name": release_source_name,
+            "audio_source_summary": audio_source_summary,
+            "stage": "Ожидает выполнения",
+            "result": result,
+            "result_message": result_message,
+            "tracks_total": record.tracks.count(),
+            "queued_at": timezone.now(),
+        }
+
+    @staticmethod
+    def build_track_results_json(
+        track_payloads: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        """Нормализует компактную историю действий по трекам для ReleaseReport."""
+        results: list[dict[str, str]] = []
+        for payload in track_payloads:
+            results.append(
+                {
+                    "track_id": str(payload["track_id"]),
+                    "track_title": str(payload["track_title"]),
+                    "action": str(payload["action"]),
+                    "status": str(payload["status"]),
+                    "source": str(payload["source"]),
+                    "message": str(payload["message"]),
+                }
+            )
+        return results
+
     @classmethod
     def is_valid_youtube_url(cls, value: str | None) -> bool:
         """Проверяет, что строка похожа на поддерживаемый YouTube/Bandcamp URL."""
@@ -397,6 +463,13 @@ class YouTubeAudioEnrichmentProvider:
                     defaults={
                         "status": AudioEnrichmentJobRecord.Status.SKIPPED,
                         "reason_code": AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+                        "operation_name": "Добавление аудио по URL (YouTube/Bandcamp)",
+                        "stage": "Завершение операции",
+                        "result": "Добавление аудио не выполнено",
+                        "result_message": "Релиз уже обрабатывается другой задачей.",
+                        "warning_message": "Релиз уже обрабатывается другой задачей.",
+                        "tracks_total": record.tracks.count(),
+                        "queued_at": timezone.now(),
                         "finished_at": timezone.now(),
                     },
                 )
@@ -407,6 +480,7 @@ class YouTubeAudioEnrichmentProvider:
                     job=job,
                     record=record,
                     status=AudioEnrichmentJobRecord.Status.QUEUED,
+                    **cls._resolve_release_report_metadata(job=job, record=record),
                 )
             except IntegrityError:
                 skipped_record, _ = AudioEnrichmentJobRecord.objects.get_or_create(
@@ -415,6 +489,13 @@ class YouTubeAudioEnrichmentProvider:
                     defaults={
                         "status": AudioEnrichmentJobRecord.Status.SKIPPED,
                         "reason_code": AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+                        "operation_name": "Добавление аудио по URL (YouTube/Bandcamp)",
+                        "stage": "Завершение операции",
+                        "result": "Добавление аудио не выполнено",
+                        "result_message": "Релиз уже обрабатывается другой задачей.",
+                        "warning_message": "Релиз уже обрабатывается другой задачей.",
+                        "tracks_total": record.tracks.count(),
+                        "queued_at": timezone.now(),
                         "finished_at": timezone.now(),
                     },
                 )
@@ -430,7 +511,11 @@ class YouTubeAudioEnrichmentProvider:
         job_record.status = AudioEnrichmentJobRecord.Status.RUNNING
         if job_record.started_at is None:
             job_record.started_at = timezone.now()
-        job_record.save(update_fields=["status", "started_at", "modified"])
+        if job_record.scope == AudioEnrichmentJobRecord.Scope.TRACK:
+            job_record.stage = "Добавление аудио к треку"
+        else:
+            job_record.stage = "Добавление аудио к трекам"
+        job_record.save(update_fields=["status", "started_at", "stage", "modified"])
 
     @staticmethod
     def mark_record_finished(
@@ -441,6 +526,11 @@ class YouTubeAudioEnrichmentProvider:
         error_count: int,
         force_failed: bool = False,
         reason_code: str = AudioEnrichmentJobRecord.Reason.NONE,
+        track_results_json: list[dict[str, str]] | None = None,
+        result_message: str = "",
+        warning_message: str = "",
+        error_message: str = "",
+        audio_source_summary: str = "",
     ) -> AudioEnrichmentJobRecord:
         """Фиксирует итог по записи и статус выполнения."""
         counters = YouTubeAudioEnrichmentProvider.serialize_record_counters(
@@ -458,17 +548,41 @@ class YouTubeAudioEnrichmentProvider:
 
         job_record.status = status
         job_record.reason_code = reason_code
+        job_record.stage = "Завершение операции"
         job_record.updated_count = counters["updated_count"]
         job_record.skipped_count = counters["skipped_count"]
         job_record.error_count = counters["error_count"]
+        if track_results_json is not None:
+            job_record.track_results_json = track_results_json
+        if result_message:
+            job_record.result_message = result_message
+        if warning_message:
+            job_record.warning_message = warning_message
+        if error_message:
+            job_record.error_message = error_message
+        if audio_source_summary:
+            job_record.audio_source_summary = audio_source_summary
+        if force_failed:
+            job_record.result = "Операция завершилась с ошибкой"
+        elif counters["error_count"] > 0 or counters["skipped_count"] > 0:
+            job_record.result = "Аудио добавлено частично"
+        else:
+            job_record.result = "Аудио добавлено полностью"
         job_record.finished_at = timezone.now()
         job_record.save(
             update_fields=[
                 "status",
                 "reason_code",
+                "stage",
+                "result",
+                "result_message",
                 "updated_count",
                 "skipped_count",
                 "error_count",
+                "track_results_json",
+                "warning_message",
+                "error_message",
+                "audio_source_summary",
                 "finished_at",
                 "modified",
             ]
@@ -913,6 +1027,13 @@ class YouTubeAudioEnrichmentProvider:
             with mp3_path.open("rb") as file_handle:
                 track.audio_preview.save(file_name, File(file_handle), save=True)
             saved_name = str(getattr(track.audio_preview, "name", "") or "").strip()
+            if saved_name:
+                track.audio_source = (
+                    Track.AudioSource.YOUTUBE
+                    if is_youtube_url
+                    else Track.AudioSource.BANDCAMP
+                )
+                track.save(update_fields=["audio_source", "modified"])
             if is_youtube_url:
                 YouTubeSessionService.mark_state_healthy(
                     "YouTube-сессия подтверждена успешной загрузкой аудио."

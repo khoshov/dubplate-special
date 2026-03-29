@@ -1,3 +1,9 @@
+"""Легаси-утилита журнала публикаций VK.
+
+Новый контур публикации опирается на VKPublicationJobRecord как на основной report.
+Модуль сохранён временно для совместимости со старой схемой данных и ручных проверок.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime

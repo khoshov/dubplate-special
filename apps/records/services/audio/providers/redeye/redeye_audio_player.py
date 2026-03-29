@@ -246,6 +246,8 @@ def attach_audio_from_redeye_player(
             continue
         saved = download_audio_to_track(track, url, overwrite=force, referer=page_url)
         if saved:
+            track.audio_source = Track.AudioSource.REDEYE
+            track.save(update_fields=["audio_source", "modified"])
             updated += 1
 
     _log_redeye_player_event(

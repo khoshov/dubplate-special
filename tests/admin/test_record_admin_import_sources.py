@@ -10,7 +10,7 @@ from django.core.exceptions import ValidationError
 from django.test import RequestFactory
 from django.urls import reverse
 
-from records.admin.record_admin import RecordAdmin
+from records.admin.record_admin import RecordAdmin, _group_service_models_in_admin
 from records.constants import SOURCE_CHOICES, SOURCE_DISCOGS, SOURCE_REDEYE
 from records.models import Record, StructuredFormat
 
@@ -104,6 +104,47 @@ def test_get_inline_instances_add_hides_structured_format_block() -> None:
     inline_instances = admin.get_inline_instances(request, obj=None)
 
     assert inline_instances == []
+
+
+def test_group_service_models_places_release_logs_before_vk_logs_and_service_last() -> (
+    None
+):
+    app_list = [
+        {
+            "name": "Релизы",
+            "app_label": "records",
+            "app_url": "/admin/records/",
+            "models": [
+                {"name": "Задачи публикации в VK", "object_name": "VKPublicationJob"},
+                {"name": "Логи публикации VK", "object_name": "VKPublicationReport"},
+                {"name": "Релизы", "object_name": "Record"},
+                {
+                    "name": "Логи добавления релизов и аудио",
+                    "object_name": "ReleaseReport",
+                },
+                {"name": "Задачи обработки релизов", "object_name": "ReleaseJob"},
+            ],
+        },
+        {
+            "name": "Пользователи",
+            "app_label": "accounts",
+            "app_url": "/admin/accounts/",
+            "models": [{"name": "Пользователи", "object_name": "User"}],
+        },
+    ]
+
+    grouped = _group_service_models_in_admin(app_list)
+
+    assert [app["app_label"] for app in grouped] == ["accounts", "records", "service"]
+    assert [model["object_name"] for model in grouped[1]["models"]] == [
+        "Record",
+        "ReleaseReport",
+        "VKPublicationReport",
+    ]
+    assert [model["object_name"] for model in grouped[2]["models"]] == [
+        "ReleaseJob",
+        "VKPublicationJob",
+    ]
 
 
 def _attach_session(request) -> None:

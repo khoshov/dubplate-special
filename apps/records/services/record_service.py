@@ -17,19 +17,24 @@ RecordService — фасад-оркестратор операций с запи
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional, Tuple
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from playwright.sync_api import Browser
 from discogs_client.exceptions import HTTPError
 from config.logging import NOTICE_LEVEL, log_event
 
 from records.models import (
     AudioEnrichmentJob,
+    AudioEnrichmentJobRecord,
     FormatChoices,
     Record,
     RecordSource,
     Track,
+    VKPublicationJob,
+    VKPublicationJobRecord,
 )
 from records.services.audio.audio_service import AudioService
 from records.services.image.image_service import ImageService
@@ -58,6 +63,7 @@ from records.services.tasks import (
     find_youtube_audio_urls_for_record,
     process_youtube_enrichment_track,
     run_redeye_audio_enrichment_job,
+    run_vk_publication_job,
     run_youtube_enrichment_job,
 )
 
@@ -119,6 +125,135 @@ class RecordService:
         self.redeye_service = redeye_service
         self.image_service = image_service
         self.audio_service = audio_service or AudioService()
+
+    @staticmethod
+    def _bootstrap_release_report_for_audio_job(
+        *,
+        job: AudioEnrichmentJob,
+        record: Record,
+        operation_name: str,
+        release_source_name: str,
+        audio_source_summary: str,
+        result: str,
+        result_message: str,
+    ) -> None:
+        """Создаёт начальный лог релиза для job, если запись ещё не захвачена другой задачей."""
+        active_statuses = (
+            AudioEnrichmentJobRecord.Status.QUEUED,
+            AudioEnrichmentJobRecord.Status.RUNNING,
+        )
+        conflict_exists = (
+            AudioEnrichmentJobRecord.objects.filter(
+                record=record,
+                status__in=active_statuses,
+            )
+            .exclude(job=job)
+            .exists()
+        )
+        if conflict_exists:
+            return
+
+        AudioEnrichmentJobRecord.objects.update_or_create(
+            job=job,
+            record=record,
+            defaults={
+                "status": AudioEnrichmentJobRecord.Status.QUEUED,
+                "operation_name": operation_name,
+                "scope": AudioEnrichmentJobRecord.Scope.RELEASE,
+                "release_source_name": release_source_name,
+                "audio_source_summary": audio_source_summary,
+                "stage": "Постановка задачи добавления аудио",
+                "result": result,
+                "result_message": result_message,
+                "tracks_total": record.tracks.count(),
+                "queued_at": timezone.now(),
+                "notify_in_admin": True,
+            },
+        )
+
+    @staticmethod
+    def create_sync_release_report(
+        *,
+        record: Record,
+        requested_by_user_id: int | None,
+        source: str,
+        operation_name: str,
+        scope: str,
+        release_source_name: str,
+        audio_source_summary: str,
+        result: str,
+        result_message: str,
+        stage: str = "Завершение операции",
+        status: str = AudioEnrichmentJobRecord.Status.COMPLETED,
+        warning_message: str = "",
+        error_message: str = "",
+        tracks_total: int | None = None,
+        updated_count: int = 0,
+        skipped_count: int = 0,
+        error_count: int = 0,
+        track_results_json: list[dict[str, str]] | None = None,
+    ) -> AudioEnrichmentJobRecord:
+        """Создаёт завершённый sync-лог пользовательской операции над релизом или треком."""
+        queued_at = timezone.now()
+        finished_at = queued_at
+        job_status = AudioEnrichmentJob.Status.COMPLETED
+        if status == AudioEnrichmentJobRecord.Status.FAILED:
+            job_status = AudioEnrichmentJob.Status.FAILED
+        elif status in {
+            AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+            AudioEnrichmentJobRecord.Status.SKIPPED,
+        }:
+            job_status = AudioEnrichmentJob.Status.COMPLETED_WITH_ERRORS
+
+        resolved_tracks_total = tracks_total
+        if resolved_tracks_total is None:
+            resolved_tracks_total = (
+                1
+                if scope == AudioEnrichmentJobRecord.Scope.TRACK
+                else record.tracks.count()
+            )
+
+        job = AudioEnrichmentJob.objects.create(
+            source=source,
+            status=job_status,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=False,
+            total_records=1,
+            total_tracks=resolved_tracks_total,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            started_at=queued_at,
+            finished_at=finished_at,
+        )
+        return AudioEnrichmentJobRecord.objects.create(
+            job=job,
+            record=record,
+            status=status,
+            operation_name=operation_name,
+            scope=scope,
+            release_source_name=release_source_name,
+            audio_source_summary=audio_source_summary,
+            stage=stage,
+            result=result,
+            result_message=result_message,
+            reason_code=(
+                AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR
+                if status == AudioEnrichmentJobRecord.Status.FAILED
+                else AudioEnrichmentJobRecord.Reason.NONE
+            ),
+            tracks_total=resolved_tracks_total,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            track_results_json=track_results_json or [],
+            warning_message=warning_message,
+            error_message=error_message,
+            queued_at=queued_at,
+            notify_in_admin=False,
+            started_at=queued_at,
+            finished_at=finished_at,
+        )
 
     def import_from_discogs(
         self,
@@ -335,6 +470,18 @@ class RecordService:
                 enrichment_job = self.enqueue_discogs_audio_enrichment(
                     record=record,
                     requested_by_user_id=requested_by_user_id,
+                )
+                self._bootstrap_release_report_for_audio_job(
+                    job=enrichment_job,
+                    record=record,
+                    operation_name="Импорт релиза из Discogs",
+                    release_source_name="Discogs",
+                    audio_source_summary="YouTube/Bandcamp",
+                    result="Релиз создан",
+                    result_message=(
+                        "Релиз создан. Поставлена задача добавления аудио по URL "
+                        "(YouTube/Bandcamp)."
+                    ),
                 )
                 setattr(record, "_discogs_enrichment_job_id", str(enrichment_job.id))
         except IntegrityError as exc:
@@ -569,29 +716,103 @@ class RecordService:
         *,
         record: Record,
         requested_by_user_id: int | None = None,
-    ) -> None:
-        """Ставит в очередь поиск YouTube-ссылок для треков записи."""
-        payload = {
-            "record_id": record.pk,
-            "requested_by_user_id": requested_by_user_id,
-        }
-        transaction.on_commit(
-            lambda: find_youtube_audio_urls_for_record.delay(payload)  # noqa: B023
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь поиск YouTube-ссылок для одной записи."""
+        return self.enqueue_youtube_audio_search(
+            record_ids=[record.pk],
+            source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+            requested_by_user_id=requested_by_user_id,
         )
+
+    def enqueue_manual_youtube_audio_search(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Ставит в очередь поиск YouTube-ссылок для списка записей."""
+        return self.enqueue_youtube_audio_search(
+            record_ids=record_ids,
+            source=AudioEnrichmentJob.Source.MANUAL_LIST,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_youtube_audio_search(
+        self,
+        *,
+        record_ids: list[int],
+        source: str,
+        requested_by_user_id: int | None = None,
+    ) -> AudioEnrichmentJob:
+        """Создаёт job/report и ставит в очередь поиск YouTube-ссылок."""
+        normalized_record_ids = sorted({int(record_id) for record_id in record_ids})
+        if not normalized_record_ids:
+            raise ValueError(
+                "Список record_ids для поиска аудио на YouTube не должен быть пустым."
+            )
+
+        records = list(
+            Record.objects.filter(pk__in=normalized_record_ids).prefetch_related(
+                "tracks"
+            )
+        )
+        record_map = {record.pk: record for record in records}
+        total_tracks = sum(record.tracks.count() for record in records)
+
+        job = AudioEnrichmentJob.objects.create(
+            source=source,
+            status=AudioEnrichmentJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            overwrite_existing=False,
+            total_records=len(normalized_record_ids),
+            total_tracks=total_tracks,
+        )
+
+        queued_at = timezone.now()
+        for record_id in normalized_record_ids:
+            record = record_map.get(record_id)
+            if record is None:
+                continue
+            AudioEnrichmentJobRecord.objects.create(
+                job=job,
+                record=record,
+                status=AudioEnrichmentJobRecord.Status.QUEUED,
+                operation_name="Поиск аудио на YouTube",
+                scope=AudioEnrichmentJobRecord.Scope.RELEASE,
+                release_source_name="",
+                audio_source_summary="YouTube",
+                stage="Ожидает выполнения",
+                result="Операция создана",
+                result_message="Поставлена задача поиска аудио на YouTube.",
+                tracks_total=record.tracks.count(),
+                queued_at=queued_at,
+                notify_in_admin=True,
+            )
+
+        for record_id in normalized_record_ids:
+            payload = {
+                "job_id": str(job.id),
+                "record_id": record_id,
+                "requested_by_user_id": requested_by_user_id,
+                "source": source,
+            }
+            transaction.on_commit(
+                lambda payload=payload: find_youtube_audio_urls_for_record.delay(
+                    payload
+                )
+            )
+
         _log_record_service_event(
             logging.INFO,
             "youtube_audio_search_enqueued",
-            f"Поставлен в очередь поиск аудио на YouTube для релиза «{record}».",
-            record_id=record.pk,
+            "Поставлена в очередь задача поиска аудио на YouTube.",
+            job_id=job.id,
+            source=source,
+            records_total=len(normalized_record_ids),
+            record_ids=",".join(str(record_id) for record_id in normalized_record_ids),
             requested_by_user_id=requested_by_user_id,
         )
-        _log_record_service_event(
-            logging.DEBUG,
-            "youtube_audio_search_enqueued",
-            "Детали постановки поиска аудио на YouTube.",
-            record_id=record.pk,
-            requested_by_user_id=requested_by_user_id,
-        )
+        return job
 
     def enqueue_track_youtube_audio_enrichment(
         self,
@@ -608,6 +829,30 @@ class RecordService:
             overwrite_existing=overwrite_existing,
             total_records=1,
             total_tracks=1,
+        )
+        self._bootstrap_release_report_for_audio_job(
+            job=job,
+            record=track.record,
+            operation_name="Добавление аудио к треку",
+            release_source_name="",
+            audio_source_summary="Не указан",
+            result="Операция создана",
+            result_message=f"Трек «{track.title}» поставлен в очередь на добавление аудио.",
+        )
+        AudioEnrichmentJobRecord.objects.filter(job=job, record=track.record).update(
+            scope=AudioEnrichmentJobRecord.Scope.TRACK,
+            stage="Ожидает выполнения",
+            tracks_total=1,
+            track_results_json=[
+                {
+                    "track_id": track.pk,
+                    "track_title": track.title,
+                    "action": "Добавление аудио к треку",
+                    "status": "Ожидает выполнения",
+                    "source": "Не указан",
+                    "message": "",
+                }
+            ],
         )
         payload = {
             "job_id": str(job.id),
@@ -641,7 +886,7 @@ class RecordService:
         normalized_record_ids = sorted({int(record_id) for record_id in record_ids})
         if not normalized_record_ids:
             raise ValueError(
-                "Список record_ids для YouTube enrichment не должен быть пустым."
+                "Список record_ids для добавления аудио по URL не должен быть пустым."
             )
 
         job = AudioEnrichmentJob.objects.create(
@@ -719,6 +964,162 @@ class RecordService:
         )
         return job
 
+    def enqueue_vk_immediate_publication(
+        self,
+        *,
+        record_ids: list[int],
+        requested_by_user_id: int | None = None,
+    ) -> VKPublicationJob:
+        """Ставит в очередь немедленную публикацию записей в VK."""
+        items = [
+            {
+                "record_id": int(record_id),
+                "mode": VKPublicationJobRecord.Mode.IMMEDIATE,
+                "planned_publish_at": None,
+            }
+            for record_id in record_ids
+        ]
+        return self.enqueue_vk_publication(
+            items=items,
+            source=VKPublicationJob.Source.MANUAL_LIST,
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_vk_scheduled_publication(
+        self,
+        *,
+        schedule_items: list[tuple[int, datetime]],
+        requested_by_user_id: int | None = None,
+        single_record: bool = False,
+    ) -> VKPublicationJob:
+        """Ставит в очередь отложенную публикацию записей в VK."""
+        items = [
+            {
+                "record_id": int(record_id),
+                "mode": VKPublicationJobRecord.Mode.SCHEDULED,
+                "planned_publish_at": publish_at.isoformat(),
+            }
+            for record_id, publish_at in schedule_items
+        ]
+        return self.enqueue_vk_publication(
+            items=items,
+            source=(
+                VKPublicationJob.Source.SCHEDULED_SINGLE
+                if single_record
+                else VKPublicationJob.Source.SCHEDULED_LIST
+            ),
+            requested_by_user_id=requested_by_user_id,
+        )
+
+    def enqueue_vk_publication(
+        self,
+        *,
+        items: list[dict[str, object]],
+        source: str,
+        requested_by_user_id: int | None = None,
+    ) -> VKPublicationJob:
+        """Создаёт job report и enqueue-ит background task публикации в VK."""
+        normalized_items: list[dict[str, object]] = []
+        for item in items:
+            record_id = int(item["record_id"])
+            mode = str(item["mode"])
+            planned_publish_at = item.get("planned_publish_at")
+            normalized_items.append(
+                {
+                    "record_id": record_id,
+                    "mode": mode,
+                    "planned_publish_at": (
+                        str(planned_publish_at)
+                        if planned_publish_at is not None
+                        else None
+                    ),
+                }
+            )
+
+        if not normalized_items:
+            raise ValueError(
+                "Список записей для публикации в VK не должен быть пустым."
+            )
+
+        job = VKPublicationJob.objects.create(
+            source=source,
+            status=VKPublicationJob.Status.QUEUED,
+            requested_by_user_id=requested_by_user_id,
+            total_records=len(normalized_items),
+        )
+        for item in normalized_items:
+            record = Record.objects.prefetch_related("sources", "tracks").get(
+                pk=int(item["record_id"])
+            )
+            planned_publish_at_raw = item["planned_publish_at"]
+            planned_publish_at = None
+            if isinstance(planned_publish_at_raw, str) and planned_publish_at_raw:
+                planned_publish_at = datetime.fromisoformat(planned_publish_at_raw)
+
+            VKPublicationJobRecord.objects.create(
+                job=job,
+                record=record,
+                mode=str(item["mode"]),
+                planned_publish_at=planned_publish_at,
+                queued_at=timezone.now(),
+                notify_in_admin=True,
+                operation_name=(
+                    "Отложенная публикация в VK"
+                    if str(item["mode"]) == VKPublicationJobRecord.Mode.SCHEDULED
+                    else "Публикация в VK"
+                ),
+                release_source_name=self._resolve_vk_release_source_name(record),
+                audio_source_summary=self._resolve_vk_audio_source_summary(record),
+                stage="Операция создана",
+                result="Ожидает выполнения",
+                result_message="Операция создана и ожидает выполнения.",
+                photo_expected=bool(getattr(record, "cover_image", None)),
+                audio_expected_count=record.tracks.filter(audio_preview__isnull=False)
+                .exclude(audio_preview="")
+                .count(),
+            )
+
+        payload = {
+            "job_id": str(job.id),
+            "requested_by_user_id": requested_by_user_id,
+            "source": source,
+        }
+        transaction.on_commit(lambda: run_vk_publication_job.delay(payload))  # noqa: B023
+        _log_record_service_event(
+            logging.INFO,
+            "vk_publication_job_enqueued",
+            "Поставлена в очередь задача публикации записей в VK.",
+            job_id=job.id,
+            source=source,
+            records_total=len(normalized_items),
+            record_ids=",".join(str(item["record_id"]) for item in normalized_items),
+            requested_by_user_id=requested_by_user_id,
+        )
+        return job
+
+    @staticmethod
+    def _resolve_vk_release_source_name(record: Record) -> str:
+        if record.sources.filter(provider="redeye").exists():
+            return "Redeye"
+        if record.sources.filter(provider="discogs").exists() or bool(
+            record.discogs_id
+        ):
+            return "Discogs"
+        return "Не указан"
+
+    @staticmethod
+    def _resolve_vk_audio_source_summary(record: Record) -> str:
+        source_values = list(
+            record.tracks.exclude(audio_source="unknown")
+            .exclude(audio_source="")
+            .values_list("audio_source", flat=True)
+            .distinct()
+        )
+        labels_map = dict(Track.AudioSource.choices)
+        labels = [str(labels_map.get(value, "")).strip() for value in source_values]
+        labels = [label for label in labels if label]
+        return ", ".join(labels) if labels else "Не указан"
+
     def import_from_redeye(
         self,
         catalog_number: Optional[str] = None,
@@ -773,6 +1174,18 @@ class RecordService:
                     )
                     enrichment_job = self.enqueue_redeye_audio_import(
                         record=existing,
+                    )
+                    self._bootstrap_release_report_for_audio_job(
+                        job=enrichment_job,
+                        record=existing,
+                        operation_name="Импорт релиза из Redeye",
+                        release_source_name="Redeye",
+                        audio_source_summary="Redeye",
+                        result="Релиз уже существует",
+                        result_message=(
+                            "Релиз уже существует. Поставлена задача добавления "
+                            "аудио из Redeye."
+                        ),
                     )
                     setattr(
                         existing,
@@ -871,6 +1284,17 @@ class RecordService:
         if download_audio_decision:
             try:
                 enrichment_job = self.enqueue_redeye_audio_import(record=record)
+                self._bootstrap_release_report_for_audio_job(
+                    job=enrichment_job,
+                    record=record,
+                    operation_name="Импорт релиза из Redeye",
+                    release_source_name="Redeye",
+                    audio_source_summary="Redeye",
+                    result="Релиз создан",
+                    result_message=(
+                        "Релиз создан. Поставлена задача добавления аудио из Redeye."
+                    ),
+                )
                 setattr(record, "_redeye_enrichment_job_id", str(enrichment_job.id))
             except Exception as err:  # noqa: BLE001
                 _log_record_service_event(

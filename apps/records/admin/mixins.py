@@ -23,6 +23,27 @@ logger = logging.getLogger(__name__)
 _ADMIN_MIXINS_COMPONENT = "records_admin_mixins"
 
 
+def _release_report_changelist_url(*, job_id: object) -> str:
+    return (
+        f"{reverse('admin:records_releasereport_changelist')}?job__id__exact={job_id}"
+    )
+
+
+def _release_report_detail_url(*, report_id: object) -> str:
+    return reverse("admin:records_releasereport_change", args=[report_id])
+
+
+def _single_release_report_url_or_fallback(*, job: object, record_id: object) -> str:
+    job_records = getattr(job, "job_records", None)
+    if job_records is None:
+        return _release_report_changelist_url(job_id=getattr(job, "id"))
+
+    report = job_records.filter(record_id=record_id).order_by("created", "id").first()
+    if report is None:
+        return _release_report_changelist_url(job_id=getattr(job, "id"))
+    return _release_report_detail_url(report_id=report.pk)
+
+
 def _log_admin_mixin_event(
     level: int,
     event: str,
@@ -97,9 +118,9 @@ class RedeyeAudioRefreshMixin:
                 overwrite=False,
                 requested_by_user_id=getattr(request.user, "id", None),
             )
-            report_url = reverse(
-                "admin:records_audioenrichmentjob_change",
-                args=[job.id],
+            report_url = _single_release_report_url_or_fallback(
+                job=job,
+                record_id=obj.pk,
             )
             messages.success(
                 request,
@@ -108,7 +129,7 @@ class RedeyeAudioRefreshMixin:
             messages.info(
                 request,
                 format_html(
-                    'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
                     report_url,
                 ),
             )
@@ -129,7 +150,7 @@ class RedeyeAudioRefreshMixin:
 class YouTubeAudioRefreshMixin:
     """
     Добавляет URL и обработчик кнопки
-    «Обновить треки из YouTube» на странице редактирования записи.
+    «Добавить аудио по URL (YouTube/Bandcamp)» на странице редактирования записи.
 
     Требуется атрибут self.record_service с методом:
     enqueue_record_youtube_audio_enrichment(record, *, requested_by_user_id: int | None)
@@ -170,7 +191,7 @@ class YouTubeAudioRefreshMixin:
     def _refresh_youtube_audio_view(
         self: Any, request: HttpRequest, object_id: str
     ) -> HttpResponse:
-        """Обработчик кнопки «Обновить аудио треков из YouTube»."""
+        """Обработчик кнопки «Добавить аудио по URL (YouTube/Bandcamp)»."""
         if request.method != "POST":
             messages.error(request, "Разрешён только POST-запрос.")
             return redirect(reverse("admin:records_record_change", args=[object_id]))
@@ -189,23 +210,23 @@ class YouTubeAudioRefreshMixin:
             _log_admin_mixin_event(
                 logging.INFO,
                 "youtube_audio_refresh_enqueued",
-                "Поставлена в очередь задача обновления аудио треков из YouTube по кнопке записи.",
+                "Поставлена в очередь задача добавления аудио по URL (YouTube/Bandcamp) по кнопке записи.",
                 record_id=obj.pk,
                 job_id=job.id,
                 requested_by_user_id=getattr(request.user, "id", None),
             )
-            report_url = reverse(
-                "admin:records_audioenrichmentjob_change",
-                args=[job.id],
+            report_url = _single_release_report_url_or_fallback(
+                job=job,
+                record_id=obj.pk,
             )
             messages.success(
                 request,
-                "Поставлена в очередь задача обновления аудио треков из YouTube.",
+                "Поставлена в очередь задача добавления аудио по URL (YouTube/Bandcamp).",
             )
             messages.info(
                 request,
                 format_html(
-                    'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
                     report_url,
                 ),
             )
@@ -213,14 +234,14 @@ class YouTubeAudioRefreshMixin:
             _log_admin_mixin_event(
                 logging.ERROR,
                 "youtube_audio_refresh_failed",
-                "Не удалось поставить в очередь задачу обновления аудио треков из YouTube по кнопке записи.",
+                "Не удалось поставить в очередь задачу добавления аудио по URL (YouTube/Bandcamp) по кнопке записи.",
                 record_id=obj.pk,
                 error=str(exc),
             )
             logger.exception("Детали ошибки запуска YouTube job по кнопке записи.")
             messages.error(
                 request,
-                f"Не удалось запустить обновление аудио треков из YouTube: {exc!s}",
+                f"Не удалось запустить добавление аудио по URL (YouTube/Bandcamp): {exc!s}",
             )
 
         return redirect(reverse("admin:records_record_change", args=[obj.pk]))
@@ -260,7 +281,7 @@ class YouTubeAudioRefreshMixin:
             return redirect(reverse("admin:records_record_change", args=[obj.pk]))
 
         try:
-            self.record_service.enqueue_record_youtube_audio_search(
+            job = self.record_service.enqueue_record_youtube_audio_search(
                 record=obj,
                 requested_by_user_id=getattr(request.user, "id", None),
             )
@@ -282,8 +303,18 @@ class YouTubeAudioRefreshMixin:
                 request,
                 "Поставлена в очередь задача поиска аудио на YouTube.",
             )
+            messages.info(
+                request,
+                format_html(
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
+                    _single_release_report_url_or_fallback(
+                        job=job,
+                        record_id=obj.pk,
+                    ),
+                ),
+            )
             if request.headers.get("x-requested-with") == "XMLHttpRequest":
-                return JsonResponse({"ok": True})
+                return JsonResponse({"ok": True, "job_id": str(job.id)})
         except Exception as exc:  # noqa: BLE001
             _log_admin_mixin_event(
                 logging.ERROR,

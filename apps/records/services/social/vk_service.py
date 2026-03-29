@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from calendar import month_abbr
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -60,6 +61,29 @@ class VKConfig:
             raise ValueError("VK: VK_GROUP_ID должен быть целым числом.") from exc
 
         return VKConfig(access_token=token, group_id=group_id)
+
+
+@dataclass(frozen=True)
+class VKAttachmentCollectionResult:
+    attachments: list[str]
+    photo_expected: bool
+    photo_uploaded: bool
+    audio_expected_count: int
+    audio_uploaded_count: int
+    audio_failed_count: int
+    failed_track_titles: list[str]
+
+
+@dataclass(frozen=True)
+class VKPublicationResult:
+    post_id: int
+    attachments: list[str]
+    photo_expected: bool
+    photo_uploaded: bool
+    audio_expected_count: int
+    audio_uploaded_count: int
+    audio_failed_count: int
+    failed_track_titles: list[str]
 
 
 # =============================================================================
@@ -491,8 +515,26 @@ class VKService:
         """
         Публикует релиз с обложкой и, по возможности, с MP3-превью треков.
         """
+        result = self.post_record_with_audio_details(
+            record,
+            message_template,
+            publish_at=publish_at,
+        )
+        return result.post_id
+
+    def post_record_with_audio_details(
+        self,
+        record: Record,
+        message_template: str | None = None,
+        *,
+        publish_at: datetime | None = None,
+    ) -> VKPublicationResult:
+        """
+        Публикует релиз в VK и возвращает детали публикации для job report.
+        """
         message = _render_record_message(record, message_template)
-        all_attachments = self._collect_release_attachments(record, with_audio=True)
+        attachment_result = self._collect_release_attachments(record, with_audio=True)
+        all_attachments = attachment_result.attachments
 
         record_id = getattr(record, "pk", None)
         attachments_str = ",".join(all_attachments) if all_attachments else "—"
@@ -508,10 +550,20 @@ class VKService:
             attachments=attachments_str,
         )
         publish_date_ts = int(publish_at.timestamp()) if publish_at else None
-        return self._wall_post(
+        post_id = self._wall_post(
             message=message,
             attachments=all_attachments or None,
             publish_date_ts=publish_date_ts,
+        )
+        return VKPublicationResult(
+            post_id=post_id,
+            attachments=all_attachments,
+            photo_expected=attachment_result.photo_expected,
+            photo_uploaded=attachment_result.photo_uploaded,
+            audio_expected_count=attachment_result.audio_expected_count,
+            audio_uploaded_count=attachment_result.audio_uploaded_count,
+            audio_failed_count=attachment_result.audio_failed_count,
+            failed_track_titles=attachment_result.failed_track_titles,
         )
 
     def _get_current_user_id(self) -> int:
@@ -543,7 +595,7 @@ class VKService:
 
     def _collect_release_attachments(
         self, record: Record, *, with_audio: bool
-    ) -> list[str]:
+    ) -> VKAttachmentCollectionResult:
         """
         Собирает вложения релиза:
         - пытается прикрепить обложку (photo)
@@ -551,26 +603,70 @@ class VKService:
         - если аудио есть, но фото нет — удаляет аудио (требование VK)
         """
         attachments: list[str] = []
+        photo_expected = False
+        photo_uploaded = False
+        audio_expected_count = 0
+        audio_uploaded_count = 0
+        audio_failed_count = 0
+        failed_track_titles: list[str] = []
 
         # 1) фото
         cover_path = _record_cover_path(record)
         if cover_path:
+            photo_expected = True
             photo = self._upload_photo(cover_path)
             if photo:
                 attachments.append(photo)
+                photo_uploaded = True
+            else:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "VK: фото релиза не загружено. Аудио не будет загружаться, публикация продолжится текстом.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_missing_audio_skipped",
+                    record_id=getattr(record, "pk", None),
+                    cover_path=str(cover_path),
+                )
+                return VKAttachmentCollectionResult(
+                    attachments=attachments,
+                    photo_expected=photo_expected,
+                    photo_uploaded=photo_uploaded,
+                    audio_expected_count=audio_expected_count,
+                    audio_uploaded_count=audio_uploaded_count,
+                    audio_failed_count=audio_failed_count,
+                    failed_track_titles=failed_track_titles,
+                )
         else:
             logger.warning(
                 "VK: для записи отсутствует обложка. "
-                "Если будут аудио-вложения, они будут удалены из-за требований VK.",
+                "Аудио не будут загружаться, публикация продолжится текстом.",
                 extra=build_log_extra(
                     component=_VK_SERVICE_COMPONENT,
                     event="cover_missing",
                     record_id=getattr(record, "pk", None),
                 ),
             )
+            return VKAttachmentCollectionResult(
+                attachments=attachments,
+                photo_expected=photo_expected,
+                photo_uploaded=photo_uploaded,
+                audio_expected_count=audio_expected_count,
+                audio_uploaded_count=audio_uploaded_count,
+                audio_failed_count=audio_failed_count,
+                failed_track_titles=failed_track_titles,
+            )
 
         if not with_audio:
-            return attachments
+            return VKAttachmentCollectionResult(
+                attachments=attachments,
+                photo_expected=photo_expected,
+                photo_uploaded=photo_uploaded,
+                audio_expected_count=audio_expected_count,
+                audio_uploaded_count=audio_uploaded_count,
+                audio_failed_count=audio_failed_count,
+                failed_track_titles=failed_track_titles,
+            )
 
         # 2) аудио
         audio_attachments: list[str] = []
@@ -594,6 +690,7 @@ class VKService:
             attempt_limit = max(0, limit)
             attempts = min(eligible_tracks, attempt_limit)
             skipped_due_to_limit = max(0, eligible_tracks - attempts)
+            audio_expected_count = attempts
             log_event(
                 logger,
                 logging.DEBUG,
@@ -623,6 +720,7 @@ class VKService:
                         audio_attachments.append(att)
                     else:
                         upload_failed_count += 1
+                        failed_track_titles.append(str(getattr(track, "title", "")))
                         log_event(
                             logger,
                             logging.WARNING,
@@ -636,6 +734,7 @@ class VKService:
                         )
                 else:
                     missing_file_count += 1
+                    failed_track_titles.append(str(getattr(track, "title", "")))
                     logger.warning(
                         "VK: у записи отсутствует mp3-файл на диске — трек пропущен.",
                         extra=build_log_extra(
@@ -666,19 +765,17 @@ class VKService:
                 attempt_limit=attempt_limit,
             )
 
-        # 3) требование VK: если есть аудио — обязано быть фото
-        if audio_attachments and not attachments:
-            logger.warning(
-                "VK: у записи есть аудио-вложения, но нет фото — аудио удалены (требование VK).",
-                extra=build_log_extra(
-                    component=_VK_SERVICE_COMPONENT,
-                    event="audio_without_photo",
-                    record_id=getattr(record, "pk", None),
-                ),
-            )
-            audio_attachments.clear()
-
-        return attachments + audio_attachments
+        audio_uploaded_count = len(audio_attachments)
+        audio_failed_count = missing_file_count + upload_failed_count
+        return VKAttachmentCollectionResult(
+            attachments=attachments + audio_attachments,
+            photo_expected=photo_expected,
+            photo_uploaded=photo_uploaded,
+            audio_expected_count=audio_expected_count,
+            audio_uploaded_count=audio_uploaded_count,
+            audio_failed_count=audio_failed_count,
+            failed_track_titles=failed_track_titles,
+        )
 
     # -------------------------------------------------------------------------
     # VK API low-level (photos / audio / wall)
@@ -722,21 +819,46 @@ class VKService:
             )
             return None
 
-        try:
-            with image_path.open("rb") as f:
-                resp = requests.post(
-                    url, files={"photo": (image_path.name, f, "image/jpeg")}, timeout=30
+        upload_resp: dict[str, Any] | None = None
+        last_error: requests.RequestException | None = None
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with image_path.open("rb") as f:
+                    resp = requests.post(
+                        url,
+                        files={"photo": (image_path.name, f, "image/jpeg")},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                upload_resp = resp.json()
+                break
+            except requests.RequestException as e:
+                last_error = e
+                logger.exception(
+                    "Ошибка HTTP при загрузке фото VK.",
+                    extra=build_log_extra(
+                        component=_VK_SERVICE_COMPONENT,
+                        event="photo_upload_http_failed",
+                        error=str(e),
+                        photo_attempt=attempt,
+                        photo_attempts_total=max_attempts,
+                        image_path=str(image_path),
+                    ),
                 )
-                resp.raise_for_status()
-            upload_resp = resp.json()
-        except requests.RequestException as e:
-            logger.exception(
-                "Ошибка HTTP при загрузке фото VK.",
-                extra=build_log_extra(
-                    component=_VK_SERVICE_COMPONENT,
-                    event="photo_upload_http_failed",
-                    error=str(e),
-                ),
+                if attempt < max_attempts:
+                    time.sleep(2 * attempt)
+
+        if upload_resp is None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "Не удалось загрузить фото VK после повторных попыток.",
+                component=_VK_SERVICE_COMPONENT,
+                event="photo_upload_retries_exhausted",
+                error=str(last_error) if last_error else "unknown",
+                image_path=str(image_path),
+                photo_attempts_total=max_attempts,
             )
             return None
 

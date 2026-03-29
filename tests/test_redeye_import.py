@@ -1,9 +1,17 @@
 import pytest
 from django.db import IntegrityError
 
-from records.models import Record, RecordSource
+from records.models import (
+    AudioEnrichmentJob,
+    AudioEnrichmentJobRecord,
+    Record,
+    RecordSource,
+)
 from records.services.record_service import RecordService
 from records.services import record_service as record_service_module
+from records.services.audio.providers.redeye.redeye_audio_player import (
+    attach_audio_from_redeye_player,
+)
 
 
 class DummyDiscogsService:
@@ -67,7 +75,14 @@ def test_import_from_redeye_enqueues_audio_job_for_new_record(monkeypatch):
         download_audio_decision=True,
     )
 
+    job = AudioEnrichmentJob.objects.get()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
+
     assert created is True
+    assert job_record.operation_name == "Импорт релиза из Redeye"
+    assert job_record.release_source_name == "Redeye"
+    assert job_record.audio_source_summary == "Redeye"
+    assert job_record.result == "Релиз создан"
     assert captured_payloads == [
         {
             "job_id": record._redeye_enrichment_job_id,
@@ -197,8 +212,13 @@ def test_import_from_redeye_existing_record_resolves_source_and_enqueues_audio_j
         catalog_number="rt123", download_audio_decision=True
     )
 
+    job = AudioEnrichmentJob.objects.get()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=existing)
+
     assert created is False
     assert record.pk == existing.pk
+    assert job_record.operation_name == "Импорт релиза из Redeye"
+    assert job_record.result == "Релиз уже существует"
     assert captured_payloads == [
         {
             "job_id": record._redeye_enrichment_job_id,
@@ -294,3 +314,29 @@ def test_attach_audio_from_redeye_ignores_none_like_catalog_number_in_strict_mod
 
     assert redeye.calls == []
     assert audio.calls == []
+
+
+@pytest.mark.django_db
+def test_attach_audio_from_redeye_player_sets_track_audio_source(monkeypatch):
+    record = Record.objects.create(title="R1", catalog_number="RT123")
+    track = record.tracks.create(title="Track 1", position_index=1)
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.redeye.redeye_audio_player.collect_redeye_audio_urls",
+        lambda *args, **kwargs: ["https://example.com/audio.mp3"],
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.redeye.redeye_audio_player.download_audio_to_track",
+        lambda *args, **kwargs: "records/track/audio_preview/1/test.mp3",
+    )
+
+    updated = attach_audio_from_redeye_player(
+        record,
+        page_url="https://www.redeyerecords.co.uk/vinyl/123-test-release",
+        force=False,
+    )
+
+    track.refresh_from_db()
+
+    assert updated == 1
+    assert track.audio_source == track.AudioSource.REDEYE

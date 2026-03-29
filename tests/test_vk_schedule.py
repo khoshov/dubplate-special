@@ -1,22 +1,46 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+import requests
+from django.contrib import admin as django_admin
 from django.contrib import messages
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.test import RequestFactory
 from django.utils import timezone
+from vk_api.exceptions import ApiError
 
 from records.admin.actions import post_to_vk
 from records.admin.record_admin import RecordAdmin
-from records.models import Record, VKPublicationLog
+from records.models import (
+    Record,
+    VKPublicationJob,
+    VKPublicationJobRecord,
+)
+from records.services import record_service as record_service_module
+from records.services import tasks as tasks_module
 from records.services.social.schedule import build_even_schedule
-from records.services.social.vk_service import VKConfig, VKService
-from vk_api.exceptions import ApiError
+from records.services.social.vk_service import (
+    VKConfig,
+    VKPublicationResult,
+    VKService,
+)
+
+
+def _patch_vk_enqueue(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    delayed_payloads: list[dict] = []
+    monkeypatch.setattr(record_service_module.transaction, "on_commit", lambda fn: fn())
+    monkeypatch.setattr(
+        record_service_module.run_vk_publication_job,
+        "delay",
+        lambda payload: delayed_payloads.append(payload),
+    )
+    return delayed_payloads
 
 
 def test_build_even_schedule_single():
@@ -68,76 +92,87 @@ def test_vk_service_publish_date_param():
     assert service._vk.calls[1][1]["publish_date"] == 123
 
 
+def test_vk_service_skips_audio_when_photo_upload_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+
+    class DummyRecord:
+        pk = 1
+        cover_image = type("Cover", (), {"path": "C:/cover.jpg"})()
+        tracks = []
+
+    monkeypatch.setattr(
+        "records.services.social.vk_service._record_cover_path",
+        lambda record: Path("C:/cover.jpg"),
+    )
+    audio_called = {"value": False}
+    monkeypatch.setattr(service, "_upload_photo", lambda image_path: None)
+
+    def _unexpected_audio(*args, **kwargs):
+        audio_called["value"] = True
+        return "audio1_1"
+
+    monkeypatch.setattr(service, "_upload_audio", _unexpected_audio)
+
+    attachments = service._collect_release_attachments(DummyRecord(), with_audio=True)
+
+    assert attachments.attachments == []
+    assert audio_called["value"] is False
+
+
+def test_vk_service_retries_photo_upload(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    image_path = Path(__file__).resolve()
+
+    monkeypatch.setattr(service, "_get_wall_upload_url", lambda: "https://upload.test")
+    monkeypatch.setattr(
+        service, "_save_wall_photo", lambda payload: {"owner_id": 1, "id": 2}
+    )
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    call_count = {"value": 0}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"photo": "p", "server": 1, "hash": "h"}
+
+    def _post(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] < 3:
+            raise requests.ConnectionError("connection refused")
+        return DummyResponse()
+
+    monkeypatch.setattr("records.services.social.vk_service.requests.post", _post)
+
+    attachment = service._upload_photo(image_path)
+
+    assert attachment == "photo1_2"
+    assert call_count["value"] == 3
+
+
 @pytest.mark.django_db
-def test_post_to_vk_action_ignores_timezone(settings):
+def test_post_to_vk_action_enqueues_job(settings, monkeypatch: pytest.MonkeyPatch):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    calls: list[datetime | None] = []
-
-    class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            return 1
-
-    admin.vk_service = DummyVKService()
+    delayed_payloads = _patch_vk_enqueue(monkeypatch)
+    admin = RecordAdmin(Record, AdminSite())
 
     User = get_user_model()
     user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
+        username="admin",
+        email="admin@example.com",
+        password="pass",
     )
-
     record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
-    )
-
-    request = RequestFactory().post("/admin/records/record/")
-    request.user = user
-    request.session = {}
-    request._messages = FallbackStorage(request)
-
-    previous_tz = timezone.get_current_timezone()
-    timezone.activate(ZoneInfo("America/New_York"))
-    try:
-        post_to_vk(admin, request, Record.objects.filter(pk=record.pk))
-    finally:
-        timezone.activate(previous_tz)
-
-    assert calls == [None]
-    record.refresh_from_db()
-    assert record.vk_published_at is not None
-
-    event = record.vk_publication_logs.order_by("-created").first()
-    assert event is not None
-    assert event.mode == VKPublicationLog.Mode.IMMEDIATE
-    assert event.status == VKPublicationLog.Status.SUCCESS
-    assert event.vk_post_id == 1
-
-
-@pytest.mark.django_db
-def test_post_to_vk_action_logs_failed_event(settings):
-    settings.VK_ACCESS_TOKEN = "token"
-    settings.VK_GROUP_ID = "1"
-
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            raise RuntimeError("vk unavailable")
-
-    admin.vk_service = DummyVKService()
-
-    User = get_user_model()
-    user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
-    )
-
-    record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
     )
 
     request = RequestFactory().post("/admin/records/record/")
@@ -147,36 +182,42 @@ def test_post_to_vk_action_logs_failed_event(settings):
 
     post_to_vk(admin, request, Record.objects.filter(pk=record.pk))
 
-    record.refresh_from_db()
-    assert record.vk_published_at is None
-
-    event = record.vk_publication_logs.order_by("-created").first()
-    assert event is not None
-    assert event.mode == VKPublicationLog.Mode.IMMEDIATE
-    assert event.status == VKPublicationLog.Status.FAILED
-    assert "vk unavailable" in event.error_message
+    assert len(delayed_payloads) == 1
+    job = VKPublicationJob.objects.get(pk=delayed_payloads[0]["job_id"])
+    assert job.source == VKPublicationJob.Source.MANUAL_LIST
+    job_record = job.job_records.get(record=record)
+    assert job_record.mode == VKPublicationJobRecord.Mode.IMMEDIATE
+    assert job_record.status == VKPublicationJobRecord.Status.QUEUED
+    messages_list = list(messages.get_messages(request))
+    rendered_messages = [str(msg) for msg in messages_list]
+    assert any(
+        "Релиз «R1» отправлен на публикацию на стену VK." in msg
+        for msg in rendered_messages
+    )
+    assert any("Открыть лог" in msg for msg in rendered_messages)
+    assert any(
+        "/admin/records/vkpublicationreport/" in msg for msg in rendered_messages
+    )
+    assert job_record.operation_name == "Публикация в VK"
+    assert job_record.result == "Ожидает выполнения"
 
 
 @pytest.mark.django_db
-def test_vk_schedule_view_posts_even_times(settings):
+def test_vk_schedule_view_enqueues_even_times(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    calls: list[datetime] = []
-
-    class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            return 1
-
-    admin.vk_service = DummyVKService()
+    delayed_payloads = _patch_vk_enqueue(monkeypatch)
+    admin = RecordAdmin(Record, AdminSite())
 
     User = get_user_model()
     user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
+        username="admin",
+        email="admin@example.com",
+        password="pass",
     )
 
     r1 = Record.objects.create(
@@ -193,42 +234,377 @@ def test_vk_schedule_view_posts_even_times(settings):
     start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
     end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
 
-    start_utc = start_at.astimezone(ZoneInfo("UTC"))
-    end_utc = end_at.astimezone(ZoneInfo("UTC"))
-
     data = {
         "ids": [str(r1.pk), str(r2.pk), str(r3.pk)],
         "publish_from": start_at.strftime("%Y-%m-%dT%H:%M"),
         "publish_to": end_at.strftime("%Y-%m-%dT%H:%M"),
         "timezone": timezone.get_current_timezone_name(),
     }
-
     request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
     request.user = user
     request.session = {}
     request._messages = FallbackStorage(request)
 
     response = admin.vk_schedule_view(request)
+
     assert response.status_code == 302
-    assert calls == build_even_schedule(start_utc, end_utc, 3)
+    assert len(delayed_payloads) == 1
+    job = VKPublicationJob.objects.get(pk=delayed_payloads[0]["job_id"])
+    planned_times = list(
+        job.job_records.order_by("created", "id").values_list(
+            "planned_publish_at", flat=True
+        )
+    )
+    assert planned_times == build_even_schedule(
+        start_at.astimezone(ZoneInfo("UTC")),
+        end_at.astimezone(ZoneInfo("UTC")),
+        3,
+    )
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+    assert any(
+        "3 релизов отправлены в отложенную публикацию на стену VK." in msg
+        for msg in rendered_messages
+    )
+    assert any("Открыть лог" in msg for msg in rendered_messages)
+    assert any(
+        f"/admin/records/vkpublicationreport/?job__id__exact={job.id}" in msg
+        for msg in rendered_messages
+    )
 
 
 @pytest.mark.django_db
-def test_vk_schedule_view_collision_shifts_time(settings):
+def test_vk_schedule_view_single_record_uses_publish_from(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
+    delayed_payloads = _patch_vk_enqueue(monkeypatch)
+    admin = RecordAdmin(Record, AdminSite())
 
-    calls: list[datetime] = []
-    call_count = {"n": 0}
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="admin",
+        email="admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+
+    current_tz = timezone.get_current_timezone()
+    publish_at = timezone.make_aware(datetime(2025, 1, 1, 10, 15), current_tz)
+    data = {
+        "ids": [str(record.pk)],
+        "publish_at": publish_at.strftime("%Y-%m-%dT%H:%M"),
+        "timezone": timezone.get_current_timezone_name(),
+    }
+    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    response = admin.vk_schedule_view(request)
+
+    assert response.status_code == 302
+    assert len(delayed_payloads) == 1
+    job = VKPublicationJob.objects.get(pk=delayed_payloads[0]["job_id"])
+    job_record = job.job_records.get(record=record)
+    assert job.source == VKPublicationJob.Source.SCHEDULED_SINGLE
+    assert job_record.mode == VKPublicationJobRecord.Mode.SCHEDULED
+    assert job_record.planned_publish_at == publish_at.astimezone(ZoneInfo("UTC"))
+    assert job_record.operation_name == "Отложенная публикация в VK"
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+    assert any(
+        "Релиз «R1» отправлен в отложенную публикацию на стену VK." in msg
+        for msg in rendered_messages
+    )
+    assert any("Открыть лог" in msg for msg in rendered_messages)
+    assert any(
+        f"/admin/records/vkpublicationreport/{job_record.pk}/change/" in msg
+        for msg in rendered_messages
+    )
+
+
+@pytest.mark.django_db
+def test_vk_schedule_view_single_record_timezone_local(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    delayed_payloads = _patch_vk_enqueue(monkeypatch)
+    admin = RecordAdmin(Record, AdminSite())
+
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="admin",
+        email="admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+
+    tz_name = "Europe/Amsterdam"
+    data = {
+        "ids": [str(record.pk)],
+        "publish_at": "2025-01-01T10:00",
+        "timezone": tz_name,
+    }
+    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    response = admin.vk_schedule_view(request)
+
+    assert response.status_code == 302
+    assert len(delayed_payloads) == 1
+    job = VKPublicationJob.objects.get(pk=delayed_payloads[0]["job_id"])
+    job_record = job.job_records.get(record=record)
+    expected_dt = timezone.make_aware(
+        datetime(2025, 1, 1, 10, 0),
+        ZoneInfo(tz_name),
+    ).astimezone(ZoneInfo("UTC"))
+    assert job_record.planned_publish_at == expected_dt
+
+
+@pytest.mark.django_db
+def test_vk_schedule_view_single_record_requires_publish_at(settings):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    admin = RecordAdmin(Record, AdminSite())
+
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="admin",
+        email="admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+
+    data = {
+        "ids": [str(record.pk)],
+        "publish_at": "",
+        "timezone": timezone.get_current_timezone_name(),
+    }
+    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    response = admin.vk_schedule_view(request)
+
+    assert response.status_code == 200
+    assert not VKPublicationJob.objects.exists()
+    messages_list = list(messages.get_messages(request))
+    assert any("Укажите корректную дату и время" in str(msg) for msg in messages_list)
+
+
+@pytest.mark.django_db
+def test_vk_report_notification_is_shown_once():
+    user = get_user_model().objects.create_superuser(
+        username="vk-notify-admin",
+        email="vk-notify-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Notify VK")
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.COMPLETED_WITH_ERRORS,
+        requested_by_user=user,
+        total_records=1,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+        status=VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+        operation_name="Публикация в VK",
+        result="Пост опубликован только текстом",
+        result_message=(
+            "Пост опубликован только текстом: изображение релиза не загружено."
+        ),
+        notify_in_admin=True,
+        finished_at=timezone.now(),
+    )
+
+    request = RequestFactory().get("/admin/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    django_admin.site.each_context(request)
+
+    rendered_messages = [str(msg) for msg in messages.get_messages(request)]
+    assert any(
+        "Публикация на стену VK завершена для релиза «Notify VK»" in msg
+        for msg in rendered_messages
+    )
+    job_record.refresh_from_db()
+    assert job_record.admin_notification_shown_at is not None
+
+    second_request = RequestFactory().get("/admin/")
+    second_request.user = user
+    second_request.session = {}
+    second_request._messages = FallbackStorage(second_request)
+
+    django_admin.site.each_context(second_request)
+
+    second_messages = [str(msg) for msg in messages.get_messages(second_request)]
+    assert second_messages == []
+
+
+@pytest.mark.django_db
+def test_vk_report_full_success_notification_uses_success_level():
+    user = get_user_model().objects.create_superuser(
+        username="vk-success-admin",
+        email="vk-success-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(title="Girlcatcher")
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.COMPLETED,
+        requested_by_user=user,
+        total_records=1,
+    )
+    VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+        status=VKPublicationJobRecord.Status.COMPLETED,
+        operation_name="Публикация в VK",
+        result="Пост опубликован с изображением и аудио",
+        result_message="Пост опубликован с изображением и аудио.",
+        notify_in_admin=True,
+        finished_at=timezone.now(),
+    )
+
+    request = RequestFactory().get("/admin/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    django_admin.site.each_context(request)
+
+    rendered_messages = list(messages.get_messages(request))
+    assert len(rendered_messages) == 1
+    assert rendered_messages[0].level == messages.SUCCESS
+    assert "Публикация на стену VK завершена для релиза «Girlcatcher»" in str(
+        rendered_messages[0]
+    )
+
+
+@pytest.mark.django_db
+def test_process_vk_publication_record_logs_success(
+    settings, monkeypatch: pytest.MonkeyPatch
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.QUEUED,
+        total_records=1,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+    )
 
     class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            call_count["n"] += 1
-            if call_count["n"] == 1:
+        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
+            return VKPublicationResult(
+                post_id=123,
+                attachments=["photo1_2", "audio1_3"],
+                photo_expected=True,
+                photo_uploaded=True,
+                audio_expected_count=1,
+                audio_uploaded_count=1,
+                audio_failed_count=0,
+                failed_track_titles=[],
+            )
+
+    class DummyVKServiceFactory:
+        @classmethod
+        def from_settings(cls):
+            return DummyVKService()
+
+    monkeypatch.setattr(tasks_module, "VKService", DummyVKServiceFactory)
+
+    payload = tasks_module.process_vk_publication_record(
+        {"job_id": str(job.id), "job_record_id": str(job_record.id)}
+    )
+
+    job_record.refresh_from_db()
+    record.refresh_from_db()
+    job.refresh_from_db()
+    assert payload["status"] == VKPublicationJobRecord.Status.COMPLETED
+    assert job_record.status == VKPublicationJobRecord.Status.COMPLETED
+    assert job_record.vk_post_id == 123
+    assert record.vk_published_at is not None
+    assert job.status == VKPublicationJob.Status.COMPLETED
+    assert job_record.result == "Пост опубликован с изображением и аудио"
+    assert job_record.photo_uploaded is True
+    assert job_record.audio_uploaded_count == 1
+    assert job_record.audio_failed_count == 0
+
+
+@pytest.mark.django_db
+def test_process_vk_publication_record_retries_collision(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    planned_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo("UTC"))
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.SCHEDULED_LIST,
+        status=VKPublicationJob.Status.QUEUED,
+        total_records=2,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.SCHEDULED,
+        planned_publish_at=planned_at,
+    )
+    call_times: list[datetime | None] = []
+
+    class DummyVKService:
+        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
+            call_times.append(publish_at)
+            if len(call_times) == 1:
                 raise ApiError(
                     None,
                     "wall.post",
@@ -239,198 +615,92 @@ def test_vk_schedule_view_collision_shifts_time(settings):
                         "error_msg": "a post is already scheduled for this time",
                     },
                 )
-            return 1
+            return VKPublicationResult(
+                post_id=321,
+                attachments=["photo1_2", "audio1_3"],
+                photo_expected=True,
+                photo_uploaded=True,
+                audio_expected_count=1,
+                audio_uploaded_count=1,
+                audio_failed_count=0,
+                failed_track_titles=[],
+            )
 
-    admin.vk_service = DummyVKService()
+    class DummyVKServiceFactory:
+        @classmethod
+        def from_settings(cls):
+            return DummyVKService()
 
-    User = get_user_model()
-    user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
+    monkeypatch.setattr(tasks_module, "VKService", DummyVKServiceFactory)
+
+    payload = tasks_module.process_vk_publication_record(
+        {"job_id": str(job.id), "job_record_id": str(job_record.id)}
     )
 
-    r1 = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
-    )
-    r2 = Record.objects.create(
-        title="R2", release_year=2001, release_month=1, release_day=1
-    )
-
-    current_tz = timezone.get_current_timezone()
-    start_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), current_tz)
-    end_at = timezone.make_aware(datetime(2025, 1, 1, 12, 0), current_tz)
-    start_utc = start_at.astimezone(ZoneInfo("UTC"))
-    end_utc = end_at.astimezone(ZoneInfo("UTC"))
-    delta = (end_utc - start_utc) / 2
-
-    data = {
-        "ids": [str(r1.pk), str(r2.pk)],
-        "publish_from": start_at.strftime("%Y-%m-%dT%H:%M"),
-        "publish_to": end_at.strftime("%Y-%m-%dT%H:%M"),
-        "timezone": timezone.get_current_timezone_name(),
-    }
-
-    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
-    request.user = user
-    request.session = {}
-    request._messages = FallbackStorage(request)
-
-    response = admin.vk_schedule_view(request)
-    assert response.status_code == 302
-    assert calls[0] == start_utc
-    assert calls[1] == start_utc + delta
-    assert calls[2] == end_utc
-
-    messages_list = list(messages.get_messages(request))
-    assert any("время смещено" in str(msg) for msg in messages_list)
+    job_record.refresh_from_db()
+    assert payload["status"] == VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
+    assert call_times == [planned_at, planned_at + timedelta(minutes=30)]
+    assert job_record.effective_publish_at == planned_at + timedelta(minutes=30)
+    assert job_record.warning_message == "Время публикации автоматически изменено."
 
 
 @pytest.mark.django_db
-def test_vk_schedule_view_single_record_uses_publish_from(settings):
+def test_process_vk_publication_record_marks_text_only_warning(
+    settings, monkeypatch: pytest.MonkeyPatch
+):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    calls: list[datetime] = []
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.QUEUED,
+        total_records=1,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+    )
 
     class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            return 1
+        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
+            return VKPublicationResult(
+                post_id=555,
+                attachments=[],
+                photo_expected=True,
+                photo_uploaded=False,
+                audio_expected_count=2,
+                audio_uploaded_count=0,
+                audio_failed_count=0,
+                failed_track_titles=[],
+            )
 
-    admin.vk_service = DummyVKService()
+    class DummyVKServiceFactory:
+        @classmethod
+        def from_settings(cls):
+            return DummyVKService()
 
-    User = get_user_model()
-    user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
+    monkeypatch.setattr(tasks_module, "VKService", DummyVKServiceFactory)
+
+    payload = tasks_module.process_vk_publication_record(
+        {"job_id": str(job.id), "job_record_id": str(job_record.id)}
     )
 
-    record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
+    job_record.refresh_from_db()
+    job.refresh_from_db()
+    assert payload["status"] == VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
+    assert job_record.status == VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
+    assert (
+        job_record.result
+        == "Изображение релиза не загружено, поэтому аудио не добавлялось"
     )
-
-    current_tz = timezone.get_current_timezone()
-    publish_at = timezone.make_aware(datetime(2025, 1, 1, 10, 15), current_tz)
-
-    data = {
-        "ids": [str(record.pk)],
-        "publish_at": publish_at.strftime("%Y-%m-%dT%H:%M"),
-        "timezone": timezone.get_current_timezone_name(),
-    }
-
-    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
-    request.user = user
-    request.session = {}
-    request._messages = FallbackStorage(request)
-
-    response = admin.vk_schedule_view(request)
-    assert response.status_code == 302
-    expected_utc = publish_at.astimezone(ZoneInfo("UTC"))
-    assert calls == [expected_utc]
-
-    record.refresh_from_db()
-    assert record.vk_published_at == expected_utc
-
-    event = record.vk_publication_logs.order_by("-created").first()
-    assert event is not None
-    assert event.mode == VKPublicationLog.Mode.SCHEDULED
-    assert event.status == VKPublicationLog.Status.SUCCESS
-    assert event.planned_publish_at == expected_utc
-    assert event.effective_publish_at == expected_utc
-
-
-@pytest.mark.django_db
-def test_vk_schedule_view_single_record_timezone_local(settings):
-    settings.VK_ACCESS_TOKEN = "token"
-    settings.VK_GROUP_ID = "1"
-
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    calls: list[datetime] = []
-
-    class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            return 1
-
-    admin.vk_service = DummyVKService()
-
-    User = get_user_model()
-    user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
-    )
-
-    record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
-    )
-
-    tz_name = "Europe/Amsterdam"
-    data = {
-        "ids": [str(record.pk)],
-        "publish_at": "2025-01-01T10:00",
-        "timezone": tz_name,
-    }
-
-    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
-    request.user = user
-    request.session = {}
-    request._messages = FallbackStorage(request)
-
-    response = admin.vk_schedule_view(request)
-    assert response.status_code == 302
-    assert calls
-    expected_ts = int(
-        timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo(tz_name))
-        .astimezone(ZoneInfo("UTC"))
-        .timestamp()
-    )
-    assert int(calls[0].timestamp()) == expected_ts
-
-
-@pytest.mark.django_db
-def test_vk_schedule_view_single_record_requires_publish_at(settings):
-    settings.VK_ACCESS_TOKEN = "token"
-    settings.VK_GROUP_ID = "1"
-
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
-    calls: list[datetime] = []
-
-    class DummyVKService:
-        def post_record_with_audio(self, record, publish_at=None, **kwargs):
-            calls.append(publish_at)
-            return 1
-
-    admin.vk_service = DummyVKService()
-
-    User = get_user_model()
-    user = User.objects.create_superuser(
-        username="admin", email="admin@example.com", password="pass"
-    )
-
-    record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
-    )
-
-    data = {
-        "ids": [str(record.pk)],
-        "publish_at": "",
-        "timezone": timezone.get_current_timezone_name(),
-    }
-
-    request = RequestFactory().post("/admin/records/record/vk-schedule/", data=data)
-    request.user = user
-    request.session = {}
-    request._messages = FallbackStorage(request)
-
-    response = admin.vk_schedule_view(request)
-    assert response.status_code == 200
-    assert calls == []
-    messages_list = list(messages.get_messages(request))
-    assert any("Укажите корректную дату и время" in str(msg) for msg in messages_list)
+    assert job.status == VKPublicationJob.Status.COMPLETED_WITH_ERRORS
 
 
 def test_parse_datetime_uses_client_timezone():
@@ -442,11 +712,13 @@ def test_parse_datetime_uses_client_timezone():
     ny_dt = RecordAdmin._parse_datetime_local(raw, tz_ny)
 
     assert moscow_dt == timezone.make_aware(
-        datetime(2025, 1, 1, 10, 0), tz_moscow
+        datetime(2025, 1, 1, 10, 0),
+        tz_moscow,
     ).astimezone(ZoneInfo("UTC"))
-    assert ny_dt == timezone.make_aware(datetime(2025, 1, 1, 10, 0), tz_ny).astimezone(
-        ZoneInfo("UTC")
-    )
+    assert ny_dt == timezone.make_aware(
+        datetime(2025, 1, 1, 10, 0),
+        tz_ny,
+    ).astimezone(ZoneInfo("UTC"))
     assert moscow_dt != ny_dt
 
 
@@ -455,12 +727,14 @@ def test_record_admin_vk_published_at_display(settings):
     settings.VK_ACCESS_TOKEN = "token"
     settings.VK_GROUP_ID = "1"
 
-    admin_site = AdminSite()
-    admin = RecordAdmin(Record, admin_site)
-
+    admin = RecordAdmin(Record, AdminSite())
     record = Record.objects.create(
-        title="R1", release_year=2000, release_month=1, release_day=1
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
     )
+
     assert admin.vk_published_at_display(record) == "-"
 
     published_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo("UTC"))

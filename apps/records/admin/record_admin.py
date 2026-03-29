@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta, timezone as dt_timezone
+from datetime import timezone as dt_timezone
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -13,7 +13,6 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.html import format_html
-from vk_api.exceptions import ApiError
 from config.logging import log_event
 
 from core.middleware import ADMIN_TOO_MANY_FIELDS_SESSION_KEY
@@ -21,14 +20,16 @@ from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
 from records.forms import RecordForm
 from records.models import (
     Artist,
-    AudioEnrichmentJob,
-    AudioEnrichmentJobRecord,
+    ReleaseJob,
+    ReleaseReport,
     AudioEnrichmentTrackResult,
     Format,
     Genre,
     Record,
     Style,
     Track,
+    VKPublicationJob,
+    VKPublicationReport,
     VKPublicationLog,
 )
 from records.services.audio.audio_service import AudioService
@@ -43,7 +44,6 @@ from records.services.record_assembly import (
     ensure_legacy_formats,
 )
 from records.services.record_service import RecordService
-from records.services.social.publication_log import register_vk_publication_event
 from records.services.social.schedule import build_even_schedule
 from records.services.social.vk_service import VKService
 from .actions import (
@@ -60,11 +60,42 @@ from .mixins import RedeyeAudioRefreshMixin, YouTubeAudioRefreshMixin
 logger = logging.getLogger(__name__)
 _RECORD_ADMIN_COMPONENT = "админка релизов"
 _SERVICE_ADMIN_MODELS = {
-    "audioenrichmentjob",
-    "audioenrichmentjobrecord",
-    "audioenrichmenttrackresult",
-    "vkpublicationlog",
+    "releasejob",
+    "vkpublicationjob",
 }
+
+_APP_ORDER = {
+    "accounts": 0,
+    "auth": 1,
+    "authtoken": 2,
+    "orders": 3,
+    "records": 90,
+    "service": 99,
+}
+
+_RECORDS_MODEL_ORDER = {
+    "record": 0,
+    "releasereport": 1,
+    "vkpublicationreport": 2,
+}
+
+_SERVICE_MODEL_ORDER = {
+    "releasejob": 0,
+    "vkpublicationjob": 1,
+}
+
+
+def _release_report_changelist_url(*, job_id: object) -> str:
+    return (
+        f"{reverse('admin:records_releasereport_changelist')}?job__id__exact={job_id}"
+    )
+
+
+def _vk_report_changelist_url(*, job_id: object) -> str:
+    return (
+        f"{reverse('admin:records_vkpublicationreport_changelist')}"
+        f"?job__id__exact={job_id}"
+    )
 
 
 def _log_record_admin_event(
@@ -102,10 +133,26 @@ def _group_service_models_in_admin(app_list: list[dict]) -> list[dict]:
             else:
                 kept_models.append(model_info)
         if kept_models:
+            kept_models.sort(
+                key=lambda item: (
+                    _RECORDS_MODEL_ORDER.get(
+                        str(item.get("object_name") or "").lower(), 100
+                    ),
+                    str(item.get("name") or ""),
+                )
+            )
             app["models"] = kept_models
             filtered_apps.append(app)
 
     if service_models:
+        service_models.sort(
+            key=lambda item: (
+                _SERVICE_MODEL_ORDER.get(
+                    str(item.get("object_name") or "").lower(), 100
+                ),
+                str(item.get("name") or ""),
+            )
+        )
         filtered_apps.append(
             {
                 "name": "Служебные",
@@ -115,17 +162,141 @@ def _group_service_models_in_admin(app_list: list[dict]) -> list[dict]:
                 "models": service_models,
             }
         )
+    filtered_apps.sort(
+        key=lambda app: (
+            _APP_ORDER.get(str(app.get("app_label") or "").lower(), 50),
+            str(app.get("name") or ""),
+        )
+    )
     return filtered_apps
 
 
+def _emit_release_report_notifications(request: HttpRequest) -> None:
+    reports = list(
+        ReleaseReport.objects.select_related("record", "job")
+        .filter(
+            job__requested_by_user=request.user,
+            notify_in_admin=True,
+            admin_notification_shown_at__isnull=True,
+            finished_at__isnull=False,
+        )
+        .order_by("finished_at", "created")[:20]
+    )
+    if not reports:
+        return
+
+    shown_at = timezone.now()
+    shown_ids: list[str] = []
+    for report in reports:
+        details = (
+            report.error_message
+            or report.warning_message
+            or report.result_message
+            or report.result
+        ).strip()
+        if report.status == ReleaseReport.Status.FAILED:
+            messages.error(
+                request,
+                f"Операция «{report.operation_name}» для релиза «{report.record}» не удалась. Причина: {details}",
+            )
+        elif (
+            report.status == ReleaseReport.Status.COMPLETED
+            and not report.warning_message
+            and not report.error_message
+        ):
+            messages.success(
+                request,
+                f"Операция «{report.operation_name}» для релиза «{report.record}» завершена: {details}",
+            )
+        else:
+            messages.warning(
+                request,
+                f"Операция «{report.operation_name}» для релиза «{report.record}» завершена: {details}",
+            )
+        shown_ids.append(str(report.pk))
+
+    ReleaseReport.objects.filter(pk__in=shown_ids).update(
+        admin_notification_shown_at=shown_at
+    )
+
+
+def _emit_vk_report_notifications(request: HttpRequest) -> None:
+    reports = list(
+        VKPublicationReport.objects.select_related("record", "job")
+        .filter(
+            job__requested_by_user=request.user,
+            notify_in_admin=True,
+            admin_notification_shown_at__isnull=True,
+            finished_at__isnull=False,
+        )
+        .order_by("finished_at", "created")[:20]
+    )
+    if not reports:
+        return
+
+    shown_at = timezone.now()
+    shown_ids: list[str] = []
+    for report in reports:
+        details = (
+            report.error_message
+            or report.warning_message
+            or report.result_message
+            or report.result
+        ).strip()
+        if report.status == VKPublicationReport.Status.FAILED:
+            messages.error(
+                request,
+                f"Публикация на стену VK не удалась для релиза «{report.record}». Причина: {details}",
+            )
+        elif (
+            report.status == VKPublicationReport.Status.COMPLETED
+            and not report.warning_message
+            and not report.error_message
+        ):
+            messages.success(
+                request,
+                f"Публикация на стену VK завершена для релиза «{report.record}»: {details}",
+            )
+        else:
+            messages.warning(
+                request,
+                f"Публикация на стену VK завершена для релиза «{report.record}»: {details}",
+            )
+        shown_ids.append(str(report.pk))
+
+    VKPublicationReport.objects.filter(pk__in=shown_ids).update(
+        admin_notification_shown_at=shown_at
+    )
+
+
+def _emit_async_report_notifications(request: HttpRequest) -> None:
+    if getattr(request, "_async_report_notifications_emitted", False):
+        return
+    if not getattr(request, "user", None) or not request.user.is_authenticated:
+        return
+
+    _emit_release_report_notifications(request)
+    _emit_vk_report_notifications(request)
+    setattr(request, "_async_report_notifications_emitted", True)
+
+
 _original_get_app_list = admin.site.get_app_list
+_original_each_context = admin.site.each_context
 
 
-def _get_app_list_with_service(request: HttpRequest) -> list[dict]:
-    return _group_service_models_in_admin(_original_get_app_list(request))
+def _get_app_list_with_service(
+    request: HttpRequest, app_label: str | None = None
+) -> list[dict]:
+    return _group_service_models_in_admin(_original_get_app_list(request, app_label))
+
+
+def _each_context_with_async_notifications(request: HttpRequest) -> dict:
+    _emit_async_report_notifications(request)
+    return _original_each_context(request)
 
 
 admin.site.get_app_list = _get_app_list_with_service
+admin.site.each_context = _each_context_with_async_notifications
 
 
 @admin.register(Record)
@@ -361,7 +532,7 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
     def is_expected_display(self, obj: Record) -> bool:
         return bool(obj.is_expected)
 
-    @admin.display(description="RECORD ID", ordering="pk")
+    @admin.display(description="ID РЕЛИЗА", ordering="pk")
     def record_id_display(self, obj: Record) -> int:
         return int(obj.pk)
 
@@ -428,7 +599,31 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         try:
             track.audio_preview.delete(save=False)
             track.audio_preview = None
-            track.save(update_fields=["audio_preview", "modified"])
+            track.audio_source = Track.AudioSource.UNKNOWN
+            track.save(update_fields=["audio_preview", "audio_source", "modified"])
+            self.record_service.create_sync_release_report(
+                record=record,
+                requested_by_user_id=getattr(request.user, "id", None),
+                source="manual_record",
+                operation_name="Удаление аудио у трека",
+                scope=ReleaseReport.Scope.TRACK,
+                release_source_name="",
+                audio_source_summary="Не указан",
+                result="Аудио у трека удалено",
+                result_message=f"У трека «{track.title}» удалено прикрепленное аудио.",
+                tracks_total=1,
+                updated_count=1,
+                track_results_json=[
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Удаление аудио у трека",
+                        "status": "Удалено",
+                        "source": "Не указан",
+                        "message": "Аудио у трека удалено.",
+                    }
+                ],
+            )
         except Exception as exc:
             _log_record_admin_event(
                 logging.ERROR,
@@ -440,6 +635,31 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
                 error=str(exc),
             )
             logger.exception("Детали ошибки удаления mp3 трека из админки.")
+            self.record_service.create_sync_release_report(
+                record=record,
+                requested_by_user_id=getattr(request.user, "id", None),
+                source="manual_record",
+                operation_name="Удаление аудио у трека",
+                scope=ReleaseReport.Scope.TRACK,
+                release_source_name="",
+                audio_source_summary="Не указан",
+                status=ReleaseReport.Status.FAILED,
+                result="Операция завершилась с ошибкой",
+                result_message="Удаление аудио у трека завершилось с ошибкой.",
+                error_message=str(exc),
+                tracks_total=1,
+                error_count=1,
+                track_results_json=[
+                    {
+                        "track_id": str(track.pk),
+                        "track_title": track.title,
+                        "action": "Удаление аудио у трека",
+                        "status": "Ошибка",
+                        "source": "Не указан",
+                        "message": str(exc),
+                    }
+                ],
+            )
             return JsonResponse(
                 {"ok": False, "error": "Не удалось удалить mp3-файл."},
                 status=500,
@@ -601,74 +821,52 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
 
                     if total == 1:
                         times = [publish_from]
-                        step = None
                     else:
                         times = build_even_schedule(publish_from, publish_to, total)
-                        step = (publish_to - publish_from) / (total - 1)
-
-                    delta = self._get_retry_delta(step)
-                    ok = fail = 0
-                    failed: list[str] = []
-
-                    for record, publish_at in zip(queryset, times, strict=False):
-                        try:
-                            success, final_at, shifted = self._post_with_retry(
-                                vk_service=vk_service,
-                                record=record,
-                                publish_at=publish_at,
-                                delta=delta,
-                                max_retries=10,
-                            )
-                            if not success:
-                                raise ApiError(
-                                    None,
-                                    "wall.post",
-                                    {},
-                                    {},
-                                    {
-                                        "error_code": 214,
-                                        "error_msg": (
-                                            "Access to adding post denied: "
-                                            "a post is already scheduled for this time."
-                                        ),
-                                    },
-                                )
-                            ok += 1
-                            if shifted:
-                                messages.info(
-                                    request,
-                                    self._format_shift_message(
-                                        record=record,
-                                        original_at=publish_at,
-                                        new_at=final_at,
-                                    ),
-                                )
-                            register_vk_publication_event(
-                                record=record,
-                                mode=VKPublicationLog.Mode.SCHEDULED,
-                                status=VKPublicationLog.Status.SUCCESS,
-                                planned_publish_at=publish_at,
-                                effective_publish_at=final_at,
-                            )
-                        except Exception as exc:
-                            fail += 1
-                            failed.append(f"#{record.pk} «{record}»: {exc!s}")
-                            register_vk_publication_event(
-                                record=record,
-                                mode=VKPublicationLog.Mode.SCHEDULED,
-                                status=VKPublicationLog.Status.FAILED,
-                                planned_publish_at=publish_at,
-                                error_message=str(exc),
-                            )
-
-                    if ok:
-                        messages.success(
-                            request,
-                            f"Запланировано публикаций: {ok} из {total}.",
+                    schedule_items = [
+                        (record.pk, publish_at)
+                        for record, publish_at in zip(queryset, times, strict=False)
+                    ]
+                    try:
+                        job = self.record_service.enqueue_vk_scheduled_publication(
+                            schedule_items=schedule_items,
+                            requested_by_user_id=getattr(request.user, "id", None),
+                            single_record=total == 1,
                         )
-                    if fail:
-                        messages.error(request, f"Ошибки при планировании: {fail}.")
-                        messages.error(request, "Ошибки:\n• " + "\n• ".join(failed))
+                    except Exception as exc:  # noqa: BLE001
+                        messages.error(
+                            request,
+                            f"Не удалось поставить публикацию в VK в очередь: {exc!s}",
+                        )
+                        return HttpResponseRedirect(
+                            reverse("admin:records_record_changelist")
+                        )
+
+                    first_report = job.job_records.order_by("created", "id").first()
+                    report_url = (
+                        reverse(
+                            "admin:records_vkpublicationreport_change",
+                            args=[first_report.pk],
+                        )
+                        if total == 1 and first_report is not None
+                        else _vk_report_changelist_url(job_id=job.pk)
+                    )
+                    messages.success(
+                        request,
+                        (
+                            f"Релиз «{queryset.first()}» отправлен в отложенную "
+                            "публикацию на стену VK."
+                            if total == 1
+                            else f"{total} релизов отправлены в отложенную публикацию на стену VK."
+                        ),
+                    )
+                    messages.info(
+                        request,
+                        format_html(
+                            'Логи публикации: <a href="{}">Открыть лог</a>.',
+                            report_url,
+                        ),
+                    )
 
                     return HttpResponseRedirect(
                         reverse("admin:records_record_changelist")
@@ -692,52 +890,6 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         return TemplateResponse(
             request, "admin/records/record/vk_schedule.html", context
         )
-
-    @staticmethod
-    def _get_retry_delta(step):
-        if step is None:
-            return timedelta(minutes=5)
-        if step.total_seconds() <= 0:
-            return timedelta(minutes=5)
-        return step / 2
-
-    @staticmethod
-    def _format_shift_message(*, record: Record, original_at, new_at) -> str:
-        def _fmt(value):
-            if timezone.is_aware(value):
-                value = timezone.localtime(value)
-            return value.strftime("%Y-%m-%d %H:%M")
-
-        return (
-            f"Запись #{record.pk} «{record}» была запланирована на {_fmt(original_at)}, "
-            f"но это время занято во ВК; время смещено на {_fmt(new_at)}."
-        )
-
-    @staticmethod
-    def _post_with_retry(
-        *,
-        vk_service: VKService,
-        record: Record,
-        publish_at,
-        delta,
-        max_retries: int,
-    ) -> tuple[bool, object, bool]:
-        attempts = 0
-        current_at = publish_at
-        shifted = False
-
-        while True:
-            try:
-                vk_service.post_record_with_audio(record=record, publish_at=current_at)
-                return True, current_at, shifted
-            except ApiError as exc:
-                if exc.code != 214:
-                    raise
-                attempts += 1
-                shifted = True
-                if attempts > max_retries:
-                    return False, current_at, shifted
-                current_at = current_at + delta
 
     @staticmethod
     def _parse_datetime_local(value: str, tz):
@@ -901,8 +1053,10 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             super().get_deleted_objects(objs, request)
         )
         ignored_verbose_names = {
-            AudioEnrichmentJobRecord._meta.verbose_name,
+            ReleaseReport._meta.verbose_name,
             AudioEnrichmentTrackResult._meta.verbose_name,
+            VKPublicationJob._meta.verbose_name,
+            VKPublicationReport._meta.verbose_name,
             VKPublicationLog._meta.verbose_name,
         }
         filtered_perms_needed = {
@@ -954,25 +1108,21 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             )
         job_id = getattr(obj, "_discogs_enrichment_job_id", None)
         if job_id:
-            report_url = reverse(
-                "admin:records_audioenrichmentjob_change", args=[job_id]
-            )
+            report_url = _release_report_changelist_url(job_id=job_id)
             messages.info(
                 request,
                 format_html(
-                    'Поставлена в очередь задача YouTube enrichment: <a href="{}">Открыть job report</a>.',
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
                     report_url,
                 ),
             )
         redeye_job_id = getattr(obj, "_redeye_enrichment_job_id", None)
         if redeye_job_id:
-            report_url = reverse(
-                "admin:records_audioenrichmentjob_change", args=[redeye_job_id]
-            )
+            report_url = _release_report_changelist_url(job_id=redeye_job_id)
             messages.info(
                 request,
                 format_html(
-                    'Поставлена в очередь задача Redeye enrichment: <a href="{}">Открыть job report</a>.',
+                    'Логи операции: <a href="{}">Открыть лог</a>.',
                     report_url,
                 ),
             )
@@ -1138,6 +1288,9 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
     ) -> bool:
         return False
 
+    def get_model_perms(self, request: HttpRequest) -> dict[str, bool]:
+        return {}
+
     @admin.display(description="Релиз", ordering="record__title")
     def record_link(self, obj: VKPublicationLog) -> str:
         record = getattr(obj, "record", None)
@@ -1147,8 +1300,168 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
         return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)
 
 
-@admin.register(AudioEnrichmentJob)
-class AudioEnrichmentJobAdmin(admin.ModelAdmin):
+@admin.register(VKPublicationJob)
+class VKPublicationJobAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "source",
+        "status",
+        "requested_by_user",
+        "total_records",
+        "success_count",
+        "skipped_count",
+        "error_count",
+        "created",
+        "started_at",
+        "finished_at",
+    )
+    list_filter = ("source", "status", "created")
+    search_fields = ("id", "requested_by_user__username")
+    ordering = ("-created",)
+    readonly_fields = (
+        "id",
+        "source",
+        "status",
+        "requested_by_user",
+        "total_records",
+        "success_count",
+        "skipped_count",
+        "error_count",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[VKPublicationJob] = None
+    ) -> bool:
+        return False
+
+
+@admin.register(VKPublicationReport)
+class VKPublicationReportAdmin(admin.ModelAdmin):
+    list_display = (
+        "log_link",
+        "record_link",
+        "operation_name",
+        "release_source_name",
+        "audio_source_summary",
+        "mode",
+        "status",
+        "stage",
+        "result",
+        "planned_publish_at",
+        "effective_publish_at",
+        "photo_uploaded",
+        "audio_uploaded_count",
+        "audio_failed_count",
+        "vk_post_id",
+        "created",
+        "queued_at",
+        "started_at",
+        "finished_at",
+    )
+    list_display_links = ("log_link",)
+    list_filter = ("mode", "status", "created", "result", "release_source_name")
+    search_fields = (
+        "id",
+        "job__id",
+        "record__title",
+        "record__catalog_number",
+        "result_message",
+        "warning_message",
+        "error_message",
+    )
+    ordering = ("-created",)
+    autocomplete_fields = ("job", "record")
+    list_select_related = ("job", "record")
+    readonly_fields = (
+        "log_link",
+        "record_link",
+        "record",
+        "operation_name",
+        "release_source_name",
+        "audio_source_summary",
+        "mode",
+        "status",
+        "stage",
+        "result",
+        "result_message",
+        "warning_message",
+        "planned_publish_at",
+        "effective_publish_at",
+        "queued_at",
+        "photo_expected",
+        "photo_uploaded",
+        "audio_expected_count",
+        "audio_uploaded_count",
+        "audio_failed_count",
+        "failed_track_titles",
+        "vk_post_id",
+        "error_message",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+    fields = (
+        "log_link",
+        "record_link",
+        "operation_name",
+        "release_source_name",
+        "audio_source_summary",
+        "mode",
+        "status",
+        "stage",
+        "result",
+        "result_message",
+        "warning_message",
+        "planned_publish_at",
+        "effective_publish_at",
+        "queued_at",
+        "photo_expected",
+        "photo_uploaded",
+        "audio_expected_count",
+        "audio_uploaded_count",
+        "audio_failed_count",
+        "failed_track_titles",
+        "vk_post_id",
+        "error_message",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: Optional[VKPublicationReport] = None
+    ) -> bool:
+        return False
+
+    @admin.display(description="Лог", ordering="id")
+    def log_link(self, obj: VKPublicationReport) -> str:
+        url = reverse("admin:records_vkpublicationreport_change", args=[obj.pk])
+        short_id = f"{obj.pk.hex[:8]}…"
+        return format_html('<a href="{}">#{} </a>', url, short_id)
+
+    @admin.display(description="Релиз", ordering="record__title")
+    def record_link(self, obj: VKPublicationReport) -> str:
+        record = getattr(obj, "record", None)
+        if not record:
+            return "—"
+        url = reverse("admin:records_record_change", args=[record.pk])
+        return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)
+
+
+@admin.register(ReleaseJob)
+class ReleaseJobAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "source",
@@ -1188,41 +1501,90 @@ class AudioEnrichmentJobAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(
-        self, request: HttpRequest, obj: Optional[AudioEnrichmentJob] = None
+        self, request: HttpRequest, obj: Optional[ReleaseJob] = None
     ) -> bool:
         return False
 
 
-@admin.register(AudioEnrichmentJobRecord)
-class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
+@admin.register(ReleaseReport)
+class ReleaseReportAdmin(admin.ModelAdmin):
     list_display = (
-        "id",
-        "job",
+        "log_link",
         "record_link",
+        "operation_name",
+        "scope",
         "status",
+        "stage",
+        "result",
         "reason_code",
+        "tracks_total",
         "updated_count",
         "skipped_count",
         "error_count",
         "created",
+        "queued_at",
         "started_at",
         "finished_at",
     )
-    list_display_links = ("id",)
-    list_filter = ("status", "reason_code", "created")
-    search_fields = ("id", "job__id", "record__title", "record__catalog_number")
+    list_display_links = ("log_link",)
+    list_filter = ("status", "scope", "reason_code", "created")
+    search_fields = (
+        "id",
+        "job__id",
+        "record__title",
+        "record__catalog_number",
+        "operation_name",
+        "result",
+    )
     ordering = ("-created",)
     autocomplete_fields = ("job", "record")
     list_select_related = ("job", "record")
     readonly_fields = (
-        "id",
-        "job",
+        "log_link",
+        "record_link",
         "record",
+        "operation_name",
+        "scope",
+        "release_source_name",
+        "audio_source_summary",
         "status",
+        "stage",
+        "result",
+        "result_message",
         "reason_code",
+        "tracks_total",
         "updated_count",
         "skipped_count",
         "error_count",
+        "track_results_json",
+        "warning_message",
+        "error_message",
+        "queued_at",
+        "started_at",
+        "finished_at",
+        "created",
+        "modified",
+    )
+    fields = (
+        "log_link",
+        "record_link",
+        "operation_name",
+        "scope",
+        "release_source_name",
+        "audio_source_summary",
+        "status",
+        "stage",
+        "result",
+        "result_message",
+        "reason_code",
+        "tracks_total",
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "track_results_json",
+        "warning_message",
+        "error_message",
+        "queued_at",
         "started_at",
         "finished_at",
         "created",
@@ -1233,12 +1595,18 @@ class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(
-        self, request: HttpRequest, obj: Optional[AudioEnrichmentJobRecord] = None
+        self, request: HttpRequest, obj: Optional[ReleaseReport] = None
     ) -> bool:
         return False
 
+    @admin.display(description="Лог", ordering="id")
+    def log_link(self, obj: ReleaseReport) -> str:
+        url = reverse("admin:records_releasereport_change", args=[obj.pk])
+        short_id = f"{obj.pk.hex[:8]}…"
+        return format_html('<a href="{}">#{} </a>', url, short_id)
+
     @admin.display(description="Релиз", ordering="record__title")
-    def record_link(self, obj: AudioEnrichmentJobRecord) -> str:
+    def record_link(self, obj: ReleaseReport) -> str:
         record = getattr(obj, "record", None)
         if not record:
             return "—"
@@ -1287,6 +1655,9 @@ class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
         self, request: HttpRequest, obj: Optional[AudioEnrichmentTrackResult] = None
     ) -> bool:
         return False
+
+    def get_model_perms(self, request: HttpRequest) -> dict[str, bool]:
+        return {}
 
     @admin.display(description="Релиз", ordering="track__record__title")
     def record_link(self, obj: AudioEnrichmentTrackResult) -> str:
