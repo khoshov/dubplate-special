@@ -5,89 +5,91 @@
   <div class="tabular inline-related structured-format-inline {% if forloop.last %}last-related{% endif %}"
        data-structured-format-group
        data-has-multiple-variants="{% if inline_admin_formset.formset.total_form_count > 1 %}1{% else %}0{% endif %}">
-{{ inline_admin_formset.formset.management_form }}
-<input type="hidden"
-       name="active_structured_format_variant"
-       id="id_active_structured_format_variant"
-       value="{{ inline_admin_formset.formset.instance.active_structured_format_variant|default_if_none:'' }}"
-       data-structured-active-variant>
-<fieldset class="module {{ inline_admin_formset.classes }}" aria-labelledby="{{ inline_admin_formset.formset.prefix }}-heading">
-  <h2 id="{{ inline_admin_formset.formset.prefix }}-heading" class="inline-heading">
-    {{ inline_admin_formset.opts.verbose_name_plural|capfirst }}
-  </h2>
-  {{ inline_admin_formset.formset.non_form_errors }}
-  <div class="wrapper">
-    <table>
-      <colgroup>
-        <col class="original">
-        {% if inline_admin_formset.formset.total_form_count > 1 %}
-          <col class="col-variant_of_format">
-        {% endif %}
-        <col class="col-carrier">
-        <col class="col-quantity">
-        <col class="col-format_name">
-        <col class="col-details">
-      </colgroup>
-      <thead>
-        <tr>
-          <th class="original"></th>
-          {% if inline_admin_formset.formset.total_form_count > 1 %}
-            <th class="column-variant_of_format">Вариант<br>формата</th>
-          {% endif %}
-          {% for field in inline_admin_formset.fields %}
-            <th class="column-{{ field.name }}{% if field.required %} required{% endif %}{% if field.widget.is_hidden %} hidden{% endif %}">
-              {{ field.label|capfirst }}
-            </th>
-          {% endfor %}
-        </tr>
-      </thead>
-      <tbody>
-        {% for inline_admin_form in inline_admin_formset %}
-          {% if inline_admin_form.form.non_field_errors %}
-            <tr class="row-form-errors">
-              <td colspan="{% if inline_admin_formset.formset.total_form_count > 1 %}{{ inline_admin_form|cell_count|add:'1' }}{% else %}{{ inline_admin_form|cell_count }}{% endif %}">{{ inline_admin_form.form.non_field_errors }}</td>
-            </tr>
-          {% endif %}
-          <tr class="form-row {% if inline_admin_form.original or inline_admin_form.show_url %}has_original{% endif %}{% if forloop.last and inline_admin_formset.has_add_permission %} empty-form{% endif %}"
-              id="{{ inline_admin_formset.formset.prefix }}-{% if forloop.last and inline_admin_formset.has_add_permission %}empty{% else %}{{ forloop.counter0 }}{% endif %}"
-              data-structured-format-variant="{{ inline_admin_form.form.instance.variant_of_format|default:forloop.counter }}">
-            <td class="original">
-              {% if inline_admin_form.original %}<p>{{ inline_admin_form.original }}</p>{% endif %}
-              {% if inline_admin_form.needs_explicit_pk_field %}{{ inline_admin_form.pk_field.field }}{% endif %}
-              {% if inline_admin_form.fk_field %}{{ inline_admin_form.fk_field.field }}{% endif %}
-            </td>
+    <input type="hidden"
+           name="active_structured_format_variant"
+           id="id_active_structured_format_variant"
+           value="{{ inline_admin_formset.formset.instance.active_structured_format_variant|default_if_none:'' }}"
+           data-structured-active-variant>
+    <fieldset class="module relative min-w-0 {{ inline_admin_formset.classes }}" aria-labelledby="{{ inline_admin_formset.formset.prefix }}-heading">
+      <h2 id="{{ inline_admin_formset.formset.prefix }}-heading" class="font-semibold mb-3 text-font-important-light text-base dark:text-font-important-dark inline-heading">
+        {{ inline_admin_formset.opts.verbose_name_plural|capfirst }}
+      </h2>
+
+      <div class="formset-wrapper wrapper border border-base-200 overflow-x-auto relative shadow-xs rounded-default dark:border-base-800" data-simplebar data-simplebar-auto-hide="false">
+        {{ inline_admin_formset.formset.management_form }}
+        {{ inline_admin_formset.formset.non_form_errors }}
+
+        <table id="{{ inline_admin_formset.formset.prefix }}-data" class="formset w-full">
+          <colgroup>
+            <col class="original">
             {% if inline_admin_formset.formset.total_form_count > 1 %}
-              <td class="field-variant_of_format">
-                <select class="structured-format-variant-select"
-                        data-structured-format-selector
-                        aria-label="Вариант формата">
-                  {% for option_form in inline_admin_formset %}
-                    <option value="{{ option_form.form.instance.variant_of_format|default:forloop.counter }}">
-                      {{ option_form.form.instance.variant_of_format|default:forloop.counter }}
-                    </option>
-                  {% endfor %}
-                </select>
-              </td>
+              <col class="col-variant_of_format">
             {% endif %}
-            {% for fieldset in inline_admin_form %}
-              {% for line in fieldset %}
-                {% for field in line %}
-                  <td class="{% if field.field.name %}field-{{ field.field.name }}{% endif %}{% if field.field.is_hidden %} hidden{% endif %}">
-                    {% if field.is_readonly %}
-                      <p>{{ field.contents }}</p>
-                    {% else %}
-                      {{ field.field.errors.as_ul }}
-                      {{ field.field }}
-                    {% endif %}
-                  </td>
-                {% endfor %}
+            <col class="col-carrier">
+            <col class="col-quantity">
+            <col class="col-format_name">
+            <col class="col-details">
+          </colgroup>
+          <thead class="hidden relative lg:table-header-group">
+            <tr>
+              <th class="original"></th>
+              {% if inline_admin_formset.formset.total_form_count > 1 %}
+                <th class="column-variant_of_format align-middle border-b border-base-200 dark:border-base-800 font-semibold px-1.5 first:pl-3 last:pr-3 py-2 text-left text-font-important-light text-sm whitespace-nowrap dark:text-font-important-dark">Вариант<br>формата</th>
+              {% endif %}
+              {% for field in inline_admin_formset.fields %}
+                <th class="column-{{ field.name }}{% if field.required %} required{% endif %}{% if field.widget.is_hidden %} hidden{% endif %} align-middle border-b border-base-200 dark:border-base-800 font-semibold px-1.5 first:pl-3 last:pr-3 py-2 text-left text-font-important-light text-sm whitespace-nowrap dark:text-font-important-dark">
+                  {{ field.label|capfirst }}{% if field.required %}<span class="text-red-600 dark:text-red-500">*</span>{% endif %}
+                </th>
               {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for inline_admin_form in inline_admin_formset %}
+              {% if inline_admin_form.form.non_field_errors %}
+                <tr class="row-form-errors">
+                  <td colspan="{% if inline_admin_formset.formset.total_form_count > 1 %}{{ inline_admin_form|cell_count|add:'1' }}{% else %}{{ inline_admin_form|cell_count }}{% endif %}" class="px-3 py-3 border-b border-base-200 dark:border-base-800">{{ inline_admin_form.form.non_field_errors }}</td>
+                </tr>
+              {% endif %}
+              <tr class="form-row {% if inline_admin_form.original or inline_admin_form.show_url %}has_original{% endif %}{% if forloop.last and inline_admin_formset.has_add_permission %} empty-form{% endif %}"
+                  id="{{ inline_admin_formset.formset.prefix }}-{% if forloop.last and inline_admin_formset.has_add_permission %}empty{% else %}{{ forloop.counter0 }}{% endif %}"
+                  data-structured-format-variant="{{ inline_admin_form.form.instance.variant_of_format|default:forloop.counter }}">
+                <td class="original">
+                  {% if inline_admin_form.original %}<p>{{ inline_admin_form.original }}</p>{% endif %}
+                  {% if inline_admin_form.needs_explicit_pk_field %}{{ inline_admin_form.pk_field.field }}{% endif %}
+                  {% if inline_admin_form.fk_field %}{{ inline_admin_form.fk_field.field }}{% endif %}
+                </td>
+                {% if inline_admin_formset.formset.total_form_count > 1 %}
+                  <td class="field-variant_of_format min-h-[62.5px] align-middle border-b border-base-200 dark:border-base-800 px-3 py-3 lg:px-1.5 lg:first:pl-3 lg:last:pr-3 text-left">
+                    <select class="structured-format-variant-select"
+                            data-structured-format-selector
+                            aria-label="Вариант формата">
+                      {% for option_form in inline_admin_formset %}
+                        <option value="{{ option_form.form.instance.variant_of_format|default:forloop.counter }}">
+                          {{ option_form.form.instance.variant_of_format|default:forloop.counter }}
+                        </option>
+                      {% endfor %}
+                    </select>
+                  </td>
+                {% endif %}
+                {% for fieldset in inline_admin_form %}
+                  {% for line in fieldset %}
+                    {% for field in line %}
+                      <td class="{% if field.field.name %}field-{{ field.field.name }}{% endif %}{% if field.field.is_hidden %} hidden{% endif %} min-h-[62.5px] align-middle border-b border-base-200 dark:border-base-800 group field-tabular px-3 py-3 lg:px-1.5 lg:first:pl-3 lg:last:pr-3 text-left">
+                        {% if field.is_readonly %}
+                          <p class="mb-0">{{ field.contents }}</p>
+                        {% else %}
+                          {{ field.field.errors.as_ul }}
+                          {{ field.field }}
+                        {% endif %}
+                      </td>
+                    {% endfor %}
+                  {% endfor %}
+                {% endfor %}
+              </tr>
             {% endfor %}
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</fieldset>
+          </tbody>
+        </table>
+      </div>
+    </fieldset>
   </div>
 </div>
