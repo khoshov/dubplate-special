@@ -114,7 +114,7 @@ UNFOLD = {
         "show_all_applications": True,
         "navigation": [
             {
-                "title": _("Navigation"),
+                "title": _("Workspace"),
                 "separator": True,
                 "items": [
                     {
@@ -122,6 +122,55 @@ UNFOLD = {
                         "icon": "dashboard",
                         "link": reverse_lazy("admin:index"),
                     },
+                    {
+                        "title": _("Records"),
+                        "icon": "album",
+                        "link": reverse_lazy("admin:records_record_changelist"),
+                    },
+                    {
+                        "title": _("Orders"),
+                        "icon": "shopping_cart",
+                        "link": reverse_lazy("admin:orders_order_changelist"),
+                    },
+                    {
+                        "title": _("Users"),
+                        "icon": "group",
+                        "link": reverse_lazy("admin:accounts_user_changelist"),
+                    },
+                    {
+                        "title": _("Exchange rate"),
+                        "icon": "currency_exchange",
+                        "link": reverse_lazy("admin:core_currencyrate_change"),
+                    },
+                ],
+            },
+            {
+                "title": _("Operations"),
+                "separator": True,
+                "items": [
+                    {
+                        "title": _("VK publications"),
+                        "icon": "campaign",
+                        "link": reverse_lazy("admin:records_vkpublicationlog_changelist"),
+                    },
+                    {
+                        "title": _("Audio jobs"),
+                        "icon": "queue_music",
+                        "link": reverse_lazy("admin:records_audioenrichmentjob_changelist"),
+                    },
+                    {
+                        "title": _("Track results"),
+                        "icon": "library_music",
+                        "link": reverse_lazy(
+                            "admin:records_audioenrichmenttrackresult_changelist"
+                        ),
+                    },
+                ],
+            },
+            {
+                "title": _("API"),
+                "separator": True,
+                "items": [
                     {
                         "title": _("API schema"),
                         "icon": "code",
