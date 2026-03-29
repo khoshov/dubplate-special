@@ -20,6 +20,17 @@
 - Формат: `uv run ruff format .`
 - Типы: `uv run mypy .`
 
+## Админка
+- Админка проекта использует UI-слой `django-unfold`, основной URL остается прежним: `/admin/`.
+- В sidebar вынесены быстрые переходы к ключевым разделам: релизы, заказы, пользователи, курс валют, VK-публикации и audio jobs.
+- Раздел `records` сохраняет кастомное поведение поверх новой темы: actions, inline-редактирование треков и structured formats, восстановление YouTube-сессии и планирование публикаций в VK.
+- Служебные модели `records` продолжают группироваться отдельно через существующую серверную логику админки.
+
+## Проверка миграции админки
+- Форматирование: `uv run ruff format . --exclude .pytest-tmp`
+- Линт: `uv run ruff check . --exclude .pytest-tmp`
+- Админка: `uv run pytest tests/admin -q --reuse-db`
+- VK workflow: `uv run pytest tests/test_vk_schedule.py -q --reuse-db`
 ### Docker Compose (опционально)
 - Поднять окружение: `docker compose up -d --build`
 - При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
