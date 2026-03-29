@@ -16,6 +16,9 @@ from pathlib import Path
 
 import environ
 
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
+
 from config.logging import build_logging_config
 
 # Initialize environment variables
@@ -53,6 +56,7 @@ SMS_TEST_MODE = env.bool("SMS_TEST_MODE", default=True)
 # APPLICATION DEFINITION
 # =====================
 INSTALLED_APPS = [
+    "unfold",
     # Django core apps
     "django.contrib.admin",
     "django.contrib.auth",
@@ -99,6 +103,40 @@ if SILK_ENABLED:
     SILKY_AUTHORISATION = True
 
 ROOT_URLCONF = "config.urls"
+
+UNFOLD = {
+    "SITE_TITLE": "Dubplate Special Admin",
+    "SITE_HEADER": _("Dubplate Special"),
+    "SITE_SUBHEADER": _("Record store back office"),
+    "SHOW_BACK_BUTTON": False,
+    "SIDEBAR": {
+        "show_search": True,
+        "show_all_applications": True,
+        "navigation": [
+            {
+                "title": _("Navigation"),
+                "separator": True,
+                "items": [
+                    {
+                        "title": _("Dashboard"),
+                        "icon": "dashboard",
+                        "link": reverse_lazy("admin:index"),
+                    },
+                    {
+                        "title": _("API schema"),
+                        "icon": "code",
+                        "link": reverse_lazy("schema"),
+                    },
+                    {
+                        "title": _("API docs"),
+                        "icon": "description",
+                        "link": reverse_lazy("docs"),
+                    },
+                ],
+            }
+        ],
+    },
+}
 
 TEMPLATES = [
     {

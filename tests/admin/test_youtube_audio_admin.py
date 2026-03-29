@@ -49,6 +49,9 @@ class FakeUser:
         self.is_staff = True
         self.is_authenticated = True
 
+    def get_username(self) -> str:
+        return self.username
+
 
 class RecordingListActionService:
     def __init__(self, job_id: uuid.UUID):
