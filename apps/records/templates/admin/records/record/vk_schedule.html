@@ -2,72 +2,83 @@
 {% load i18n %}
 
 {% block content %}
-  <h1>Планирование публикации в VK</h1>
+  <div class="mx-auto max-w-4xl space-y-6">
+    <div class="rounded-default border border-base-200 bg-white p-6 shadow-xs dark:border-base-800 dark:bg-base-900">
+      <div class="space-y-3">
+        <h1 class="m-0 text-2xl font-semibold text-font-important-light dark:text-font-important-dark">Планирование публикации в VK</h1>
+        <p class="m-0 text-sm text-font-subtle-light dark:text-font-subtle-dark">Выбрано записей: {{ records|length }}</p>
+      </div>
 
-  <p>Выбрано записей: {{ records|length }}</p>
-  <ul>
-    {% for record in records %}
-      <li>#{{ record.pk }} — {{ record }}</li>
-    {% endfor %}
-  </ul>
+      <div class="mt-4 rounded-default bg-base-50 p-4 dark:bg-base-800/60">
+        <ul class="m-0 space-y-2 pl-5">
+          {% for record in records %}
+            <li>#{{ record.pk }} — {{ record }}</li>
+          {% endfor %}
+        </ul>
+      </div>
 
-  <form method="post">
-    {% csrf_token %}
-    {% for pk in selected_ids %}
-      <input type="hidden" name="ids" value="{{ pk }}">
-    {% endfor %}
-    <input type="hidden" id="id_timezone" name="timezone" value="{{ timezone_value }}">
+      <form method="post" class="mt-6 space-y-5">
+        {% csrf_token %}
+        {% for pk in selected_ids %}
+          <input type="hidden" name="ids" value="{{ pk }}">
+        {% endfor %}
+        <input type="hidden" id="id_timezone" name="timezone" value="{{ timezone_value }}">
 
-    <p class="help">
-      Время вводится в зоне: <strong id="tz-label">{{ timezone_label }}</strong>
-      {% if timezone_fallback %}
-        (не удалось определить зону браузера, используется настройка сервера)
-      {% endif %}
-    </p>
-
-    <fieldset class="module aligned">
-      {% if show_single %}
-        <div class="form-row">
-          <label for="id_publish_at">Публиковать в</label>
-          <input
-            type="datetime-local"
-            id="id_publish_at"
-            name="publish_at"
-            value="{{ publish_at_value }}"
-            required
-          >
+        <div class="rounded-default border border-base-200 bg-base-50 px-4 py-3 text-sm dark:border-base-700 dark:bg-base-800/60">
+          Время вводится в зоне: <strong id="tz-label">{{ timezone_label }}</strong>
+          {% if timezone_fallback %}
+            (не удалось определить зону браузера, используется настройка сервера)
+          {% endif %}
         </div>
-      {% else %}
-        <div class="form-row">
-          <label for="id_publish_from">Публиковать с</label>
-          <input
-            type="datetime-local"
-            id="id_publish_from"
-            name="publish_from"
-            value="{{ publish_from_value }}"
-            required
-          >
-        </div>
-        <div class="form-row">
-          <label for="id_publish_to">Публиковать по</label>
-          <input
-            type="datetime-local"
-            id="id_publish_to"
-            name="publish_to"
-            value="{{ publish_to_value }}"
-            required
-          >
-        </div>
-      {% endif %}
-    </fieldset>
 
-    <div class="submit-row">
-      <input type="submit" value="Запланировать" class="default">
-      <a class="button cancel-link" href="{% url 'admin:records_record_changelist' %}">
-        Отмена
-      </a>
+        <div class="grid gap-4 md:grid-cols-2">
+          {% if show_single %}
+            <div class="space-y-2 md:col-span-2">
+              <label for="id_publish_at" class="block text-sm font-medium">Публиковать в</label>
+              <input
+                type="datetime-local"
+                id="id_publish_at"
+                name="publish_at"
+                value="{{ publish_at_value }}"
+                required
+                class="w-full rounded-default border border-base-300 px-3 py-2 dark:border-base-700 dark:bg-base-900"
+              >
+            </div>
+          {% else %}
+            <div class="space-y-2">
+              <label for="id_publish_from" class="block text-sm font-medium">Публиковать с</label>
+              <input
+                type="datetime-local"
+                id="id_publish_from"
+                name="publish_from"
+                value="{{ publish_from_value }}"
+                required
+                class="w-full rounded-default border border-base-300 px-3 py-2 dark:border-base-700 dark:bg-base-900"
+              >
+            </div>
+            <div class="space-y-2">
+              <label for="id_publish_to" class="block text-sm font-medium">Публиковать по</label>
+              <input
+                type="datetime-local"
+                id="id_publish_to"
+                name="publish_to"
+                value="{{ publish_to_value }}"
+                required
+                class="w-full rounded-default border border-base-300 px-3 py-2 dark:border-base-700 dark:bg-base-900"
+              >
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="flex flex-wrap gap-3 pt-2">
+          <input type="submit" value="Запланировать" class="inline-flex items-center justify-center rounded-default bg-primary-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-700">
+          <a href="{% url 'admin:records_record_changelist' %}" class="inline-flex items-center justify-center rounded-default border border-base-300 px-4 py-2 text-sm font-medium transition hover:bg-base-100 dark:border-base-700 dark:hover:bg-base-800">
+            Отмена
+          </a>
+        </div>
+      </form>
     </div>
-  </form>
+  </div>
 
   <script>
     (function () {

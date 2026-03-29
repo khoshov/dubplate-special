@@ -2,43 +2,38 @@
 {% load i18n %}
 
 {% block content %}
-  <div class="module aligned">
-    <h1>Авторизация YouTube-сессии</h1>
-    <p>
-      Сейчас будет открыто окно YouTube session UI.
-      Через 2 секунды автоматически запустится задача интерактивной авторизации.
-    </p>
-    <p id="youtube-session-status">
-      Ожидание запуска окна авторизации...
-    </p>
+  <div class="mx-auto max-w-3xl space-y-6">
+    <div class="rounded-default border border-base-200 bg-white p-6 shadow-xs dark:border-base-800 dark:bg-base-900">
+      <div class="space-y-3">
+        <h1 class="m-0 text-2xl font-semibold text-font-important-light dark:text-font-important-dark">Авторизация YouTube-сессии</h1>
+        <p class="m-0 text-sm text-font-subtle-light dark:text-font-subtle-dark">
+          Сейчас будет открыто окно YouTube session UI. Через 2 секунды автоматически запустится задача интерактивной авторизации.
+        </p>
+        <div id="youtube-session-status" class="rounded-default bg-base-100 px-4 py-3 text-sm dark:bg-base-800">
+          Ожидание запуска окна авторизации...
+        </div>
+      </div>
 
-    <div style="margin: 16px 0;">
-      <a id="youtube-session-ui-link" href="{{ ui_url }}" target="_blank" rel="noopener" class="button">
-        Открыть окно авторизации вручную
-      </a>
+      <div class="mt-6 flex flex-wrap gap-3">
+        <a id="youtube-session-ui-link" href="{{ ui_url }}" target="_blank" rel="noopener" class="inline-flex items-center justify-center rounded-default bg-primary-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-700">
+          Открыть окно авторизации вручную
+        </a>
+      </div>
+
+      <form id="youtube-session-login-form" action="{{ login_url }}" method="post" target="youtube-session-login-target" class="mt-4">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <button type="submit" class="inline-flex items-center justify-center rounded-default border border-base-300 px-4 py-2 text-sm font-medium transition hover:bg-base-100 dark:border-base-700 dark:hover:bg-base-800">
+          Запустить авторизацию вручную
+        </button>
+      </form>
+
+      <iframe name="youtube-session-login-target" title="YouTube session login target" class="hidden"></iframe>
+
+      <p class="mt-6 mb-0 text-sm text-font-subtle-light dark:text-font-subtle-dark">
+        После входа в Google/YouTube вернитесь в админку и повторите загрузку аудио.
+      </p>
     </div>
-
-    <form
-      id="youtube-session-login-form"
-      action="{{ login_url }}"
-      method="post"
-      target="youtube-session-login-target"
-      style="margin: 16px 0;"
-    >
-      {% csrf_token %}
-      <input type="hidden" name="next" value="{{ next_url }}">
-      <button type="submit" class="button default">Запустить авторизацию вручную</button>
-    </form>
-
-    <iframe
-      name="youtube-session-login-target"
-      title="YouTube session login target"
-      style="display:none;"
-    ></iframe>
-
-    <p>
-      После входа в Google/YouTube вернитесь в админку и повторите загрузку аудио.
-    </p>
   </div>
 
   <script>

@@ -1,26 +1,35 @@
 {% if show_banner %}
-  <ul class="messagelist">
-    <li class="{{ banner_level }}">
-      <strong>YouTube-сессия:</strong>
-      {{ status_label|default:state.get_status_display }}
-      {% if state.status_message %}
-        <br>{{ state.status_message }}
-      {% endif %}
+  <div class="mb-6 rounded-default border px-4 py-3 {% if banner_level == "info" %}border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300{% else %}border-orange-200 bg-orange-50 text-orange-800 dark:border-orange-500/30 dark:bg-orange-500/10 dark:text-orange-300{% endif %}">
+    <div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+      <div class="space-y-1">
+        <p class="m-0 font-semibold">YouTube-сессия: {{ status_label|default:state.get_status_display }}</p>
+        {% if state.status_message %}
+          <p class="m-0 text-sm opacity-90">{{ state.status_message }}</p>
+        {% endif %}
+      </div>
+
       {% if show_refresh_action or show_login_action or ui_url %}
-        <br>
+        <div class="flex flex-wrap gap-2 lg:justify-end">
+          {% if show_refresh_action %}
+            <form action="{{ refresh_url }}" method="post" class="m-0">
+              {% csrf_token %}
+              <button type="submit" class="border border-current rounded-default px-3 py-2 text-sm font-medium transition hover:opacity-90">
+                Обновить YouTube-сессию
+              </button>
+            </form>
+          {% endif %}
+          {% if show_login_action %}
+            <a href="{{ recover_url }}" class="border border-current rounded-default px-3 py-2 text-sm font-medium transition hover:opacity-90">
+              Авторизовать YouTube-сессию
+            </a>
+          {% endif %}
+          {% if ui_url %}
+            <a href="{{ ui_url }}" target="_blank" rel="noopener" class="border border-current rounded-default px-3 py-2 text-sm font-medium transition hover:opacity-90">
+              Открыть YouTube session UI
+            </a>
+          {% endif %}
+        </div>
       {% endif %}
-      {% if show_refresh_action %}
-        <form action="{{ refresh_url }}" method="post" style="display:inline-block; margin:8px 12px 0 0;">
-          {% csrf_token %}
-          <button type="submit" class="button">Обновить YouTube-сессию</button>
-        </form>
-      {% endif %}
-      {% if show_login_action %}
-        <a href="{{ recover_url }}" class="button" style="display:inline-block; margin:8px 12px 0 0;">Авторизовать YouTube-сессию</a>
-      {% endif %}
-      {% if ui_url %}
-        <a href="{{ ui_url }}" target="_blank" rel="noopener" class="button" style="margin-top:8px;">Открыть YouTube session UI</a>
-      {% endif %}
-    </li>
-  </ul>
+    </div>
+  </div>
 {% endif %}
