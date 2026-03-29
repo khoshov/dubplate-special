@@ -13,6 +13,7 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.html import format_html
+from unfold.admin import ModelAdmin
 from vk_api.exceptions import ApiError
 from config.logging import log_event
 
@@ -129,7 +130,7 @@ admin.site.get_app_list = _get_app_list_with_service
 
 
 @admin.register(Record)
-class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.ModelAdmin):
+class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, ModelAdmin):
     """Административный интерфейс для записей.
 
     Интегрирован с Discogs для импорта и обновления данных.
@@ -1031,7 +1032,7 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
 
 
 @admin.register(Artist)
-class ArtistAdmin(admin.ModelAdmin):
+class ArtistAdmin(ModelAdmin):
     """
     Регистрация модели необходима для работы автодополнения исполнителей
     и для возможности ручного добавления при редактировании записи.
@@ -1048,7 +1049,7 @@ class ArtistAdmin(admin.ModelAdmin):
 
 
 @admin.register(Format)
-class FormatAdmin(admin.ModelAdmin):
+class FormatAdmin(ModelAdmin):
     list_display = ("name",)
     search_fields = ("name",)
     ordering = ("name",)
@@ -1062,7 +1063,7 @@ class FormatAdmin(admin.ModelAdmin):
 
 
 @admin.register(Genre)
-class GenreAdmin(admin.ModelAdmin):
+class GenreAdmin(ModelAdmin):
     list_display = ("display_name",)
     search_fields = ("name",)
     ordering = ("name",)
@@ -1080,7 +1081,7 @@ class GenreAdmin(admin.ModelAdmin):
 
 
 @admin.register(Style)
-class StyleAdmin(admin.ModelAdmin):
+class StyleAdmin(ModelAdmin):
     list_display = ("display_name",)
     search_fields = ("name",)
     ordering = ("name",)
@@ -1098,7 +1099,7 @@ class StyleAdmin(admin.ModelAdmin):
 
 
 @admin.register(VKPublicationLog)
-class VKPublicationLogAdmin(admin.ModelAdmin):
+class VKPublicationLogAdmin(ModelAdmin):
     list_display = (
         "record_link",
         "mode",
@@ -1148,7 +1149,7 @@ class VKPublicationLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(AudioEnrichmentJob)
-class AudioEnrichmentJobAdmin(admin.ModelAdmin):
+class AudioEnrichmentJobAdmin(ModelAdmin):
     list_display = (
         "id",
         "source",
@@ -1194,7 +1195,7 @@ class AudioEnrichmentJobAdmin(admin.ModelAdmin):
 
 
 @admin.register(AudioEnrichmentJobRecord)
-class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
+class AudioEnrichmentJobRecordAdmin(ModelAdmin):
     list_display = (
         "id",
         "job",
@@ -1247,7 +1248,7 @@ class AudioEnrichmentJobRecordAdmin(admin.ModelAdmin):
 
 
 @admin.register(AudioEnrichmentTrackResult)
-class AudioEnrichmentTrackResultAdmin(admin.ModelAdmin):
+class AudioEnrichmentTrackResultAdmin(ModelAdmin):
     list_display = (
         "id",
         "job_record",

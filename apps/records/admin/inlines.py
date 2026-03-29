@@ -8,12 +8,13 @@ from django.forms.models import BaseInlineFormSet
 from django.http import HttpRequest
 from django.urls import reverse
 from django.utils.html import format_html
+from unfold.admin import TabularInline
 
 from ..models import Record, StructuredFormat, Track
 from ..services.record_assembly import get_structured_format_incomplete_error
 
 
-class TrackInline(admin.TabularInline):
+class TrackInline(TabularInline):
     """
     Inline-администратор для треков.
 
@@ -271,7 +272,7 @@ class StructuredFormatInlineFormSet(BaseInlineFormSet):
         return self.new_objects
 
 
-class StructuredFormatInline(admin.TabularInline):
+class StructuredFormatInline(TabularInline):
     """Inline-редактор структурированных строк формата Discogs."""
 
     model = StructuredFormat
