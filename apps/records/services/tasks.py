@@ -337,9 +337,11 @@ def _refresh_job_status(job: AudioEnrichmentJob) -> AudioEnrichmentJob:
         error_sum=Sum("error_count"),
         record_total=Count("id"),
     )
-    track_total = job.job_records.aggregate(track_total=Count("track_results"))[
-        "track_total"
-    ]
+    track_total = (
+        int(aggregate["updated_sum"] or 0)
+        + int(aggregate["skipped_sum"] or 0)
+        + int(aggregate["error_sum"] or 0)
+    )
     statuses = set(job.job_records.values_list("status", flat=True))
 
     job.total_records = int(aggregate["record_total"] or 0)
@@ -487,6 +489,275 @@ def run_youtube_enrichment_job(payload: dict[str, Any]) -> dict[str, Any]:
         "queued_records": queued_records,
         "skipped_records": skipped_records,
         "missing_records": missing_records,
+    }
+
+
+def _parse_redeye_run_job_payload(
+    payload: dict[str, Any],
+) -> tuple[uuid.UUID, list[int], bool, int | None, str]:
+    job_id = uuid.UUID(str(payload["job_id"]))
+    record_ids = sorted({int(record_id) for record_id in payload.get("record_ids", [])})
+    if not record_ids:
+        raise ValueError("record_ids для Redeye enrichment не должен быть пустым.")
+
+    return (
+        job_id,
+        record_ids,
+        bool(payload.get("overwrite_existing", False)),
+        (
+            int(payload["requested_by_user_id"])
+            if payload.get("requested_by_user_id") is not None
+            else None
+        ),
+        str(
+            payload.get(
+                "source",
+                AudioEnrichmentJob.Source.REDEYE_MANUAL_LIST,
+            )
+        ),
+    )
+
+
+def _parse_redeye_process_record_payload(
+    payload: dict[str, Any],
+) -> tuple[uuid.UUID, int, bool]:
+    return (
+        uuid.UUID(str(payload["job_id"])),
+        int(payload["record_id"]),
+        bool(payload.get("overwrite_existing", False)),
+    )
+
+
+@shared_task(name="records.redeye_audio_enrichment.run_job")
+def run_redeye_audio_enrichment_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Ставит fan-out обработку Redeye job по списку записей."""
+    audio_service = AudioService()
+    (
+        job_id,
+        record_ids,
+        overwrite_existing,
+        requested_by_user_id,
+        source,
+    ) = _parse_redeye_run_job_payload(payload)
+
+    job = AudioEnrichmentJob.objects.get(pk=job_id)
+    job.source = source
+    job.overwrite_existing = overwrite_existing
+    job.requested_by_user_id = requested_by_user_id
+    job.status = AudioEnrichmentJob.Status.RUNNING
+    if job.started_at is None:
+        job.started_at = timezone.now()
+    job.save(
+        update_fields=[
+            "source",
+            "overwrite_existing",
+            "requested_by_user",
+            "status",
+            "started_at",
+            "modified",
+        ]
+    )
+    _log_youtube_audio_event(
+        logging.INFO,
+        "redeye_job_start",
+        "===== Запущена задача обновления аудио из Redeye =====",
+        job_id=job.id,
+        source=source,
+        overwrite=overwrite_existing,
+        records_total=len(record_ids),
+        requested_by_user_id=requested_by_user_id,
+    )
+
+    queued_records = 0
+    skipped_records = 0
+    missing_records = 0
+    for record_id in record_ids:
+        record = Record.objects.filter(pk=record_id).first()
+        if record is None:
+            missing_records += 1
+            _log_youtube_audio_event(
+                logging.WARNING,
+                "redeye_job_record_missing",
+                "Запись для Redeye-обработки не найдена.",
+                job_id=job.id,
+                record_id=record_id,
+                source=source,
+                overwrite=overwrite_existing,
+            )
+            continue
+
+        job_record, can_process = audio_service.acquire_audio_record_lock(
+            job=job,
+            record=record,
+        )
+        if not can_process:
+            skipped_records += 1
+            _log_youtube_audio_event(
+                NOTICE_LEVEL,
+                "redeye_record_skip",
+                "Запись пропущена: уже обрабатывается другой audio-enrichment задачей.",
+                job_id=job.id,
+                record_id=record.pk,
+                source=source,
+                overwrite=overwrite_existing,
+                reason=job_record.reason_code or "already_running",
+            )
+            continue
+
+        queued_records += 1
+        process_redeye_audio_enrichment_record.delay(
+            {
+                "job_id": str(job.id),
+                "record_id": record.pk,
+                "overwrite_existing": overwrite_existing,
+            }
+        )
+
+    refreshed = _refresh_job_status(job)
+    _log_youtube_audio_event(
+        logging.INFO,
+        "redeye_job_finish",
+        (
+            "===== Задача обновления аудио из Redeye поставлена на обработку: "
+            f"queued={queued_records}, skipped={skipped_records}, missing={missing_records} ====="
+        ),
+        job_id=refreshed.id,
+        source=source,
+        overwrite=overwrite_existing,
+        status=refreshed.status,
+    )
+    return {
+        "job_id": str(refreshed.id),
+        "status": refreshed.status,
+        "queued_records": queued_records,
+        "skipped_records": skipped_records,
+        "missing_records": missing_records,
+    }
+
+
+@shared_task(name="records.redeye_audio_enrichment.process_record")
+def process_redeye_audio_enrichment_record(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Обрабатывает одну запись и обновляет job report для Redeye."""
+    audio_service = AudioService()
+    job_id, record_id, overwrite_existing = _parse_redeye_process_record_payload(
+        payload
+    )
+
+    job = AudioEnrichmentJob.objects.get(pk=job_id)
+    record = Record.objects.get(pk=record_id)
+    job_record, can_process = audio_service.acquire_audio_record_lock(
+        job=job,
+        record=record,
+    )
+    if not can_process:
+        _refresh_job_status(job)
+        _log_youtube_audio_event(
+            NOTICE_LEVEL,
+            "redeye_record_skip",
+            "Запись пропущена: уже выполняется другой job-record.",
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=overwrite_existing,
+            reason=job_record.reason_code
+            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+        )
+        return {
+            "job_id": str(job.id),
+            "record_id": record.pk,
+            "status": AudioEnrichmentJobRecord.Status.SKIPPED,
+            "reason_code": job_record.reason_code
+            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
+        }
+
+    audio_service.mark_audio_record_running(job_record)
+    _log_youtube_audio_event(
+        logging.INFO,
+        "redeye_record_start",
+        "----- Запущена обработка записи для обновления аудио из Redeye -----",
+        job_id=job.id,
+        record_id=record.pk,
+        source=job.source,
+        overwrite=overwrite_existing,
+        title=record.title,
+        tracks_total=record.tracks.count(),
+    )
+
+    updated_count = skipped_count = error_count = 0
+    tracks_total = record.tracks.count()
+    try:
+        updated_count = int(
+            audio_service.attach_audio_from_redeye(
+                record=record,
+                force=overwrite_existing,
+            )
+        )
+        skipped_count = max(tracks_total - updated_count, 0)
+        audio_service.mark_audio_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+        )
+        refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
+        _log_youtube_audio_event(
+            logging.INFO,
+            "redeye_record_finish",
+            (
+                "----- Обработка записи для Redeye завершена: "
+                f"updated={refreshed_job_record.updated_count}, "
+                f"skipped={refreshed_job_record.skipped_count}, "
+                f"failed={refreshed_job_record.error_count} -----"
+            ),
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=overwrite_existing,
+            status=refreshed_job_record.status,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_youtube_audio_event(
+            logging.ERROR,
+            "redeye_record_failed",
+            "Во время обработки записи произошла ошибка Redeye-блока.",
+            job_id=job.id,
+            record_id=record.pk,
+            source=job.source,
+            overwrite=overwrite_existing,
+            error=str(exc),
+        )
+        logger.exception(
+            "Стектрейс ошибки обработки записи Redeye-блоком.",
+            extra=build_log_extra(
+                component=_YOUTUBE_AUDIO_COMPONENT,
+                event="redeye_record_failed_traceback",
+                job_id=job.id,
+                record_id=record.pk,
+                source=job.source,
+                overwrite=overwrite_existing,
+            ),
+        )
+        error_count = max(tracks_total - updated_count, 1)
+        audio_service.mark_audio_record_finished(
+            job_record=job_record,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+            error_count=error_count,
+            force_failed=True,
+            reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+        )
+
+    refreshed = _refresh_job_status(job)
+    refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
+    return {
+        "job_id": str(refreshed.id),
+        "record_id": record.pk,
+        "status": refreshed_job_record.status,
+        "updated_count": refreshed_job_record.updated_count,
+        "skipped_count": refreshed_job_record.skipped_count,
+        "error_count": refreshed_job_record.error_count,
     }
 
 

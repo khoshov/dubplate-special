@@ -41,6 +41,45 @@ class RecordingAudioService:
 
 
 @pytest.mark.django_db
+def test_import_from_redeye_enqueues_audio_job_for_new_record(monkeypatch):
+    captured_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        record_service_module.transaction,
+        "on_commit",
+        lambda callback: callback(),
+    )
+    monkeypatch.setattr(
+        record_service_module.run_redeye_audio_enrichment_job,
+        "delay",
+        lambda payload: captured_payloads.append(payload),
+    )
+
+    service = RecordService(
+        discogs_service=DummyDiscogsService(),
+        redeye_service=DummyRedeyeService(),
+        image_service=DummyImageService(),
+        audio_service=DummyAudioService(),
+    )
+
+    record, created = service.import_from_redeye(
+        catalog_number="RT900",
+        raw_payload={"title": "Redeye import", "tracks": [{"title": "Track 1"}]},
+        download_audio_decision=True,
+    )
+
+    assert created is True
+    assert captured_payloads == [
+        {
+            "job_id": record._redeye_enrichment_job_id,
+            "record_ids": [record.id],
+            "overwrite_existing": False,
+            "requested_by_user_id": None,
+            "source": "redeye_import",
+        }
+    ]
+
+
+@pytest.mark.django_db
 def test_import_from_redeye_duplicate_catalog_number_returns_existing():
     existing = Record.objects.create(title="R1", catalog_number="RT123")
 
@@ -129,9 +168,21 @@ def test_import_from_redeye_strips_empty_structured_formats_from_payload(monkeyp
 
 
 @pytest.mark.django_db
-def test_import_from_redeye_existing_record_resolves_source_and_downloads_audio():
+def test_import_from_redeye_existing_record_resolves_source_and_enqueues_audio_job(
+    monkeypatch,
+):
     existing = Record.objects.create(title="R1", catalog_number="RT123")
-    audio = RecordingAudioService(updated_count=2)
+    captured_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        record_service_module.transaction,
+        "on_commit",
+        lambda callback: callback(),
+    )
+    monkeypatch.setattr(
+        record_service_module.run_redeye_audio_enrichment_job,
+        "delay",
+        lambda payload: captured_payloads.append(payload),
+    )
 
     service = RecordService(
         discogs_service=DummyDiscogsService(),
@@ -139,7 +190,7 @@ def test_import_from_redeye_existing_record_resolves_source_and_downloads_audio(
             source_url="www.redeyerecords.co.uk/vinyl/191836-test-release"
         ),
         image_service=DummyImageService(),
-        audio_service=audio,
+        audio_service=DummyAudioService(),
     )
 
     record, created = service.import_from_redeye(
@@ -148,11 +199,15 @@ def test_import_from_redeye_existing_record_resolves_source_and_downloads_audio(
 
     assert created is False
     assert record.pk == existing.pk
-    assert len(audio.calls) == 1
-    assert (
-        audio.calls[0]["page_url"]
-        == "https://www.redeyerecords.co.uk/vinyl/191836-test-release"
-    )
+    assert captured_payloads == [
+        {
+            "job_id": record._redeye_enrichment_job_id,
+            "record_ids": [existing.id],
+            "overwrite_existing": False,
+            "requested_by_user_id": None,
+            "source": "redeye_import",
+        }
+    ]
 
     source = existing.sources.get(
         provider=RecordSource.Provider.REDEYE,

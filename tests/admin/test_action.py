@@ -1,12 +1,10 @@
 import html
+import uuid
 
 import pytest
 from django.contrib import messages
-from config.logging import NOTICE_LEVEL
 
-# noinspection PyProtectedMember
 from records.admin.actions import _batch_update, update_from_redeye
-from records.admin import actions as actions_module
 from records.models import Record
 
 
@@ -21,6 +19,7 @@ class FakeAdmin:
 class FakeUser:
     def __init__(self):
         self.username = "test-user"
+        self.id = 321
 
 
 class FakeRequest:
@@ -29,25 +28,27 @@ class FakeRequest:
 
 
 class _RecordingRecordService:
-    def __init__(self):
+    def __init__(self, *, job_id: uuid.UUID | None = None):
         self.calls = []
+        self.job_id = job_id or uuid.uuid4()
 
-    def attach_audio_from_redeye(self, *, record, force=False, require_source=False):
+    def enqueue_manual_redeye_audio_enrichment(
+        self, *, record_ids, requested_by_user_id=None
+    ):
         self.calls.append(
             {
-                "record_id": record.pk,
-                "force": force,
-                "require_source": require_source,
+                "record_ids": record_ids,
+                "requested_by_user_id": requested_by_user_id,
             }
         )
-        return 1
+        return type("Job", (), {"id": self.job_id})()
 
 
 class _FailingRecordService:
-    def attach_audio_from_redeye(self, *, record, force=False, require_source=False):
-        raise ValueError(
-            "Обновление из Redeye невозможно: не найден релиз с точным совпадением каталожного номера 'SP34'."
-        )
+    def enqueue_manual_redeye_audio_enrichment(
+        self, *, record_ids, requested_by_user_id=None
+    ):
+        raise RuntimeError("boom")
 
 
 @pytest.mark.django_db
@@ -88,7 +89,7 @@ def test_batch_update_empty_queryset():
 
 
 @pytest.mark.django_db
-def test_update_from_redeye_action_uses_strict_attach_audio_mode():
+def test_update_from_redeye_action_enqueues_job():
     record = Record.objects.create(title="R1", catalog_number="SP34")
     qs = Record.objects.filter(pk=record.pk)
     admin = FakeAdmin()
@@ -101,32 +102,27 @@ def test_update_from_redeye_action_uses_strict_attach_audio_mode():
         queryset=qs,
     )
 
-    assert admin.record_service.calls[0]["record_id"] == record.pk
-    assert admin.record_service.calls[0]["require_source"] is True
-    assert admin.record_service.calls[0]["force"] is False
-    assert any("Обновлено из Redeye: 1 из 1." in msg for msg, _ in admin.messages)
+    all_messages = html.unescape("\n".join(str(msg) for msg, _ in admin.messages))
+    assert admin.record_service.calls == [
+        {
+            "record_ids": [record.pk],
+            "requested_by_user_id": req.user.id,
+        }
+    ]
+    assert "Поставлена в очередь задача обновления аудио из Redeye для 1 записей." in all_messages
+    assert (
+        f"/admin/records/audioenrichmentjob/{admin.record_service.job_id}/change/"
+        in all_messages
+    )
 
 
 @pytest.mark.django_db
-def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkeypatch):
+def test_update_from_redeye_action_shows_enqueue_error():
     record = Record.objects.create(title="R1", catalog_number="SP34")
     qs = Record.objects.filter(pk=record.pk)
     admin = FakeAdmin()
     admin.record_service = _FailingRecordService()
     req = FakeRequest()
-    exception_calls: list[tuple] = []
-    log_calls: list[tuple] = []
-
-    monkeypatch.setattr(
-        actions_module.logger,
-        "exception",
-        lambda *args, **kwargs: exception_calls.append((args, kwargs)),
-    )
-    monkeypatch.setattr(
-        actions_module.logger,
-        "log",
-        lambda *args, **kwargs: log_calls.append((args, kwargs)),
-    )
 
     update_from_redeye(
         admin_obj=admin,  # type: ignore[arg-type]
@@ -134,21 +130,12 @@ def test_update_from_redeye_action_shows_error_when_exact_match_not_found(monkey
         queryset=qs,
     )
 
-    all_messages = html.unescape("\n".join(msg for msg, _ in admin.messages))
-    assert "С ошибками: 1." not in all_messages
-    assert "Обновление записи с id #" in all_messages
-    assert "«R1» из Redeye невозможно" in all_messages
-    assert "на сайте не найден релиз с каталожным номером 'SP34'" in all_messages
-    assert exception_calls == []
-    assert any(
-        args[0] == NOTICE_LEVEL
-        and "Операция завершилась ожидаемой ошибкой." in str(args[1])
-        for args, _ in log_calls
-    )
+    all_messages = html.unescape("\n".join(str(msg) for msg, _ in admin.messages))
+    assert "Не удалось запустить обновление аудио из Redeye: boom" in all_messages
 
 
 @pytest.mark.django_db
-def test_update_from_redeye_action_skips_none_like_catalog_number():
+def test_update_from_redeye_action_enqueues_even_without_catalog_validation():
     Record.objects.create(title="R1", catalog_number=None)
     Record.objects.create(title="R2", catalog_number=" none ")
 
@@ -163,7 +150,11 @@ def test_update_from_redeye_action_skips_none_like_catalog_number():
         queryset=qs,
     )
 
-    assert admin.record_service.calls == []
-    all_messages = "\n".join(msg for msg, _ in admin.messages)
-    assert "Пропущено (нет каталожного номера): 2." in all_messages
-    assert "Обновлено из Redeye" not in all_messages
+    assert admin.record_service.calls == [
+        {
+            "record_ids": list(qs.values_list("pk", flat=True)),
+            "requested_by_user_id": req.user.id,
+        }
+    ]
+    all_messages = "\n".join(str(msg) for msg, _ in admin.messages)
+    assert "Поставлена в очередь задача обновления аудио из Redeye для 2 записей." in all_messages

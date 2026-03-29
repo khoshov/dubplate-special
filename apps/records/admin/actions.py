@@ -467,78 +467,57 @@ def find_audio_on_youtube(
 def update_from_redeye(
     admin_obj: RecordAdmin, request: HttpRequest, queryset: QuerySet[Record]
 ) -> None:
-    record_service = admin_obj.record_service
-
-    def _get_redeye_catalog_number(record: Record) -> str | None:
-        raw_value = getattr(record, "catalog_number", None)
-        if not isinstance(raw_value, str):
-            _log_admin_action_event(
-                NOTICE_LEVEL,
-                "redeye_catalog_invalid",
-                "Запись пропущена при обновлении из Redeye: каталожный номер невалиден.",
-                record_id=record.pk,
-                raw_catalog_number=raw_value,
-                catalog_number="—",
-                reason="invalid_catalog_number",
-            )
-            return None
-
-        normalized = raw_value.strip().upper()
-        if not normalized:
-            _log_admin_action_event(
-                NOTICE_LEVEL,
-                "redeye_catalog_invalid",
-                "Запись пропущена при обновлении из Redeye: каталожный номер пуст.",
-                record_id=record.pk,
-                raw_catalog_number=raw_value,
-                catalog_number="—",
-                reason="invalid_catalog_number",
-            )
-            return None
-
-        if normalized in {"NONE", "NULL", "N/A", "N-A", "-", "—"}:
-            _log_admin_action_event(
-                NOTICE_LEVEL,
-                "redeye_catalog_invalid",
-                "Запись пропущена при обновлении из Redeye: каталожный номер содержит псевдо-пустое значение.",
-                record_id=record.pk,
-                raw_catalog_number=raw_value,
-                catalog_number=normalized,
-                reason="invalid_catalog_number",
-            )
-            return None
-
-        return normalized
-
-    def _format_redeye_failed_item(
-        record: Record, _extract_id: str | None, _error: Exception
-    ) -> str:
-        record_label = f"#{record.pk} «{record}»"
-        catalog_number = _get_redeye_catalog_number(record) or "—"
-        return (
-            f"Обновление записи с id {record_label} из Redeye невозможно: "
-            f"на сайте не найден релиз с каталожным номером '{catalog_number}'."
+    total = queryset.count()
+    if total == 0:
+        admin_obj.message_user(
+            request,
+            "Выберите записи для обновления из Redeye.",
+            level=messages.WARNING,
         )
+        return
 
-    _batch_update(
-        admin_obj,
+    record_ids = list(queryset.values_list("pk", flat=True))
+    try:
+        job = admin_obj.record_service.enqueue_manual_redeye_audio_enrichment(
+            record_ids=record_ids,
+            requested_by_user_id=getattr(request.user, "id", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_admin_action_event(
+            logging.ERROR,
+            "redeye_audio_enqueue_failed",
+            "Не удалось поставить в очередь задачу обновления аудио из Redeye.",
+            record_ids=",".join(str(record_id) for record_id in record_ids),
+            error=str(exc),
+        )
+        logger.exception("Детали ошибки запуска Redeye job из admin action.")
+        admin_obj.message_user(
+            request,
+            f"Не удалось запустить обновление аудио из Redeye: {exc!s}",
+            level=messages.ERROR,
+        )
+        return
+
+    report_url = reverse("admin:records_audioenrichmentjob_change", args=[job.id])
+    _log_admin_action_event(
+        logging.INFO,
+        "redeye_audio_enqueued",
+        "Поставлена в очередь задача обновления аудио из Redeye из admin action.",
+        job_id=job.id,
+        records_total=total,
+        record_ids=",".join(str(record_id) for record_id in record_ids),
+        requested_by_user_id=getattr(request.user, "id", None),
+    )
+    admin_obj.message_user(
         request,
-        queryset,
-        start_log="Обновление из Redeye",
-        empty_msg="Выберите записи для обновления из Redeye.",
-        ok_msg="Обновлено из Redeye: {ok} из {total}.",
-        skip_msg="Пропущено (нет каталожного номера): {n}.",
-        skip_header="Пропущено:",
-        fail_msg="С ошибками: {n}.",
-        fail_header="Ошибки:",
-        id_label="каталожный номер",
-        get_id=_get_redeye_catalog_number,
-        do_update=lambda record: record_service.attach_audio_from_redeye(
-            record=record,
-            force=False,
-            require_source=True,
+        f"Поставлена в очередь задача обновления аудио из Redeye для {total} записей.",
+        level=messages.SUCCESS,
+    )
+    admin_obj.message_user(
+        request,
+        format_html(
+            'Отчёт задачи: <a href="{}">Открыть job report</a>.',
+            report_url,
         ),
-        format_failed_item=_format_redeye_failed_item,
-        show_fail_summary=False,
-        expected_errors=(ValueError,),
+        level=messages.INFO,
     )

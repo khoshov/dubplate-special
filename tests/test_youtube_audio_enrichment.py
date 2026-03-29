@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.management import call_command
 from yt_dlp.utils import DownloadError
 
@@ -238,6 +239,52 @@ def test_run_youtube_enrichment_job_queues_record_tasks(monkeypatch):
             "job_id": str(job.id),
             "record_id": record.id,
             "overwrite_existing": True,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_run_redeye_audio_enrichment_job_queues_record_tasks(monkeypatch):
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.REDEYE_MANUAL_LIST,
+        overwrite_existing=False,
+    )
+    record = Record.objects.create(title="Queued Redeye Record", catalog_number="CAT-1")
+    queued_payloads: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        tasks_module.process_redeye_audio_enrichment_record,
+        "delay",
+        lambda payload: queued_payloads.append(payload),
+    )
+
+    result = tasks_module.run_redeye_audio_enrichment_job(
+        {
+            "job_id": str(job.id),
+            "record_ids": [record.id],
+            "overwrite_existing": False,
+            "requested_by_user_id": None,
+            "source": AudioEnrichmentJob.Source.REDEYE_MANUAL_LIST,
+        }
+    )
+
+    job.refresh_from_db()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
+
+    assert result == {
+        "job_id": str(job.id),
+        "status": AudioEnrichmentJob.Status.RUNNING,
+        "queued_records": 1,
+        "skipped_records": 0,
+        "missing_records": 0,
+    }
+    assert job.status == AudioEnrichmentJob.Status.RUNNING
+    assert job.started_at is not None
+    assert job_record.status == AudioEnrichmentJobRecord.Status.QUEUED
+    assert queued_payloads == [
+        {
+            "job_id": str(job.id),
+            "record_id": record.id,
+            "overwrite_existing": False,
         }
     ]
 
@@ -803,6 +850,81 @@ def test_youtube_provider_keeps_existing_track_duration_from_source(
 
         assert saved_name
         assert track.duration == "04:44"
+    finally:
+        shutil.rmtree(media_root, ignore_errors=True)
+
+
+@pytest.mark.django_db
+def test_youtube_provider_overwrite_replaces_same_named_file(settings, monkeypatch):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    media_root = runtime_dir / f"media-youtube-same-name-{uuid.uuid4().hex}"
+    temp_dir = runtime_dir / f"yt-audio-same-name-{uuid.uuid4().hex}"
+    media_root.mkdir()
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _url, download=True):  # noqa: FBT002
+            return {"duration": 185}
+
+    class FakeTemporaryDirectory:
+        def __init__(self, prefix=""):  # noqa: ARG002
+            self.path = temp_dir
+
+        def __enter__(self):
+            self.path.mkdir(parents=True, exist_ok=True)
+            (self.path / "downloaded.mp3").write_bytes(b"new-mp3-data")
+            return str(self.path)
+
+        def __exit__(self, exc_type, exc, tb):
+            shutil.rmtree(self.path, ignore_errors=True)
+            return False
+
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "records.services.audio.providers.youtube_audio_enrichment.tempfile.TemporaryDirectory",
+        FakeTemporaryDirectory,
+    )
+    monkeypatch.setattr(
+        YouTubeAudioEnrichmentProvider,
+        "_build_file_name",
+        classmethod(lambda cls, track: "same-name.mp3"),
+    )
+
+    try:
+        settings.MEDIA_ROOT = str(media_root)
+        record = Record.objects.create(title="Overwrite YouTube Record")
+        track = Track.objects.create(
+            record=record,
+            position="A1",
+            position_index=1,
+            title="Overwrite YouTube Track",
+            youtube_url="https://www.youtube.com/watch?v=same-name-track",
+        )
+        track.audio_preview.save("same-name.mp3", ContentFile(b"old-mp3"), save=True)
+        old_name = track.audio_preview.name
+
+        saved_name = YouTubeAudioEnrichmentProvider.download_audio_to_track(
+            track=track,
+            overwrite=True,
+        )
+
+        track.refresh_from_db()
+
+        assert saved_name == old_name
+        with track.audio_preview.open("rb") as fh:
+            assert fh.read() == b"new-mp3-data"
     finally:
         shutil.rmtree(media_root, ignore_errors=True)
 
