@@ -477,29 +477,58 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
     )
     record = job_record.record
 
+    terminal_statuses = {
+        VKPublicationJobRecord.Status.COMPLETED,
+        VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS,
+        VKPublicationJobRecord.Status.FAILED,
+    }
     if job_record.status == VKPublicationJobRecord.Status.RUNNING:
         return {
             "job_id": str(job.id),
             "record_id": record.pk,
             "status": job_record.status,
+            "vk_post_id": job_record.vk_post_id,
+            "effective_publish_at": job_record.effective_publish_at.isoformat()
+            if job_record.effective_publish_at
+            else None,
         }
 
-    job_record.status = VKPublicationJobRecord.Status.RUNNING
-    job_record.stage = "Подготовка данных публикации"
-    job_record.release_source_name = _resolve_vk_release_source_name(record)
-    job_record.audio_source_summary = _resolve_vk_audio_source_summary(record)
-    if job_record.started_at is None:
-        job_record.started_at = timezone.now()
-    job_record.save(
-        update_fields=[
-            "status",
-            "stage",
-            "release_source_name",
-            "audio_source_summary",
-            "started_at",
-            "modified",
-        ]
+    if job_record.status in terminal_statuses:
+        return {
+            "job_id": str(job.id),
+            "record_id": record.pk,
+            "status": job_record.status,
+            "vk_post_id": job_record.vk_post_id,
+            "effective_publish_at": job_record.effective_publish_at.isoformat()
+            if job_record.effective_publish_at
+            else None,
+        }
+
+    started_at = timezone.now()
+    updated = VKPublicationJobRecord.objects.filter(
+        pk=job_record.pk,
+        status=VKPublicationJobRecord.Status.QUEUED,
+    ).update(
+        status=VKPublicationJobRecord.Status.RUNNING,
+        stage="Подготовка данных публикации",
+        release_source_name=_resolve_vk_release_source_name(record),
+        audio_source_summary=_resolve_vk_audio_source_summary(record),
+        started_at=started_at,
+        modified=started_at,
     )
+    if not updated:
+        job_record.refresh_from_db()
+        return {
+            "job_id": str(job.id),
+            "record_id": record.pk,
+            "status": job_record.status,
+            "vk_post_id": job_record.vk_post_id,
+            "effective_publish_at": job_record.effective_publish_at.isoformat()
+            if job_record.effective_publish_at
+            else None,
+        }
+
+    job_record.refresh_from_db()
 
     _log_vk_publication_event(
         logging.INFO,

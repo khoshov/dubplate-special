@@ -962,23 +962,42 @@ class VKService:
         Загружает фото на стену и возвращает строку вложения 'photo<owner_id>_<id>'.
         При ошибке возвращает None.
         """
-        try:
-            url = self._get_wall_upload_url()
-        except ApiError as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "Не удалось получить upload_url для фото VK.",
-                component=_VK_SERVICE_COMPONENT,
-                event="photo_upload_url_failed",
-                error=str(e),
-            )
-            return None
-
         last_error: Exception | None = None
         backoff_schedule = (2, 5, 10)
         max_attempts = len(backoff_schedule)
         for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
+            try:
+                url = self._get_wall_upload_url()
+            except requests.RequestException as e:
+                last_error = e
+                logger.exception(
+                    "Не удалось получить upload_url для фото VK.",
+                    extra=build_log_extra(
+                        component=_VK_SERVICE_COMPONENT,
+                        event="photo_upload_url_failed",
+                        error=str(e),
+                        photo_attempt=attempt,
+                        photo_attempts_total=max_attempts,
+                        image_path=str(image_path),
+                    ),
+                )
+                if attempt < max_attempts:
+                    time.sleep(sleep_seconds)
+                continue
+            except ApiError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "Не удалось получить upload_url для фото VK.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_upload_url_failed",
+                    error=str(e),
+                    photo_attempt=attempt,
+                    photo_attempts_total=max_attempts,
+                    image_path=str(image_path),
+                )
+                return None
+
             log_event(
                 logger,
                 logging.INFO,
@@ -1111,30 +1130,52 @@ class VKService:
         """
         Загружает MP3 и возвращает структурированный результат загрузки аудио в VK.
         """
-        try:
-            url = self._get_audio_upload_url()
-        except ApiError as e:
-            code = getattr(e, "code", None)
-            if code == 270:
-                log_event(
-                    logger,
-                    NOTICE_LEVEL,
-                    "Audio API отключён для приложения (код 270). Аудио пропущено.",
-                    component=_VK_SERVICE_COMPONENT,
-                    event="audio_api_disabled",
-                    record_id=record_id,
-                    track_id=track_id,
-                    audio_path=str(audio_path),
-                )
-                return VKAudioUploadResult(
-                    attachment=None,
-                    failure_reason="audio_api_disabled",
-                    failure_message=(
-                        "VK отклонил загрузку: Audio API отключён для приложения."
+        upload_resp: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        backoff_schedule = (2, 5, 10)
+        max_attempts = len(backoff_schedule)
+        for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
+            try:
+                url = self._get_audio_upload_url()
+            except requests.RequestException as e:
+                last_error = e
+                logger.exception(
+                    "Не удалось получить upload_url для аудио VK.",
+                    extra=build_log_extra(
+                        component=_VK_SERVICE_COMPONENT,
+                        event="audio_upload_url_failed",
+                        error=str(e),
+                        record_id=record_id,
+                        track_id=track_id,
+                        audio_path=str(audio_path),
+                        audio_attempt=attempt,
+                        audio_attempts_total=max_attempts,
                     ),
-                    failure_code=str(code),
                 )
-            else:
+                if attempt < max_attempts:
+                    time.sleep(sleep_seconds)
+                continue
+            except ApiError as e:
+                code = getattr(e, "code", None)
+                if code == 270:
+                    log_event(
+                        logger,
+                        NOTICE_LEVEL,
+                        "Audio API отключён для приложения (код 270). Аудио пропущено.",
+                        component=_VK_SERVICE_COMPONENT,
+                        event="audio_api_disabled",
+                        record_id=record_id,
+                        track_id=track_id,
+                        audio_path=str(audio_path),
+                    )
+                    return VKAudioUploadResult(
+                        attachment=None,
+                        failure_reason="audio_api_disabled",
+                        failure_message=(
+                            "VK отклонил загрузку: Audio API отключён для приложения."
+                        ),
+                        failure_code=str(code),
+                    )
                 log_event(
                     logger,
                     logging.WARNING,
@@ -1145,6 +1186,8 @@ class VKService:
                     record_id=record_id,
                     track_id=track_id,
                     audio_path=str(audio_path),
+                    audio_attempt=attempt,
+                    audio_attempts_total=max_attempts,
                 )
                 return VKAudioUploadResult(
                     attachment=None,
@@ -1153,11 +1196,6 @@ class VKService:
                     failure_code=str(code or ""),
                 )
 
-        upload_resp: dict[str, Any] | None = None
-        last_error: requests.RequestException | None = None
-        backoff_schedule = (2, 5, 10)
-        max_attempts = len(backoff_schedule)
-        for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
             log_event(
                 logger,
                 logging.INFO,

@@ -2,8 +2,6 @@
   "use strict";
 
   var POLL_INTERVAL_MS = 3000;
-  var ACTIVE_STATUSES = ["queued", "running"];
-
   function extractReportId() {
     var match = window.location.pathname.match(
       /\/admin\/records\/vkpublicationreport\/([0-9a-f-]+)\/change\/?$/i
@@ -23,22 +21,7 @@
     );
   }
 
-  function readRenderedStatus() {
-    var container = document.querySelector(".field-status");
-    if (!container) {
-      return "";
-    }
-    var readonly = container.querySelector(".readonly");
-    var source = readonly || container;
-    return String(source.textContent || "").trim().toLowerCase();
-  }
-
   function pollUntilFinished() {
-    var renderedStatus = readRenderedStatus();
-    if (ACTIVE_STATUSES.indexOf(renderedStatus) === -1) {
-      return;
-    }
-
     var reportId = extractReportId();
     var statusUrl = buildStatusUrl(reportId);
     if (!statusUrl) {
@@ -64,7 +47,7 @@
 
         var status = String(result.payload.status || "").trim().toLowerCase();
         var finished = Boolean(result.payload.finished);
-        if (finished || ACTIVE_STATUSES.indexOf(status) === -1) {
+        if (finished || (status && status !== "queued" && status !== "running")) {
           window.location.reload();
           return;
         }

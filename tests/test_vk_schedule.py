@@ -156,6 +156,42 @@ def test_vk_service_retries_photo_upload(monkeypatch: pytest.MonkeyPatch):
     assert call_count["value"] == 3
 
 
+def test_vk_service_retries_photo_upload_url_request(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    image_path = Path(__file__).resolve()
+
+    upload_url_calls = {"value": 0}
+
+    def _get_upload_url():
+        upload_url_calls["value"] += 1
+        if upload_url_calls["value"] < 3:
+            raise requests.Timeout("timeout while requesting upload url")
+        return "https://upload.test"
+
+    monkeypatch.setattr(service, "_get_wall_upload_url", _get_upload_url)
+    monkeypatch.setattr(
+        service, "_save_wall_photo", lambda payload: {"owner_id": 1, "id": 2}
+    )
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"photo": "p", "server": 1, "hash": "h"}
+
+    monkeypatch.setattr(
+        "records.services.social.vk_service.requests.post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    attachment = service._upload_photo(image_path)
+
+    assert attachment == "photo1_2"
+    assert upload_url_calls["value"] == 3
+
+
 def test_vk_service_retries_photo_save(monkeypatch: pytest.MonkeyPatch):
     service = VKService(VKConfig(access_token="token", group_id=1))
     image_path = Path(__file__).resolve()
@@ -240,6 +276,45 @@ def test_vk_service_retries_audio_upload(monkeypatch: pytest.MonkeyPatch):
     assert result.attachment == "audio1_3"
     assert result.failure_reason == ""
     assert call_count["value"] == 3
+
+
+def test_vk_service_retries_audio_upload_url_request(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    audio_path = Path(__file__).resolve()
+
+    upload_url_calls = {"value": 0}
+
+    def _get_upload_url():
+        upload_url_calls["value"] += 1
+        if upload_url_calls["value"] < 3:
+            raise requests.Timeout("timeout while requesting upload url")
+        return "https://upload.test"
+
+    monkeypatch.setattr(service, "_get_audio_upload_url", _get_upload_url)
+    monkeypatch.setattr(
+        service,
+        "_save_audio",
+        lambda payload, artist, title: {"owner_id": 1, "id": 3},
+    )
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"audio": "a", "server": 1, "hash": "h"}
+
+    monkeypatch.setattr(
+        "records.services.social.vk_service.requests.post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    result = service._upload_audio(audio_path, "Artist", "Title")
+
+    assert result.attachment == "audio1_3"
+    assert result.failure_reason == ""
+    assert upload_url_calls["value"] == 3
 
 
 def test_vk_service_marks_copyright_blocked_audio(monkeypatch: pytest.MonkeyPatch):
@@ -1018,6 +1093,52 @@ def test_process_vk_publication_record_saves_audio_failure_details(
             "error_code": "270",
         }
     ]
+
+
+@pytest.mark.django_db
+def test_process_vk_publication_record_skips_already_completed_record(
+    settings, monkeypatch: pytest.MonkeyPatch
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    published_at = timezone.make_aware(datetime(2025, 1, 1, 10, 0), ZoneInfo("UTC"))
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.COMPLETED,
+        total_records=1,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+        status=VKPublicationJobRecord.Status.COMPLETED,
+        vk_post_id=321,
+        effective_publish_at=published_at,
+    )
+
+    class DummyVKServiceFactory:
+        @classmethod
+        def from_settings(cls):
+            raise AssertionError("VKService should not be created for completed report")
+
+    monkeypatch.setattr(tasks_module, "VKService", DummyVKServiceFactory)
+
+    payload = tasks_module.process_vk_publication_record(
+        {"job_id": str(job.id), "job_record_id": str(job_record.id)}
+    )
+
+    job_record.refresh_from_db()
+    assert payload["status"] == VKPublicationJobRecord.Status.COMPLETED
+    assert payload["vk_post_id"] == 321
+    assert payload["effective_publish_at"] == published_at.isoformat()
+    assert job_record.status == VKPublicationJobRecord.Status.COMPLETED
 
 
 def test_parse_datetime_uses_client_timezone():
