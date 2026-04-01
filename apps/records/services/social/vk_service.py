@@ -72,6 +72,7 @@ class VKAttachmentCollectionResult:
     audio_uploaded_count: int
     audio_failed_count: int
     failed_track_titles: list[str]
+    audio_failure_details: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,20 @@ class VKPublicationResult:
     audio_uploaded_count: int
     audio_failed_count: int
     failed_track_titles: list[str]
+    audio_failure_details: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class VKPreparedPublication:
+    message: str
+    attachments: list[str]
+    photo_expected: bool
+    photo_uploaded: bool
+    audio_expected_count: int
+    audio_uploaded_count: int
+    audio_failed_count: int
+    failed_track_titles: list[str]
+    audio_failure_details: list[dict[str, str]]
 
 
 # =============================================================================
@@ -532,10 +547,58 @@ class VKService:
         """
         Публикует релиз в VK и возвращает детали публикации для job report.
         """
-        message = _render_record_message(record, message_template)
-        attachment_result = self._collect_release_attachments(record, with_audio=True)
-        all_attachments = attachment_result.attachments
+        prepared = self.prepare_record_publication(
+            record,
+            message_template,
+            with_audio=True,
+        )
+        return self.publish_prepared_publication(
+            record=record,
+            prepared=prepared,
+            publish_at=publish_at,
+        )
 
+    def prepare_record_publication(
+        self,
+        record: Record,
+        message_template: str | None = None,
+        *,
+        with_audio: bool = True,
+    ) -> VKPreparedPublication:
+        """
+        Подготавливает текст и вложения для публикации релиза в VK.
+
+        Тяжёлые операции загрузки фото и аудио выполняются здесь один раз,
+        чтобы retry публикации не переиспользовал сетевые upload-операции.
+        """
+        message = _render_record_message(record, message_template)
+        attachment_result = self._collect_release_attachments(
+            record,
+            with_audio=with_audio,
+        )
+        return VKPreparedPublication(
+            message=message,
+            attachments=attachment_result.attachments,
+            photo_expected=attachment_result.photo_expected,
+            photo_uploaded=attachment_result.photo_uploaded,
+            audio_expected_count=attachment_result.audio_expected_count,
+            audio_uploaded_count=attachment_result.audio_uploaded_count,
+            audio_failed_count=attachment_result.audio_failed_count,
+            failed_track_titles=attachment_result.failed_track_titles,
+            audio_failure_details=attachment_result.audio_failure_details,
+        )
+
+    def publish_prepared_publication(
+        self,
+        *,
+        record: Record,
+        prepared: VKPreparedPublication,
+        publish_at: datetime | None = None,
+    ) -> VKPublicationResult:
+        """
+        Публикует заранее подготовленный пост в VK без повторной загрузки вложений.
+        """
+        all_attachments = prepared.attachments
         record_id = getattr(record, "pk", None)
         attachments_str = ",".join(all_attachments) if all_attachments else "—"
         log_event(
@@ -551,19 +614,21 @@ class VKService:
         )
         publish_date_ts = int(publish_at.timestamp()) if publish_at else None
         post_id = self._wall_post(
-            message=message,
+            message=prepared.message,
             attachments=all_attachments or None,
             publish_date_ts=publish_date_ts,
+            record_id=record_id,
         )
         return VKPublicationResult(
             post_id=post_id,
             attachments=all_attachments,
-            photo_expected=attachment_result.photo_expected,
-            photo_uploaded=attachment_result.photo_uploaded,
-            audio_expected_count=attachment_result.audio_expected_count,
-            audio_uploaded_count=attachment_result.audio_uploaded_count,
-            audio_failed_count=attachment_result.audio_failed_count,
-            failed_track_titles=attachment_result.failed_track_titles,
+            photo_expected=prepared.photo_expected,
+            photo_uploaded=prepared.photo_uploaded,
+            audio_expected_count=prepared.audio_expected_count,
+            audio_uploaded_count=prepared.audio_uploaded_count,
+            audio_failed_count=prepared.audio_failed_count,
+            failed_track_titles=prepared.failed_track_titles,
+            audio_failure_details=prepared.audio_failure_details,
         )
 
     def _get_current_user_id(self) -> int:
@@ -609,6 +674,7 @@ class VKService:
         audio_uploaded_count = 0
         audio_failed_count = 0
         failed_track_titles: list[str] = []
+        audio_failure_details: list[dict[str, str]] = []
 
         # 1) фото
         cover_path = _record_cover_path(record)
@@ -636,6 +702,7 @@ class VKService:
                     audio_uploaded_count=audio_uploaded_count,
                     audio_failed_count=audio_failed_count,
                     failed_track_titles=failed_track_titles,
+                    audio_failure_details=audio_failure_details,
                 )
         else:
             logger.warning(
@@ -655,6 +722,7 @@ class VKService:
                 audio_uploaded_count=audio_uploaded_count,
                 audio_failed_count=audio_failed_count,
                 failed_track_titles=failed_track_titles,
+                audio_failure_details=audio_failure_details,
             )
 
         if not with_audio:
@@ -666,6 +734,7 @@ class VKService:
                 audio_uploaded_count=audio_uploaded_count,
                 audio_failed_count=audio_failed_count,
                 failed_track_titles=failed_track_titles,
+                audio_failure_details=audio_failure_details,
             )
 
         # 2) аудио
@@ -720,7 +789,16 @@ class VKService:
                         audio_attachments.append(att)
                     else:
                         upload_failed_count += 1
-                        failed_track_titles.append(str(getattr(track, "title", "")))
+                        track_title = str(getattr(track, "title", ""))
+                        failed_track_titles.append(track_title)
+                        audio_failure_details.append(
+                            {
+                                "track_id": str(getattr(track, "pk", "")),
+                                "track_title": track_title,
+                                "reason": "upload_failed",
+                                "message": "VK не принял загрузку аудио после повторных попыток.",
+                            }
+                        )
                         log_event(
                             logger,
                             logging.WARNING,
@@ -734,7 +812,16 @@ class VKService:
                         )
                 else:
                     missing_file_count += 1
-                    failed_track_titles.append(str(getattr(track, "title", "")))
+                    track_title = str(getattr(track, "title", ""))
+                    failed_track_titles.append(track_title)
+                    audio_failure_details.append(
+                        {
+                            "track_id": str(getattr(track, "pk", "")),
+                            "track_title": track_title,
+                            "reason": "file_missing",
+                            "message": "Локальный mp3-файл отсутствует на диске.",
+                        }
+                    )
                     logger.warning(
                         "VK: у записи отсутствует mp3-файл на диске — трек пропущен.",
                         extra=build_log_extra(
@@ -775,6 +862,7 @@ class VKService:
             audio_uploaded_count=audio_uploaded_count,
             audio_failed_count=audio_failed_count,
             failed_track_titles=failed_track_titles,
+            audio_failure_details=audio_failure_details,
         )
 
     # -------------------------------------------------------------------------
@@ -937,24 +1025,55 @@ class VKService:
                 )
             return None
 
-        try:
-            with audio_path.open("rb") as f:
-                resp = requests.post(
-                    url, files={"file": (audio_path.name, f, "audio/mpeg")}, timeout=60
+        upload_resp: dict[str, Any] | None = None
+        last_error: requests.RequestException | None = None
+        backoff_schedule = (2, 5, 10)
+        max_attempts = len(backoff_schedule)
+        for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
+            try:
+                with audio_path.open("rb") as f:
+                    resp = requests.post(
+                        url,
+                        files={"file": (audio_path.name, f, "audio/mpeg")},
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                upload_resp = resp.json()
+                break
+            except requests.RequestException as e:
+                last_error = e
+                status_code = str(
+                    getattr(getattr(e, "response", None), "status_code", "") or ""
                 )
-                resp.raise_for_status()
-            upload_resp = resp.json()
-        except requests.RequestException as e:
-            logger.exception(
-                "Ошибка HTTP при загрузке аудио VK.",
-                extra=build_log_extra(
-                    component=_VK_SERVICE_COMPONENT,
-                    event="audio_upload_http_failed",
-                    error=str(e),
-                    record_id=record_id,
-                    track_id=track_id,
-                    audio_path=str(audio_path),
-                ),
+                logger.exception(
+                    "Ошибка HTTP при загрузке аудио VK.",
+                    extra=build_log_extra(
+                        component=_VK_SERVICE_COMPONENT,
+                        event="audio_upload_http_failed",
+                        error=str(e),
+                        http_status=status_code or "—",
+                        audio_attempt=attempt,
+                        audio_attempts_total=max_attempts,
+                        record_id=record_id,
+                        track_id=track_id,
+                        audio_path=str(audio_path),
+                    ),
+                )
+                if attempt < max_attempts:
+                    time.sleep(sleep_seconds)
+
+        if upload_resp is None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "Не удалось загрузить аудио VK после повторных попыток.",
+                component=_VK_SERVICE_COMPONENT,
+                event="audio_upload_retries_exhausted",
+                error=str(last_error) if last_error else "unknown",
+                record_id=record_id,
+                track_id=track_id,
+                audio_path=str(audio_path),
+                audio_attempts_total=max_attempts,
             )
             return None
 
@@ -969,6 +1088,7 @@ class VKService:
                 component=_VK_SERVICE_COMPONENT,
                 event="audio_save_failed",
                 error=str(e),
+                error_code=getattr(e, "code", None),
                 record_id=record_id,
                 track_id=track_id,
                 audio_path=str(audio_path),
@@ -981,6 +1101,7 @@ class VKService:
         attachments: Sequence[str] | None = None,
         *,
         publish_date_ts: int | None = None,
+        record_id: int | None = None,
     ) -> int:
         """
         Вызов VK API wall.post и получение post_id опубликованной записи.
@@ -1010,6 +1131,7 @@ class VKService:
                 "wall.post вернул неожиданный post_id.",
                 component=_VK_SERVICE_COMPONENT,
                 event="post_id_invalid",
+                record_id=record_id,
                 post_id=post_id_raw,
                 response=resp,
             )
@@ -1023,6 +1145,7 @@ class VKService:
             "Запись опубликована в VK.",
             component=_VK_SERVICE_COMPONENT,
             event="post_published",
+            record_id=record_id,
             post_id=post_id_raw,
         )
         return post_id_raw

@@ -27,6 +27,7 @@ from records.services import tasks as tasks_module
 from records.services.social.schedule import build_even_schedule
 from records.services.social.vk_service import (
     VKConfig,
+    VKPreparedPublication,
     VKPublicationResult,
     VKService,
 )
@@ -151,6 +152,41 @@ def test_vk_service_retries_photo_upload(monkeypatch: pytest.MonkeyPatch):
     attachment = service._upload_photo(image_path)
 
     assert attachment == "photo1_2"
+    assert call_count["value"] == 3
+
+
+def test_vk_service_retries_audio_upload(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    audio_path = Path(__file__).resolve()
+
+    monkeypatch.setattr(service, "_get_audio_upload_url", lambda: "https://upload.test")
+    monkeypatch.setattr(
+        service,
+        "_save_audio",
+        lambda payload, artist, title: {"owner_id": 1, "id": 3},
+    )
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    call_count = {"value": 0}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"audio": "a", "server": 1, "hash": "h"}
+
+    def _post(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] < 3:
+            raise requests.ConnectionError("connection refused")
+        return DummyResponse()
+
+    monkeypatch.setattr("records.services.social.vk_service.requests.post", _post)
+
+    attachment = service._upload_audio(audio_path, "Artist", "Title")
+
+    assert attachment == "audio1_3"
     assert call_count["value"] == 3
 
 
@@ -536,9 +572,9 @@ def test_process_vk_publication_record_logs_success(
     )
 
     class DummyVKService:
-        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
-            return VKPublicationResult(
-                post_id=123,
+        def prepare_record_publication(self, record, **kwargs):
+            return VKPreparedPublication(
+                message="hello",
                 attachments=["photo1_2", "audio1_3"],
                 photo_expected=True,
                 photo_uploaded=True,
@@ -546,6 +582,20 @@ def test_process_vk_publication_record_logs_success(
                 audio_uploaded_count=1,
                 audio_failed_count=0,
                 failed_track_titles=[],
+                audio_failure_details=[],
+            )
+
+        def publish_prepared_publication(self, record, prepared, publish_at=None):
+            return VKPublicationResult(
+                post_id=123,
+                attachments=prepared.attachments,
+                photo_expected=prepared.photo_expected,
+                photo_uploaded=prepared.photo_uploaded,
+                audio_expected_count=prepared.audio_expected_count,
+                audio_uploaded_count=prepared.audio_uploaded_count,
+                audio_failed_count=prepared.audio_failed_count,
+                failed_track_titles=prepared.failed_track_titles,
+                audio_failure_details=prepared.audio_failure_details,
             )
 
     class DummyVKServiceFactory:
@@ -571,6 +621,7 @@ def test_process_vk_publication_record_logs_success(
     assert job_record.photo_uploaded is True
     assert job_record.audio_uploaded_count == 1
     assert job_record.audio_failed_count == 0
+    assert job_record.audio_failure_details == []
 
 
 @pytest.mark.django_db
@@ -600,9 +651,24 @@ def test_process_vk_publication_record_retries_collision(
         planned_publish_at=planned_at,
     )
     call_times: list[datetime | None] = []
+    prepare_calls = {"value": 0}
 
     class DummyVKService:
-        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
+        def prepare_record_publication(self, record, **kwargs):
+            prepare_calls["value"] += 1
+            return VKPreparedPublication(
+                message="hello",
+                attachments=["photo1_2", "audio1_3"],
+                photo_expected=True,
+                photo_uploaded=True,
+                audio_expected_count=1,
+                audio_uploaded_count=1,
+                audio_failed_count=0,
+                failed_track_titles=[],
+                audio_failure_details=[],
+            )
+
+        def publish_prepared_publication(self, record, prepared, publish_at=None):
             call_times.append(publish_at)
             if len(call_times) == 1:
                 raise ApiError(
@@ -617,13 +683,14 @@ def test_process_vk_publication_record_retries_collision(
                 )
             return VKPublicationResult(
                 post_id=321,
-                attachments=["photo1_2", "audio1_3"],
-                photo_expected=True,
-                photo_uploaded=True,
-                audio_expected_count=1,
-                audio_uploaded_count=1,
-                audio_failed_count=0,
-                failed_track_titles=[],
+                attachments=prepared.attachments,
+                photo_expected=prepared.photo_expected,
+                photo_uploaded=prepared.photo_uploaded,
+                audio_expected_count=prepared.audio_expected_count,
+                audio_uploaded_count=prepared.audio_uploaded_count,
+                audio_failed_count=prepared.audio_failed_count,
+                failed_track_titles=prepared.failed_track_titles,
+                audio_failure_details=prepared.audio_failure_details,
             )
 
     class DummyVKServiceFactory:
@@ -640,6 +707,7 @@ def test_process_vk_publication_record_retries_collision(
     job_record.refresh_from_db()
     assert payload["status"] == VKPublicationJobRecord.Status.COMPLETED_WITH_WARNINGS
     assert call_times == [planned_at, planned_at + timedelta(minutes=30)]
+    assert prepare_calls["value"] == 1
     assert job_record.effective_publish_at == planned_at + timedelta(minutes=30)
     assert job_record.warning_message == "Время публикации автоматически изменено."
 
@@ -669,9 +737,9 @@ def test_process_vk_publication_record_marks_text_only_warning(
     )
 
     class DummyVKService:
-        def post_record_with_audio_details(self, record, publish_at=None, **kwargs):
-            return VKPublicationResult(
-                post_id=555,
+        def prepare_record_publication(self, record, **kwargs):
+            return VKPreparedPublication(
+                message="hello",
                 attachments=[],
                 photo_expected=True,
                 photo_uploaded=False,
@@ -679,6 +747,20 @@ def test_process_vk_publication_record_marks_text_only_warning(
                 audio_uploaded_count=0,
                 audio_failed_count=0,
                 failed_track_titles=[],
+                audio_failure_details=[],
+            )
+
+        def publish_prepared_publication(self, record, prepared, publish_at=None):
+            return VKPublicationResult(
+                post_id=555,
+                attachments=prepared.attachments,
+                photo_expected=prepared.photo_expected,
+                photo_uploaded=prepared.photo_uploaded,
+                audio_expected_count=prepared.audio_expected_count,
+                audio_uploaded_count=prepared.audio_uploaded_count,
+                audio_failed_count=prepared.audio_failed_count,
+                failed_track_titles=prepared.failed_track_titles,
+                audio_failure_details=prepared.audio_failure_details,
             )
 
     class DummyVKServiceFactory:
@@ -701,6 +783,86 @@ def test_process_vk_publication_record_marks_text_only_warning(
         == "Изображение релиза не загружено, поэтому аудио не добавлялось"
     )
     assert job.status == VKPublicationJob.Status.COMPLETED_WITH_ERRORS
+
+
+@pytest.mark.django_db
+def test_process_vk_publication_record_saves_audio_failure_details(
+    settings, monkeypatch: pytest.MonkeyPatch
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    record = Record.objects.create(
+        title="R1",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.QUEUED,
+        total_records=1,
+    )
+    job_record = VKPublicationJobRecord.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationJobRecord.Mode.IMMEDIATE,
+    )
+
+    class DummyVKService:
+        def prepare_record_publication(self, record, **kwargs):
+            return VKPreparedPublication(
+                message="hello",
+                attachments=["photo1_2"],
+                photo_expected=True,
+                photo_uploaded=True,
+                audio_expected_count=1,
+                audio_uploaded_count=0,
+                audio_failed_count=1,
+                failed_track_titles=["Track 1"],
+                audio_failure_details=[
+                    {
+                        "track_id": "10",
+                        "track_title": "Track 1",
+                        "reason": "upload_failed",
+                        "message": "VK не принял загрузку аудио после повторных попыток.",
+                    }
+                ],
+            )
+
+        def publish_prepared_publication(self, record, prepared, publish_at=None):
+            return VKPublicationResult(
+                post_id=999,
+                attachments=prepared.attachments,
+                photo_expected=prepared.photo_expected,
+                photo_uploaded=prepared.photo_uploaded,
+                audio_expected_count=prepared.audio_expected_count,
+                audio_uploaded_count=prepared.audio_uploaded_count,
+                audio_failed_count=prepared.audio_failed_count,
+                failed_track_titles=prepared.failed_track_titles,
+                audio_failure_details=prepared.audio_failure_details,
+            )
+
+    class DummyVKServiceFactory:
+        @classmethod
+        def from_settings(cls):
+            return DummyVKService()
+
+    monkeypatch.setattr(tasks_module, "VKService", DummyVKServiceFactory)
+
+    tasks_module.process_vk_publication_record(
+        {"job_id": str(job.id), "job_record_id": str(job_record.id)}
+    )
+
+    job_record.refresh_from_db()
+    assert job_record.audio_failure_details == [
+        {
+            "track_id": "10",
+            "track_title": "Track 1",
+            "reason": "upload_failed",
+            "message": "VK не принял загрузку аудио после повторных попыток.",
+        }
+    ]
 
 
 def test_parse_datetime_uses_client_timezone():

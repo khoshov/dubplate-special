@@ -105,6 +105,15 @@ AUDIO_DEFAULT_TIMEOUT: int = 30
 AUDIO_DEFAULT_MAX_BYTES: int = 40 * 1024 * 1024
 """Максимально допустимый размер аудио-файла (байт)."""
 
+YTDLP_SOCKET_TIMEOUT_SEC: int = 20
+"""Таймаут одной сетевой попытки yt-dlp (сек)."""
+
+YTDLP_NETWORK_RETRIES: int = 1
+"""Количество внутренних retry yt-dlp для сети и extractor-операций."""
+
+YTDLP_BASE_RETRY_DELAY_SEC: float = 2.0
+"""Базовая пауза между внешними retry загрузки через yt-dlp (сек)."""
+
 ALLOWED_AUDIO_CONTENT_TYPES = {
     "audio/mpeg",
     "audio/mp3",

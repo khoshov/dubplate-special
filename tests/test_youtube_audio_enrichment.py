@@ -26,6 +26,11 @@ from records.services.audio.providers.youtube_audio_enrichment import (
     YouTubeAuthenticationRequiredError,
     YouTubeAudioEnrichmentProvider,
 )
+from records.constants import (
+    YTDLP_BASE_RETRY_DELAY_SEC,
+    YTDLP_NETWORK_RETRIES,
+    YTDLP_SOCKET_TIMEOUT_SEC,
+)
 from records.services.audio.providers.youtube_session import (
     YouTubeSessionLoginResult,
     YouTubeSessionRefreshResult,
@@ -620,7 +625,38 @@ def test_youtube_provider_builds_ydl_options_without_cookie_file_fallback(
     assert options["js_runtimes"] == {"node": {"path": "/usr/bin/node"}}
     assert options["remote_components"] == ["ejs:github", "ejs:npm"]
     assert options["cachedir"] == str(cache_dir)
+    assert options["socket_timeout"] == YTDLP_SOCKET_TIMEOUT_SEC
+    assert options["retries"] == YTDLP_NETWORK_RETRIES
+    assert options["fragment_retries"] == YTDLP_NETWORK_RETRIES
+    assert options["extractor_retries"] == YTDLP_NETWORK_RETRIES
     assert "cookiefile" not in options
+
+
+def test_youtube_provider_retry_default_delay():
+    attempts = {"count": 0}
+    delays: list[float] = []
+
+    def _operation() -> str:
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("temporary")
+        return "ready-track.mp3"
+
+    result, used_attempts, last_error = (
+        YouTubeAudioEnrichmentProvider.download_with_retry(
+            operation=_operation,
+            max_attempts=3,
+            sleep_func=lambda delay: delays.append(delay),
+        )
+    )
+
+    assert result == "ready-track.mp3"
+    assert used_attempts == 3
+    assert last_error is None
+    assert delays == [
+        YTDLP_BASE_RETRY_DELAY_SEC,
+        YTDLP_BASE_RETRY_DELAY_SEC * 2,
+    ]
 
 
 def test_resolve_js_runtimes_prefers_configured_path(

@@ -717,6 +717,11 @@ class VKPublicationReport(TimeStampedModel):
         blank=True,
         verbose_name=_("Треки с проблемами"),
     )
+    audio_failure_details = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_("Детали проблем по аудио"),
+    )
     error_message = models.TextField(
         blank=True,
         default="",

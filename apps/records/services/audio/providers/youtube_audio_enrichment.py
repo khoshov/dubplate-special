@@ -21,6 +21,11 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 from config.logging import log_event
+from records.constants import (
+    YTDLP_BASE_RETRY_DELAY_SEC,
+    YTDLP_NETWORK_RETRIES,
+    YTDLP_SOCKET_TIMEOUT_SEC,
+)
 from records.models import (
     AudioEnrichmentJob,
     AudioEnrichmentJobRecord,
@@ -350,7 +355,7 @@ class YouTubeAudioEnrichmentProvider:
         *,
         operation: Callable[[], str | None],
         max_attempts: int = 3,
-        base_delay_sec: float = 1.0,
+        base_delay_sec: float = YTDLP_BASE_RETRY_DELAY_SEC,
         sleep_func: Callable[[float], None] = time.sleep,
     ) -> tuple[str | None, int, Exception | None]:
         """Выполняет download operation с ограниченным числом попыток."""
@@ -359,6 +364,15 @@ class YouTubeAudioEnrichmentProvider:
         while attempt < max_attempts:
             attempt += 1
             try:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "Запущена попытка скачивания аудио через yt-dlp.",
+                    component=_YOUTUBE_AUDIO_COMPONENT,
+                    event="download_attempt_start",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
                 result = operation()
                 if result:
                     return result, attempt, None
@@ -367,6 +381,16 @@ class YouTubeAudioEnrichmentProvider:
                 return None, attempt, exc
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "Попытка скачивания аудио через yt-dlp завершилась ошибкой.",
+                    component=_YOUTUBE_AUDIO_COMPONENT,
+                    event="download_attempt_failed",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    error=str(exc),
+                )
                 if attempt >= max_attempts:
                     break
                 sleep_func(base_delay_sec * (2 ** (attempt - 1)))
@@ -795,6 +819,10 @@ class YouTubeAudioEnrichmentProvider:
             "overwrites": True,
             "nopart": True,
             "prefer_ffmpeg": True,
+            "socket_timeout": YTDLP_SOCKET_TIMEOUT_SEC,
+            "retries": YTDLP_NETWORK_RETRIES,
+            "fragment_retries": YTDLP_NETWORK_RETRIES,
+            "extractor_retries": YTDLP_NETWORK_RETRIES,
             "logger": _YTDLPLogger(raw_messages),
             "postprocessors": [
                 {

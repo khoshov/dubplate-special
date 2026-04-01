@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import yt_dlp
+import requests
 from celery import shared_task
 from django.conf import settings
 from django.db.models import Count, Q, Sum
@@ -311,14 +312,17 @@ def _post_to_vk_with_retry(
     delta: timedelta,
     max_retries: int,
 ) -> tuple[Any, datetime | None, bool]:
+    prepared = vk_service.prepare_record_publication(record=record)
     attempts = 0
     current_at = publish_at
     shifted = False
 
     while True:
         try:
-            publication_result = vk_service.post_record_with_audio_details(
+            publication_result = _publish_prepared_post_with_retry(
+                vk_service=vk_service,
                 record=record,
+                prepared=prepared,
                 publish_at=current_at,
             )
             return publication_result, current_at, shifted
@@ -330,6 +334,53 @@ def _post_to_vk_with_retry(
             if attempts > max_retries:
                 raise
             current_at = current_at + delta
+
+
+def _publish_prepared_post_with_retry(
+    *,
+    vk_service: VKService,
+    record: Record,
+    prepared: Any,
+    publish_at: datetime | None,
+) -> Any:
+    last_error: Exception | None = None
+    max_attempts = len((2, 5, 10))
+
+    for attempt, sleep_seconds in enumerate((2, 5, 10), start=1):
+        try:
+            return vk_service.publish_prepared_publication(
+                record=record,
+                prepared=prepared,
+                publish_at=publish_at,
+            )
+        except ApiError:
+            raise
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            _log_vk_publication_event(
+                logging.WARNING,
+                "wall_post_retry",
+                "Попытка публикации поста в VK завершилась неудачно.",
+                record_id=record.pk,
+                publish_at=publish_at.isoformat() if publish_at else None,
+                wall_post_attempt=attempt,
+                wall_post_attempts_total=max_attempts,
+                error=str(exc),
+            )
+            if attempt == max_attempts:
+                break
+            tasks_module_time_sleep(sleep_seconds)
+
+    if last_error is None:
+        raise RuntimeError("Не удалось опубликовать пост в VK: неизвестная ошибка.")
+    raise last_error
+
+
+def tasks_module_time_sleep(seconds: int) -> None:
+    """Изолирует sleep, чтобы его было проще стабильно мокать в тестах."""
+    import time
+
+    time.sleep(seconds)
 
 
 @shared_task(name="records.vk_publication.run_job")
@@ -477,6 +528,7 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
         job_record.audio_uploaded_count = publication_result.audio_uploaded_count
         job_record.audio_failed_count = publication_result.audio_failed_count
         job_record.failed_track_titles = publication_result.failed_track_titles
+        job_record.audio_failure_details = publication_result.audio_failure_details
         job_record.effective_publish_at = final_publish_at
         job_record.vk_post_id = publication_result.post_id
         job_record.error_message = ""
@@ -495,6 +547,7 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
                 "audio_uploaded_count",
                 "audio_failed_count",
                 "failed_track_titles",
+                "audio_failure_details",
                 "effective_publish_at",
                 "vk_post_id",
                 "error_message",

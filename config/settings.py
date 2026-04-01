@@ -90,7 +90,7 @@ MIDDLEWARE = [
 ]
 
 # SILK
-SILK_ENABLED = env.bool("SILK_ENABLED", False)
+SILK_ENABLED = env.bool("SILK_ENABLED", False) and DEBUG
 if SILK_ENABLED:
     INSTALLED_APPS.append("silk")  # https://pypi.org/project/django-silk/
     MIDDLEWARE.insert(1, "silk.middleware.SilkyMiddleware")
