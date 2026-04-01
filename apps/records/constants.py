@@ -96,6 +96,12 @@ RETRY_ALLOWED_METHODS = {"GET"}
 #  АУДИО-ПАРАМЕТРЫ (HTTP-загрузка файлов)
 # ============================================================================
 
+IMAGE_DOWNLOAD_TIMEOUT_SEC: int = 20
+"""Таймаут HTTP-загрузки обложки (сек)."""
+
+VK_API_METHOD_TIMEOUT: tuple[int, int] = (10, 30)
+"""Таймаут вызовов VK API methods: connect/read (сек)."""
+
 AUDIO_STREAM_CHUNK_SIZE: int = 64 * 1024
 """Размер блока при потоковом скачивании аудио (байт)."""
 

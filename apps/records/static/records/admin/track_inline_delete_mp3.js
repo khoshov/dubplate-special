@@ -88,6 +88,13 @@
             if (result.status >= 400 || !result.payload.ok) {
               throw new Error(result.payload.error || "Загрузка не выполнена.");
             }
+            if (
+              window.recordsAudioJobWatcher &&
+              typeof window.recordsAudioJobWatcher.startWatching === "function"
+            ) {
+              window.recordsAudioJobWatcher.startWatching(result.payload.job_id);
+              return;
+            }
             window.location.reload();
           })
           .catch(function (error) {

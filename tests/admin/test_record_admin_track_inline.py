@@ -100,6 +100,10 @@ def test_change_page_renders_mp3_upload_button_with_new_label(client) -> None:
     )
     assert expected_url in content
     assert "Загрузить mp3 по URL" in content
+    assert 'data-audio-job-status-url-template="' in content
+    assert 'data-record-audio-state-url="' in content
+    assert 'data-record-audio-count="0"' in content
+    assert "js-youtube-audio-refresh" in content
 
 
 @pytest.mark.django_db

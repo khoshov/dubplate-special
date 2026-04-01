@@ -55,7 +55,10 @@ class TrackInline(admin.TabularInline):
 
     class Media:
         css = {"all": ("records/admin/track_inline.css",)}
-        js = ("records/admin/track_inline_delete_mp3.js",)
+        js = (
+            "records/admin/audio_job_progress.js",
+            "records/admin/track_inline_delete_mp3.js",
+        )
 
     def formfield_for_dbfield(self, db_field, request: HttpRequest, **kwargs):
         """Рендерит youtube_url как обычный URLInput без блока Currently/Change."""

@@ -207,7 +207,7 @@ def post_to_vk(
     _log_admin_action_event(
         logging.INFO,
         "vk_publish_start",
-        "Запущена публикация записей в VK.",
+        "Получен запрос на публикацию записей в VK из админки.",
         records_total=queryset.count(),
         username=getattr(request.user, "username", "?"),
     )

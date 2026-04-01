@@ -11,6 +11,7 @@ from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.middleware import SessionMiddleware
+from django.core.files.base import ContentFile
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
@@ -26,7 +27,10 @@ from records.models import (
     AudioEnrichmentJobRecord,
     AudioEnrichmentTrackResult,
     Record,
+    Track,
+    VKPublicationJob,
     VKPublicationLog,
+    VKPublicationReport,
     YouTubeSessionState,
 )
 from records.services.tasks import (
@@ -289,6 +293,27 @@ def test_record_admin_youtube_refresh_view_enqueues_single_record_job(monkeypatc
 
 
 @pytest.mark.django_db
+def test_record_admin_youtube_refresh_view_returns_json_for_ajax(monkeypatch):
+    record = Record.objects.create(title="Single Record")
+    admin = RecordAdmin(Record, AdminSite())
+    job_id = uuid.uuid4()
+    admin.record_service = RecordingSingleRecordService(job_id=job_id)
+    monkeypatch.setattr(admin, "has_change_permission", lambda request, obj=None: True)
+
+    request = RequestFactory().post(
+        f"/admin/records/record/{record.pk}/youtube-refresh/"
+    )
+    request.user = FakeUser()
+    request.headers = {"x-requested-with": "XMLHttpRequest"}
+    _attach_session_and_messages(request)
+
+    response = admin._refresh_youtube_audio_view(request, str(record.pk))
+
+    assert response.status_code == 200
+    assert json.loads(response.content) == {"ok": True, "job_id": str(job_id)}
+
+
+@pytest.mark.django_db
 def test_record_admin_redeye_refresh_view_enqueues_single_record_job(monkeypatch):
     record = Record.objects.create(title="Single Record", catalog_number="CAT-1")
     admin = RecordAdmin(Record, AdminSite())
@@ -377,6 +402,114 @@ def test_record_admin_youtube_search_view_enqueues_task(monkeypatch):
             "requested_by_user_id": request.user.id,
         }
     ]
+
+
+@pytest.mark.django_db
+def test_record_admin_audio_job_status_view_returns_progress(client):
+    admin_user = get_user_model().objects.create_superuser(
+        username="audio-job-status-admin",
+        email="audio-job-status-admin@example.com",
+        password="pass",
+    )
+    client.force_login(admin_user)
+    record = Record.objects.create(title="Progress Record")
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.RUNNING,
+        requested_by_user=admin_user,
+        overwrite_existing=False,
+    )
+    AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.RUNNING,
+        tracks_total=4,
+        updated_count=1,
+        skipped_count=1,
+        error_count=0,
+        stage="Добавление аудио к трекам",
+    )
+
+    response = client.get(
+        reverse("admin:records_record_audio_job_status", args=[job.pk])
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "job_id": str(job.pk),
+        "job_status": AudioEnrichmentJob.Status.RUNNING,
+        "report_status": AudioEnrichmentJobRecord.Status.RUNNING,
+        "stage": "Добавление аудио к трекам",
+        "processed_tracks": 2,
+        "total_tracks": 4,
+        "progress_percent": 50,
+        "finished": False,
+    }
+
+
+@pytest.mark.django_db
+def test_record_admin_audio_state_view_returns_tracks_with_audio(client):
+    admin_user = get_user_model().objects.create_superuser(
+        username="audio-state-admin",
+        email="audio-state-admin@example.com",
+        password="pass",
+    )
+    client.force_login(admin_user)
+    record = Record.objects.create(title="Audio State Record")
+    Track.objects.create(record=record, position_index=1, title="No Audio")
+    track_with_audio = Track.objects.create(
+        record=record,
+        position_index=2,
+        title="Has Audio",
+    )
+    track_with_audio.audio_preview.save("preview.mp3", ContentFile(b"demo"), save=True)
+
+    response = client.get(reverse("admin:records_record_audio_state", args=[record.pk]))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "record_id": str(record.pk),
+        "tracks_with_audio": 1,
+        "total_tracks": 2,
+    }
+
+
+@pytest.mark.django_db
+def test_vk_publication_report_status_view_returns_finished_flag(client):
+    admin_user = get_user_model().objects.create_superuser(
+        username="vk-report-status-admin",
+        email="vk-report-status-admin@example.com",
+        password="pass",
+    )
+    client.force_login(admin_user)
+    record = Record.objects.create(title="VK Status Record")
+    job = VKPublicationJob.objects.create(
+        source=VKPublicationJob.Source.MANUAL_LIST,
+        status=VKPublicationJob.Status.RUNNING,
+        requested_by_user=admin_user,
+        total_records=1,
+    )
+    report = VKPublicationReport.objects.create(
+        job=job,
+        record=record,
+        mode=VKPublicationReport.Mode.IMMEDIATE,
+        status=VKPublicationReport.Status.RUNNING,
+    )
+
+    response = client.get(
+        reverse("admin:records_vkpublicationreport_status", args=[report.pk])
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "report_id": str(report.pk),
+        "status": VKPublicationReport.Status.RUNNING,
+        "finished": False,
+        "finished_at": None,
+    }
 
 
 @pytest.mark.django_db

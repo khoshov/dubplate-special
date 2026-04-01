@@ -231,6 +231,8 @@ class YouTubeAudioRefreshMixin:
                     report_url,
                 ),
             )
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse({"ok": True, "job_id": str(job.id)})
         except Exception as exc:  # noqa: BLE001
             _log_admin_mixin_event(
                 logging.ERROR,
@@ -244,6 +246,17 @@ class YouTubeAudioRefreshMixin:
                 request,
                 f"Не удалось запустить добавление аудио по URL (YouTube/Bandcamp): {exc!s}",
             )
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Не удалось запустить добавление аудио по URL "
+                            "(YouTube/Bandcamp)."
+                        ),
+                    },
+                    status=500,
+                )
 
         return redirect(reverse("admin:records_record_change", args=[obj.pk]))
 

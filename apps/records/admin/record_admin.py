@@ -20,6 +20,7 @@ from records.constants import SOURCE_DISCOGS, SOURCE_REDEYE
 from records.forms import RecordForm
 from records.models import (
     Artist,
+    AudioEnrichmentJob,
     ReleaseJob,
     ReleaseReport,
     AudioEnrichmentTrackResult,
@@ -565,12 +566,50 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
                 name="records_record_track_enqueue_mp3",
             ),
             path(
+                "audio-jobs/<uuid:job_id>/status/",
+                self.admin_site.admin_view(self.audio_job_status_view),
+                name="records_record_audio_job_status",
+            ),
+            path(
+                "<path:object_id>/audio-state/",
+                self.admin_site.admin_view(self.record_audio_state_view),
+                name="records_record_audio_state",
+            ),
+            path(
                 "vk-schedule/",
                 self.admin_site.admin_view(self.vk_schedule_view),
                 name="records_record_vk_schedule",
             ),
         ]
         return custom + base_urls
+
+    @staticmethod
+    def _count_tracks_with_audio(record: Record) -> int:
+        return (
+            record.tracks.filter(audio_preview__isnull=False)
+            .exclude(audio_preview="")
+            .count()
+        )
+
+    def render_change_form(
+        self,
+        request: HttpRequest,
+        context: dict,
+        add: bool = False,
+        change: bool = False,
+        form_url: str = "",
+        obj: Record | None = None,
+    ) -> HttpResponse:
+        if obj is not None and getattr(obj, "pk", None):
+            setattr(obj, "tracks_with_audio_count", self._count_tracks_with_audio(obj))
+        return super().render_change_form(
+            request,
+            context,
+            add=add,
+            change=change,
+            form_url=form_url,
+            obj=obj,
+        )
 
     def delete_track_mp3_view(
         self, request: HttpRequest, object_id: str, track_id: str
@@ -749,6 +788,102 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
             track_id=track.pk,
         )
         return JsonResponse({"ok": True, "job_id": str(job.id)})
+
+    def audio_job_status_view(
+        self,
+        request: HttpRequest,
+        job_id,
+    ) -> JsonResponse:
+        """Возвращает агрегированный прогресс YouTube job для polling в админке."""
+        if request.method != "GET":
+            return JsonResponse(
+                {"ok": False, "error": "Разрешён только GET-запрос."},
+                status=405,
+            )
+
+        job = get_object_or_404(
+            AudioEnrichmentJob.objects.prefetch_related("job_records__record"),
+            pk=job_id,
+        )
+        reports = list(job.job_records.all())
+        first_report = reports[0] if reports else None
+        if first_report is not None and not self.has_change_permission(
+            request,
+            first_report.record,
+        ):
+            return JsonResponse(
+                {"ok": False, "error": "Недостаточно прав для просмотра статуса."},
+                status=403,
+            )
+
+        total_tracks = sum(int(report.tracks_total or 0) for report in reports)
+        processed_tracks = sum(
+            int(report.updated_count or 0)
+            + int(report.skipped_count or 0)
+            + int(report.error_count or 0)
+            for report in reports
+        )
+        progress_percent = 0
+        if total_tracks > 0:
+            progress_percent = min(
+                100,
+                int((processed_tracks * 100) / total_tracks),
+            )
+
+        active_statuses = {
+            ReleaseReport.Status.QUEUED,
+            ReleaseReport.Status.RUNNING,
+        }
+        finished = bool(reports) and not any(
+            report.status in active_statuses for report in reports
+        )
+        if finished:
+            progress_percent = 100
+
+        return JsonResponse(
+            {
+                "ok": True,
+                "job_id": str(job.id),
+                "job_status": job.status,
+                "report_status": first_report.status if first_report else job.status,
+                "stage": first_report.stage if first_report else "",
+                "processed_tracks": processed_tracks,
+                "total_tracks": total_tracks,
+                "progress_percent": progress_percent,
+                "finished": finished,
+            }
+        )
+
+    def record_audio_state_view(
+        self, request: HttpRequest, object_id: str
+    ) -> JsonResponse:
+        """Возвращает текущее число треков релиза с прикреплённым audio_preview."""
+        if request.method != "GET":
+            return JsonResponse(
+                {"ok": False, "error": "Разрешён только GET-запрос."},
+                status=405,
+            )
+
+        record = get_object_or_404(
+            Record.objects.only("pk"),
+            pk=object_id,
+        )
+        if not self.has_change_permission(request, record):
+            return JsonResponse(
+                {"ok": False, "error": "Недостаточно прав для просмотра статуса."},
+                status=403,
+            )
+
+        tracks_with_audio = self._count_tracks_with_audio(record)
+        total_tracks = record.tracks.count()
+        return JsonResponse(
+            {
+                "ok": True,
+                "record_id": str(record.pk),
+                "tracks_with_audio": tracks_with_audio,
+                "total_tracks": total_tracks,
+            }
+        )
 
     def vk_schedule_view(self, request: HttpRequest) -> HttpResponse:
         if not self.has_change_permission(request):
@@ -1175,6 +1310,8 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
     class Media:
         css = {"all": ("records/admin/record_submit_row.css",)}
         js = (
+            "records/admin/audio_job_progress.js",
+            "records/admin/record_audio_state_progress.js",
             "records/js/admin_local_datetime.js",
             "records/admin/record_submit_row.js",
         )
@@ -1447,6 +1584,51 @@ class VKPublicationReportAdmin(admin.ModelAdmin):
     ) -> bool:
         return False
 
+    def get_urls(self):
+        base_urls = super().get_urls()
+        custom = [
+            path(
+                "<uuid:report_id>/status/",
+                self.admin_site.admin_view(self.status_view),
+                name="records_vkpublicationreport_status",
+            ),
+        ]
+        return custom + base_urls
+
+    def status_view(self, request: HttpRequest, report_id) -> JsonResponse:
+        """Возвращает статус VKPublicationReport для polling страницы лога."""
+        if request.method != "GET":
+            return JsonResponse(
+                {"ok": False, "error": "Разрешён только GET-запрос."},
+                status=405,
+            )
+
+        report = get_object_or_404(
+            VKPublicationReport.objects.select_related("record", "job"),
+            pk=report_id,
+        )
+        if not self.has_view_or_change_permission(request, report):
+            return JsonResponse(
+                {"ok": False, "error": "Недостаточно прав для просмотра статуса."},
+                status=403,
+            )
+
+        active_statuses = {
+            VKPublicationReport.Status.QUEUED,
+            VKPublicationReport.Status.RUNNING,
+        }
+        return JsonResponse(
+            {
+                "ok": True,
+                "report_id": str(report.pk),
+                "status": report.status,
+                "finished": report.status not in active_statuses,
+                "finished_at": report.finished_at.isoformat()
+                if report.finished_at
+                else None,
+            }
+        )
+
     @admin.display(description="Лог", ordering="id")
     def log_link(self, obj: VKPublicationReport) -> str:
         url = reverse("admin:records_vkpublicationreport_change", args=[obj.pk])
@@ -1460,6 +1642,9 @@ class VKPublicationReportAdmin(admin.ModelAdmin):
             return "—"
         url = reverse("admin:records_record_change", args=[record.pk])
         return format_html('<a href="{}">#{} — {}</a>', url, record.pk, record)
+
+    class Media:
+        js = ("records/admin/vk_publication_report_progress.js",)
 
 
 @admin.register(ReleaseJob)

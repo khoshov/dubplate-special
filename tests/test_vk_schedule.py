@@ -19,6 +19,7 @@ from records.admin.actions import post_to_vk
 from records.admin.record_admin import RecordAdmin
 from records.models import (
     Record,
+    Track,
     VKPublicationJob,
     VKPublicationJobRecord,
 )
@@ -155,6 +156,56 @@ def test_vk_service_retries_photo_upload(monkeypatch: pytest.MonkeyPatch):
     assert call_count["value"] == 3
 
 
+def test_vk_service_retries_photo_save(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    image_path = Path(__file__).resolve()
+
+    monkeypatch.setattr(service, "_get_wall_upload_url", lambda: "https://upload.test")
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"photo": "p", "server": 1, "hash": "h"}
+
+    monkeypatch.setattr(
+        "records.services.social.vk_service.requests.post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+
+    save_calls = {"value": 0}
+    api_error = ApiError(
+        None,
+        "photos.saveWallPhoto",
+        {},
+        {
+            "error": {
+                "error_code": 100,
+                "error_msg": "One of the parameters specified was missing or invalid: photo is undefined",
+            }
+        },
+        {
+            "error_code": 100,
+            "error_msg": "One of the parameters specified was missing or invalid: photo is undefined",
+        },
+    )
+
+    def _save(payload):
+        save_calls["value"] += 1
+        if save_calls["value"] < 3:
+            raise api_error
+        return {"owner_id": 1, "id": 2}
+
+    monkeypatch.setattr(service, "_save_wall_photo", _save)
+
+    attachment = service._upload_photo(image_path)
+
+    assert attachment == "photo1_2"
+    assert save_calls["value"] == 3
+
+
 def test_vk_service_retries_audio_upload(monkeypatch: pytest.MonkeyPatch):
     service = VKService(VKConfig(access_token="token", group_id=1))
     audio_path = Path(__file__).resolve()
@@ -184,10 +235,106 @@ def test_vk_service_retries_audio_upload(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("records.services.social.vk_service.requests.post", _post)
 
-    attachment = service._upload_audio(audio_path, "Artist", "Title")
+    result = service._upload_audio(audio_path, "Artist", "Title")
 
-    assert attachment == "audio1_3"
+    assert result.attachment == "audio1_3"
+    assert result.failure_reason == ""
     assert call_count["value"] == 3
+
+
+def test_vk_service_marks_copyright_blocked_audio(monkeypatch: pytest.MonkeyPatch):
+    service = VKService(VKConfig(access_token="token", group_id=1))
+    audio_path = Path(__file__).resolve()
+
+    monkeypatch.setattr(service, "_get_audio_upload_url", lambda: "https://upload.test")
+    monkeypatch.setattr("records.services.social.vk_service.time.sleep", lambda _: None)
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"audio": "a", "server": 1, "hash": "h"}
+
+    monkeypatch.setattr(
+        "records.services.social.vk_service.requests.post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+    api_error = ApiError(
+        None,
+        "audio.save",
+        {},
+        {
+            "error": {
+                "error_code": 270,
+                "error_msg": (
+                    "The audio file was removed by the copyright holder "
+                    "and cannot be reuploaded."
+                ),
+            }
+        },
+        {
+            "error_code": 270,
+            "error_msg": (
+                "The audio file was removed by the copyright holder "
+                "and cannot be reuploaded."
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_save_audio",
+        lambda payload, artist, title: (_ for _ in ()).throw(api_error),
+    )
+
+    result = service._upload_audio(audio_path, "Artist", "Title")
+
+    assert result.attachment is None
+    assert result.failure_reason == "copyright_blocked"
+    assert result.failure_code == "270"
+
+
+@pytest.mark.django_db
+def test_enqueue_vk_publication_deduplicates_audio_source_summary(
+    settings,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    settings.VK_ACCESS_TOKEN = "token"
+    settings.VK_GROUP_ID = "1"
+
+    delayed_payloads = _patch_vk_enqueue(monkeypatch)
+    admin = RecordAdmin(Record, AdminSite())
+
+    User = get_user_model()
+    user = User.objects.create_superuser(
+        username="vk-audio-summary-admin",
+        email="vk-audio-summary-admin@example.com",
+        password="pass",
+    )
+    record = Record.objects.create(
+        title="Many Youtube Tracks",
+        release_year=2000,
+        release_month=1,
+        release_day=1,
+    )
+    for index in range(16):
+        record.tracks.create(
+            title=f"Track {index + 1}",
+            position_index=index + 1,
+            audio_source=Track.AudioSource.YOUTUBE,
+        )
+
+    request = RequestFactory().post("/admin/records/record/")
+    request.user = user
+    request.session = {}
+    request._messages = FallbackStorage(request)
+
+    post_to_vk(admin, request, Record.objects.filter(pk=record.pk))
+
+    assert len(delayed_payloads) == 1
+    job = VKPublicationJob.objects.get(pk=delayed_payloads[0]["job_id"])
+    job_record = job.job_records.get(record=record)
+    assert job_record.audio_source_summary == "YouTube"
 
 
 @pytest.mark.django_db
@@ -824,8 +971,12 @@ def test_process_vk_publication_record_saves_audio_failure_details(
                     {
                         "track_id": "10",
                         "track_title": "Track 1",
-                        "reason": "upload_failed",
-                        "message": "VK не принял загрузку аудио после повторных попыток.",
+                        "reason": "copyright_blocked",
+                        "message": (
+                            "VK отклонил сохранение аудио: файл заблокирован "
+                            "правообладателем и не может быть повторно загружен."
+                        ),
+                        "error_code": "270",
                     }
                 ],
             )
@@ -859,8 +1010,12 @@ def test_process_vk_publication_record_saves_audio_failure_details(
         {
             "track_id": "10",
             "track_title": "Track 1",
-            "reason": "upload_failed",
-            "message": "VK не принял загрузку аудио после повторных попыток.",
+            "reason": "copyright_blocked",
+            "message": (
+                "VK отклонил сохранение аудио: файл заблокирован "
+                "правообладателем и не может быть повторно загружен."
+            ),
+            "error_code": "270",
         }
     ]
 

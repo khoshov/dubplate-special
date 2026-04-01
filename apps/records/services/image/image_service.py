@@ -4,6 +4,7 @@ import requests
 
 from django.core.files.base import ContentFile
 from config.logging import log_event
+from records.constants import IMAGE_DOWNLOAD_TIMEOUT_SEC
 
 from records.models import Record
 from django.conf import settings
@@ -39,7 +40,7 @@ class ImageService:
         USER_AGENT: User-Agent для HTTP запросов.
     """
 
-    TIMEOUT = 20
+    TIMEOUT = IMAGE_DOWNLOAD_TIMEOUT_SEC
     USER_AGENT = settings.DISCOGS_USER_AGENT
 
     def download_cover(self, record: Record, image_url: str) -> bool:

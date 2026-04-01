@@ -8,7 +8,6 @@ from typing import Any
 import yt_dlp
 import requests
 from celery import shared_task
-from django.conf import settings
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
@@ -36,6 +35,30 @@ _YOUTUBE_AUDIO_COMPONENT = "youtube_audio"
 _YOUTUBE_SESSION_COMPONENT = "youtube_session"
 _YOUTUBE_SEARCH_COMPONENT = "youtube_search"
 _VK_PUBLICATION_COMPONENT = "vk_publication"
+
+
+def _save_audio_job_record_progress(
+    *,
+    job_record: AudioEnrichmentJobRecord,
+    updated_count: int,
+    skipped_count: int,
+    error_count: int,
+    stage: str | None = None,
+) -> None:
+    """Сохраняет промежуточный прогресс job-record для UI polling."""
+    job_record.updated_count = max(0, int(updated_count))
+    job_record.skipped_count = max(0, int(skipped_count))
+    job_record.error_count = max(0, int(error_count))
+    update_fields = [
+        "updated_count",
+        "skipped_count",
+        "error_count",
+        "modified",
+    ]
+    if stage is not None:
+        job_record.stage = stage
+        update_fields.append("stage")
+    job_record.save(update_fields=update_fields)
 
 
 def _log_youtube_audio_event(
@@ -223,15 +246,15 @@ def _resolve_vk_release_source_name(record: Record) -> str:
 
 
 def _resolve_vk_audio_source_summary(record: Record) -> str:
-    source_values = list(
-        record.tracks.exclude(audio_source="unknown")
-        .exclude(audio_source="")
-        .values_list("audio_source", flat=True)
-        .distinct()
+    labels = sorted(
+        {
+            str(track.get_audio_source_display() or "").strip()
+            for track in record.tracks.exclude(audio_source="unknown").exclude(
+                audio_source=""
+            )
+        }
     )
-    labels_map = dict(Track.AudioSource.choices)
-    labels = [str(labels_map.get(value, "")).strip() for value in source_values]
-    labels = [label for label in labels if label]
+    labels = [label for label in labels if label and label != "Не указан"]
     return ", ".join(labels) if labels else "Не указан"
 
 
@@ -407,7 +430,7 @@ def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
     _log_vk_publication_event(
         logging.INFO,
         "job_start",
-        "===== Запущена задача публикации записей в VK =====",
+        "Запущена задача публикации записей в VK.",
         job_id=job.id,
         source=source,
         records_total=job.total_records,
@@ -430,7 +453,7 @@ def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
     _log_vk_publication_event(
         logging.INFO,
         "job_enqueued",
-        "===== Задача публикации записей в VK поставлена на обработку =====",
+        "Задача публикации записей в VK передана на обработку worker-у.",
         job_id=refreshed.id,
         source=source,
         status=refreshed.status,
@@ -481,7 +504,7 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
     _log_vk_publication_event(
         logging.INFO,
         "record_start",
-        "----- Запущена публикация записи в VK -----",
+        "Запущена публикация релиза в VK.",
         job_id=job.id,
         job_record_id=job_record.id,
         record_id=record.pk,
@@ -494,8 +517,6 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         vk_service = VKService.from_settings()
         delta = _get_vk_retry_delta(job_record.planned_publish_at, job)
-        job_record.stage = "Публикация поста в VK"
-        job_record.save(update_fields=["stage", "modified"])
         publication_result, final_publish_at, shifted = _post_to_vk_with_retry(
             vk_service=vk_service,
             record=record,
@@ -559,7 +580,7 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
         _log_vk_publication_event(
             logging.INFO,
             "record_finish",
-            "----- Публикация записи в VK завершена -----",
+            "Публикация релиза в VK завершена.",
             job_id=job.id,
             job_record_id=job_record.id,
             record_id=record.pk,
@@ -1377,6 +1398,9 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
     track_results_summary: list[dict[str, str]] = []
     try:
         tracks = list(record.tracks.order_by("position_index", "id"))
+        if job_record.tracks_total != len(tracks):
+            job_record.tracks_total = len(tracks)
+            job_record.save(update_fields=["tracks_total", "modified"])
         for track in tracks:
             track_payload = _process_track_for_youtube_enrichment(
                 job_id=job.id,
@@ -1426,6 +1450,14 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
                         ),
                     )
                 )
+
+            _save_audio_job_record_progress(
+                job_record=job_record,
+                updated_count=updated_count,
+                skipped_count=skipped_count,
+                error_count=error_count,
+                stage="Добавление аудио к трекам",
+            )
 
         result_message = (
             "Добавление аудио по URL завершено: "
@@ -1747,12 +1779,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                 job_record.started_at = timezone.now()
             if job_record.queued_at is None:
                 job_record.queued_at = timezone.now()
+            job_record.tracks_total = record.tracks.count()
             job_record.save(
                 update_fields=[
                     "status",
                     "stage",
                     "started_at",
                     "queued_at",
+                    "tracks_total",
                     "modified",
                 ]
             )
@@ -1787,6 +1821,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         "message": "Ссылка уже заполнена.",
                     }
                 )
+                if job_record is not None:
+                    _save_audio_job_record_progress(
+                        job_record=job_record,
+                        updated_count=updated,
+                        skipped_count=skipped + not_found,
+                        error_count=0,
+                        stage="Поиск аудио для треков",
+                    )
                 continue
 
             query = f"{artist_names} {record.title} {track.title}"
@@ -1821,6 +1863,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         "message": str(exc),
                     }
                 )
+                if job_record is not None:
+                    _save_audio_job_record_progress(
+                        job_record=job_record,
+                        updated_count=updated,
+                        skipped_count=skipped + not_found,
+                        error_count=0,
+                        stage="Поиск аудио для треков",
+                    )
                 continue
 
             if not entry:
@@ -1853,6 +1903,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         "message": "Поиск не вернул результатов.",
                     }
                 )
+                if job_record is not None:
+                    _save_audio_job_record_progress(
+                        job_record=job_record,
+                        updated_count=updated,
+                        skipped_count=skipped + not_found,
+                        error_count=0,
+                        stage="Поиск аудио для треков",
+                    )
                 continue
 
             url = entry.get("url") or entry.get("webpage_url") or ""
@@ -1890,6 +1948,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         "message": "Не удалось извлечь ссылку YouTube.",
                     }
                 )
+                if job_record is not None:
+                    _save_audio_job_record_progress(
+                        job_record=job_record,
+                        updated_count=updated,
+                        skipped_count=skipped + not_found,
+                        error_count=0,
+                        stage="Поиск аудио для треков",
+                    )
                 continue
 
             track.youtube_url = url
@@ -1905,6 +1971,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     "message": "Ссылка YouTube найдена.",
                 }
             )
+            if job_record is not None:
+                _save_audio_job_record_progress(
+                    job_record=job_record,
+                    updated_count=updated,
+                    skipped_count=skipped + not_found,
+                    error_count=0,
+                    stage="Поиск аудио для треков",
+                )
 
             _log_youtube_search_event(
                 logging.INFO,

@@ -15,6 +15,7 @@ from django.conf import settings
 from vk_api.exceptions import ApiError
 
 from config.logging import NOTICE_LEVEL, build_log_extra, log_event
+from records.constants import VK_API_METHOD_TIMEOUT
 from records.models import AvailableChoices, Record
 from records.services.record_assembly import get_structured_format_incomplete_error
 
@@ -99,6 +100,27 @@ class VKPreparedPublication:
     audio_failed_count: int
     failed_track_titles: list[str]
     audio_failure_details: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class VKAudioUploadResult:
+    attachment: str | None
+    failure_reason: str = ""
+    failure_message: str = ""
+    failure_code: str = ""
+
+
+class _VKTimeoutSession(requests.Session):
+    """HTTP-сессия с дефолтным timeout для вызовов vk_api.method()."""
+
+    def __init__(self, *, default_timeout: tuple[int, int]) -> None:
+        super().__init__()
+        self._default_timeout = default_timeout
+
+    def request(self, method, url, **kwargs):  # type: ignore[override]
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = self._default_timeout
+        return super().request(method, url, **kwargs)
 
 
 # =============================================================================
@@ -505,7 +527,10 @@ class VKService:
 
     def __init__(self, config: VKConfig):
         self._config = config
-        self._vk = vk_api.VkApi(token=config.access_token)
+        self._vk = vk_api.VkApi(
+            token=config.access_token,
+            session=_VKTimeoutSession(default_timeout=VK_API_METHOD_TIMEOUT),
+        )
 
     @classmethod
     def from_settings(cls) -> "VKService":
@@ -640,6 +665,13 @@ class VKService:
         if isinstance(cached, int) and cached > 0:
             return cached
 
+        log_event(
+            logger,
+            logging.DEBUG,
+            "Запрашиваю текущий user_id через VK API.",
+            component=_VK_SERVICE_COMPONENT,
+            event="users_get_start",
+        )
         data = self._vk.method("users.get", {})
         user_id = int(data[0]["id"])
         setattr(self, "_current_user_id", user_id)
@@ -659,7 +691,10 @@ class VKService:
     # -------------------------------------------------------------------------
 
     def _collect_release_attachments(
-        self, record: Record, *, with_audio: bool
+        self,
+        record: Record,
+        *,
+        with_audio: bool,
     ) -> VKAttachmentCollectionResult:
         """
         Собирает вложения релиза:
@@ -776,27 +811,42 @@ class VKService:
             for track in audio_qs[:attempt_limit]:
                 preview = getattr(track, "audio_preview", None)
                 p = Path(getattr(preview, "path", "")) if preview else None
+                track_title = str(getattr(track, "title", ""))
 
                 if p and p.exists():
-                    att = self._upload_audio(
+                    upload_result = self._upload_audio(
                         p,
                         artists,
-                        getattr(track, "title", ""),
+                        track_title,
                         record_id=getattr(record, "pk", None),
                         track_id=getattr(track, "pk", None),
                     )
-                    if att:
-                        audio_attachments.append(att)
+                    if upload_result.attachment:
+                        audio_attachments.append(upload_result.attachment)
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "VK: аудио успешно загружено и сохранено.",
+                            component=_VK_SERVICE_COMPONENT,
+                            event="track_audio_uploaded",
+                            record_id=getattr(record, "pk", None),
+                            track_id=getattr(track, "pk", None),
+                            track_title=track_title,
+                            audio_path=str(p),
+                            attachment_id=upload_result.attachment,
+                        )
                     else:
                         upload_failed_count += 1
-                        track_title = str(getattr(track, "title", ""))
                         failed_track_titles.append(track_title)
                         audio_failure_details.append(
                             {
                                 "track_id": str(getattr(track, "pk", "")),
                                 "track_title": track_title,
-                                "reason": "upload_failed",
-                                "message": "VK не принял загрузку аудио после повторных попыток.",
+                                "reason": upload_result.failure_reason
+                                or "upload_failed",
+                                "message": upload_result.failure_message
+                                or "VK не принял загрузку аудио.",
+                                "error_code": upload_result.failure_code,
                             }
                         )
                         log_event(
@@ -807,12 +857,14 @@ class VKService:
                             event="track_audio_upload_failed",
                             record_id=getattr(record, "pk", None),
                             track_id=getattr(track, "pk", None),
-                            track_title=getattr(track, "title", ""),
+                            track_title=track_title,
                             audio_path=str(p),
+                            failure_reason=upload_result.failure_reason
+                            or "upload_failed",
+                            failure_message=upload_result.failure_message or "—",
                         )
                 else:
                     missing_file_count += 1
-                    track_title = str(getattr(track, "title", ""))
                     failed_track_titles.append(track_title)
                     audio_failure_details.append(
                         {
@@ -871,6 +923,14 @@ class VKService:
 
     def _get_wall_upload_url(self) -> str:
         """Возвращает upload_url для загрузки фото на стену сообщества."""
+        log_event(
+            logger,
+            logging.INFO,
+            "Запрашиваю upload URL для фото VK.",
+            component=_VK_SERVICE_COMPONENT,
+            event="photo_upload_url_request_started",
+            group_id=abs(self._config.group_id),
+        )
         data: dict[str, Any] = self._vk.method(
             "photos.getWallUploadServer", {"group_id": abs(self._config.group_id)}
         )
@@ -878,6 +938,14 @@ class VKService:
 
     def _save_wall_photo(self, upload_resp: dict[str, Any]) -> dict[str, Any]:
         """Сохраняет фотографию, загруженную через upload_url стены."""
+        log_event(
+            logger,
+            logging.INFO,
+            "Сохраняю фото через photos.saveWallPhoto.",
+            component=_VK_SERVICE_COMPONENT,
+            event="photo_save_started",
+            group_id=abs(self._config.group_id),
+        )
         saved_list = self._vk.method(
             "photos.saveWallPhoto",
             {
@@ -907,10 +975,20 @@ class VKService:
             )
             return None
 
-        upload_resp: dict[str, Any] | None = None
-        last_error: requests.RequestException | None = None
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
+        last_error: Exception | None = None
+        backoff_schedule = (2, 5, 10)
+        max_attempts = len(backoff_schedule)
+        for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
+            log_event(
+                logger,
+                logging.INFO,
+                "Попытка отправки фото в VK.",
+                component=_VK_SERVICE_COMPONENT,
+                event="photo_upload_attempt_started",
+                image_path=str(image_path),
+                photo_attempt=attempt,
+                photo_attempts_total=max_attempts,
+            )
             try:
                 with image_path.open("rb") as f:
                     resp = requests.post(
@@ -920,7 +998,30 @@ class VKService:
                     )
                     resp.raise_for_status()
                 upload_resp = resp.json()
-                break
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "Отправка фото в VK завершена, выполняется photos.saveWallPhoto.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_upload_attempt_finished",
+                    image_path=str(image_path),
+                    photo_attempt=attempt,
+                    photo_attempts_total=max_attempts,
+                )
+                saved = self._save_wall_photo(upload_resp)
+                attachment = f"photo{saved['owner_id']}_{saved['id']}"
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "VK: фото успешно загружено и сохранено.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_uploaded",
+                    image_path=str(image_path),
+                    photo_attempt=attempt,
+                    photo_attempts_total=max_attempts,
+                    attachment_id=attachment,
+                )
+                return attachment
             except requests.RequestException as e:
                 last_error = e
                 logger.exception(
@@ -934,38 +1035,43 @@ class VKService:
                         image_path=str(image_path),
                     ),
                 )
-                if attempt < max_attempts:
-                    time.sleep(2 * attempt)
+            except ApiError as e:
+                last_error = e
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "Ошибка сохранения фото VK (photos.saveWallPhoto).",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="photo_save_failed",
+                    error=str(e),
+                    photo_attempt=attempt,
+                    photo_attempts_total=max_attempts,
+                    image_path=str(image_path),
+                )
+            if attempt < max_attempts:
+                time.sleep(sleep_seconds)
 
-        if upload_resp is None:
-            log_event(
-                logger,
-                logging.ERROR,
-                "Не удалось загрузить фото VK после повторных попыток.",
-                component=_VK_SERVICE_COMPONENT,
-                event="photo_upload_retries_exhausted",
-                error=str(last_error) if last_error else "unknown",
-                image_path=str(image_path),
-                photo_attempts_total=max_attempts,
-            )
-            return None
-
-        try:
-            saved = self._save_wall_photo(upload_resp)
-            return f"photo{saved['owner_id']}_{saved['id']}"
-        except ApiError as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "Ошибка сохранения фото VK (photos.saveWallPhoto).",
-                component=_VK_SERVICE_COMPONENT,
-                event="photo_save_failed",
-                error=str(e),
-            )
-            return None
+        log_event(
+            logger,
+            logging.ERROR,
+            "Не удалось загрузить фото VK после повторных попыток.",
+            component=_VK_SERVICE_COMPONENT,
+            event="photo_upload_retries_exhausted",
+            error=str(last_error) if last_error else "unknown",
+            image_path=str(image_path),
+            photo_attempts_total=max_attempts,
+        )
+        return None
 
     def _get_audio_upload_url(self) -> str:
         """Возвращает upload_url для загрузки аудио (если аудио разрешено в конфигурации)."""
+        log_event(
+            logger,
+            logging.INFO,
+            "Запрашиваю upload URL для аудио VK.",
+            component=_VK_SERVICE_COMPONENT,
+            event="audio_upload_url_request_started",
+        )
         data: dict[str, Any] = self._vk.method("audio.getUploadServer", {})
         return str(data["upload_url"])
 
@@ -973,6 +1079,15 @@ class VKService:
         self, upload_resp: dict[str, Any], artist: str, title: str
     ) -> dict[str, Any]:
         """Сохраняет аудио, загруженное через upload_url."""
+        log_event(
+            logger,
+            logging.INFO,
+            "Сохраняю аудио через audio.save.",
+            component=_VK_SERVICE_COMPONENT,
+            event="audio_save_started",
+            track_title=title,
+            artist=artist,
+        )
         return self._vk.method(
             "audio.save",
             {
@@ -992,9 +1107,9 @@ class VKService:
         *,
         record_id: int | None = None,
         track_id: int | None = None,
-    ) -> str | None:
+    ) -> VKAudioUploadResult:
         """
-        Загружает MP3 и возвращает 'audio<owner_id>_<id>' или None, если Audio API недоступен.
+        Загружает MP3 и возвращает структурированный результат загрузки аудио в VK.
         """
         try:
             url = self._get_audio_upload_url()
@@ -1011,6 +1126,14 @@ class VKService:
                     track_id=track_id,
                     audio_path=str(audio_path),
                 )
+                return VKAudioUploadResult(
+                    attachment=None,
+                    failure_reason="audio_api_disabled",
+                    failure_message=(
+                        "VK отклонил загрузку: Audio API отключён для приложения."
+                    ),
+                    failure_code=str(code),
+                )
             else:
                 log_event(
                     logger,
@@ -1023,13 +1146,31 @@ class VKService:
                     track_id=track_id,
                     audio_path=str(audio_path),
                 )
-            return None
+                return VKAudioUploadResult(
+                    attachment=None,
+                    failure_reason="audio_upload_url_failed",
+                    failure_message=str(e),
+                    failure_code=str(code or ""),
+                )
 
         upload_resp: dict[str, Any] | None = None
         last_error: requests.RequestException | None = None
         backoff_schedule = (2, 5, 10)
         max_attempts = len(backoff_schedule)
         for attempt, sleep_seconds in enumerate(backoff_schedule, start=1):
+            log_event(
+                logger,
+                logging.INFO,
+                "Попытка отправки аудио в VK.",
+                component=_VK_SERVICE_COMPONENT,
+                event="audio_upload_attempt_started",
+                record_id=record_id,
+                track_id=track_id,
+                track_title=title,
+                audio_attempt=attempt,
+                audio_attempts_total=max_attempts,
+                audio_path=str(audio_path),
+            )
             try:
                 with audio_path.open("rb") as f:
                     resp = requests.post(
@@ -1039,6 +1180,19 @@ class VKService:
                     )
                     resp.raise_for_status()
                 upload_resp = resp.json()
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "Отправка аудио в VK завершена, выполняется сохранение audio.save.",
+                    component=_VK_SERVICE_COMPONENT,
+                    event="audio_upload_attempt_finished",
+                    record_id=record_id,
+                    track_id=track_id,
+                    track_title=title,
+                    audio_attempt=attempt,
+                    audio_attempts_total=max_attempts,
+                    audio_path=str(audio_path),
+                )
                 break
             except requests.RequestException as e:
                 last_error = e
@@ -1075,12 +1229,23 @@ class VKService:
                 audio_path=str(audio_path),
                 audio_attempts_total=max_attempts,
             )
-            return None
+            return VKAudioUploadResult(
+                attachment=None,
+                failure_reason="upload_http_failed",
+                failure_message=(
+                    f"VK не принял загрузку аудио после повторных попыток: {last_error}"
+                    if last_error
+                    else "VK не принял загрузку аудио после повторных попыток."
+                ),
+            )
 
         try:
             saved = self._save_audio(upload_resp, artist, title)
-            return f"audio{saved['owner_id']}_{saved['id']}"
+            return VKAudioUploadResult(
+                attachment=f"audio{saved['owner_id']}_{saved['id']}"
+            )
         except ApiError as e:
+            error_code = getattr(e, "code", None)
             log_event(
                 logger,
                 logging.WARNING,
@@ -1088,12 +1253,27 @@ class VKService:
                 component=_VK_SERVICE_COMPONENT,
                 event="audio_save_failed",
                 error=str(e),
-                error_code=getattr(e, "code", None),
+                error_code=error_code,
                 record_id=record_id,
                 track_id=track_id,
                 audio_path=str(audio_path),
             )
-            return None
+            if error_code == 270:
+                return VKAudioUploadResult(
+                    attachment=None,
+                    failure_reason="copyright_blocked",
+                    failure_message=(
+                        "VK отклонил сохранение аудио: файл заблокирован "
+                        "правообладателем и не может быть повторно загружен."
+                    ),
+                    failure_code=str(error_code),
+                )
+            return VKAudioUploadResult(
+                attachment=None,
+                failure_reason="audio_save_failed",
+                failure_message=str(e),
+                failure_code=str(error_code or ""),
+            )
 
     def _wall_post(
         self,
@@ -1121,6 +1301,16 @@ class VKService:
         if publish_date_ts is not None:
             params["publish_date"] = publish_date_ts
 
+        log_event(
+            logger,
+            logging.INFO,
+            "Публикую пост через wall.post.",
+            component=_VK_SERVICE_COMPONENT,
+            event="wall_post_started",
+            record_id=record_id,
+            attachments_total=len(attachments or ()),
+            publish_date_ts=publish_date_ts,
+        )
         resp: Dict[str, Any] = self._vk.method("wall.post", params)
 
         post_id_raw = resp.get("post_id")

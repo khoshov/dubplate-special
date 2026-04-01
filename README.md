@@ -23,7 +23,10 @@
 ### Docker Compose (опционально)
 - Поднять окружение: `docker compose up -d --build`
 - При необходимости команды можно выполнять в контейнере `django` через `docker compose exec`.
-- Фоновая обработка выполняется обычным контейнером `celery`.
+- Фоновая обработка выполняется двумя worker-контейнерами:
+  - `celery_general` — общий worker приложения;
+  - `celery_vk_publication` — отдельный worker публикации в VK.
+- VK-публикация обрабатывается в отдельной очереди `vk_publication` последовательно, worker `celery_vk_publication` запускается с `concurrency=1`.
 - Контейнер `youtube_session_login` используется только для ручной интерактивной YouTube-авторизации через noVNC и поднимает внутри себя отдельный worker только для очереди `youtube_session_login`.
 
 ## Команды Redeye (2 режима запуска)

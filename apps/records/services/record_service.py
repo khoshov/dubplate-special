@@ -1088,7 +1088,7 @@ class RecordService:
         _log_record_service_event(
             logging.INFO,
             "vk_publication_job_enqueued",
-            "Поставлена в очередь задача публикации записей в VK.",
+            "Создана задача публикации записей в VK и отправлена в Celery.",
             job_id=job.id,
             source=source,
             records_total=len(normalized_items),
@@ -1109,15 +1109,15 @@ class RecordService:
 
     @staticmethod
     def _resolve_vk_audio_source_summary(record: Record) -> str:
-        source_values = list(
-            record.tracks.exclude(audio_source="unknown")
-            .exclude(audio_source="")
-            .values_list("audio_source", flat=True)
-            .distinct()
+        labels = sorted(
+            {
+                str(track.get_audio_source_display() or "").strip()
+                for track in record.tracks.exclude(audio_source="unknown").exclude(
+                    audio_source=""
+                )
+            }
         )
-        labels_map = dict(Track.AudioSource.choices)
-        labels = [str(labels_map.get(value, "")).strip() for value in source_values]
-        labels = [label for label in labels if label]
+        labels = [label for label in labels if label and label != "Не указан"]
         return ", ".join(labels) if labels else "Не указан"
 
     def import_from_redeye(
