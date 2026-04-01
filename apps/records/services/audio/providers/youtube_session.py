@@ -18,6 +18,17 @@ from playwright.sync_api import (
 )
 
 from config.logging import NOTICE_LEVEL, log_event
+from records.constants import (
+    YOUTUBE_BROWSER_KEYRING,
+    YOUTUBE_BROWSER_NAME,
+    YOUTUBE_SESSION_LOGIN_POLL_MS,
+    YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS,
+    YOUTUBE_SESSION_LOGIN_TIMEOUT_MS,
+    YOUTUBE_SESSION_LOGIN_URL,
+    YOUTUBE_SESSION_LOCK_WAIT_MS,
+    YOUTUBE_SESSION_REFRESH_URL,
+    YOUTUBE_SESSION_REFRESH_WAIT_MS,
+)
 
 logger = logging.getLogger(__name__)
 _YOUTUBE_SESSION_COMPONENT = "youtube_session"
@@ -117,13 +128,11 @@ class YouTubeSessionService:
 
     @classmethod
     def browser_name(cls) -> str:
-        return str(getattr(settings, "YOUTUBE_BROWSER_NAME", "") or "chromium").strip()
+        return YOUTUBE_BROWSER_NAME
 
     @classmethod
     def browser_keyring(cls) -> str | None:
-        configured_value = str(
-            getattr(settings, "YOUTUBE_BROWSER_KEYRING", "") or ""
-        ).strip()
+        configured_value = str(YOUTUBE_BROWSER_KEYRING or "").strip()
         return configured_value or None
 
     @classmethod
@@ -143,10 +152,7 @@ class YouTubeSessionService:
 
     @classmethod
     def login_url(cls) -> str:
-        return str(
-            getattr(settings, "YOUTUBE_SESSION_UI_URL", "")
-            or "https://accounts.google.com/ServiceLogin?service=youtube"
-        ).strip()
+        return YOUTUBE_SESSION_LOGIN_URL
 
     @classmethod
     def profile_has_cookie_store(cls) -> bool:
@@ -212,13 +218,9 @@ class YouTubeSessionService:
                 ),
             )
 
-        login_timeout_ms = timeout_ms or int(
-            getattr(settings, "YOUTUBE_SESSION_LOGIN_TIMEOUT_MS", 900_000)
-        )
-        poll_ms = int(getattr(settings, "YOUTUBE_SESSION_LOGIN_POLL_MS", 2_000))
-        success_wait_ms = int(
-            getattr(settings, "YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS", 10_000)
-        )
+        login_timeout_ms = timeout_ms or YOUTUBE_SESSION_LOGIN_TIMEOUT_MS
+        poll_ms = YOUTUBE_SESSION_LOGIN_POLL_MS
+        success_wait_ms = YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS
         logged_in = False
         cls.mark_state_login_in_progress(
             "Запущена интерактивная авторизация YouTube-сессии."
@@ -367,21 +369,9 @@ class YouTubeSessionService:
                     page.set_default_timeout(5_000)
                     page.set_default_navigation_timeout(8_000)
 
-                    refresh_url = str(
-                        getattr(settings, "YOUTUBE_SESSION_REFRESH_URL", "")
-                        or "https://www.youtube.com/"
-                    ).strip()
-                    navigated = cls._safe_goto(page, refresh_url)
+                    navigated = cls._safe_goto(page, YOUTUBE_SESSION_REFRESH_URL)
                     if navigated:
-                        page.wait_for_timeout(
-                            int(
-                                getattr(
-                                    settings,
-                                    "YOUTUBE_SESSION_REFRESH_WAIT_MS",
-                                    3_000,
-                                )
-                            )
-                        )
+                        page.wait_for_timeout(YOUTUBE_SESSION_REFRESH_WAIT_MS)
 
                     # Запрос списка cookies провоцирует запись актуального состояния профиля.
                     profile_ready = cls.has_authenticated_session_cookies(
@@ -674,9 +664,7 @@ class YouTubeSessionService:
 
     @classmethod
     def _wait_for_lock_release(cls) -> bool:
-        deadline = time.monotonic() + (
-            int(getattr(settings, "YOUTUBE_SESSION_LOCK_WAIT_MS", 15_000)) / 1000
-        )
+        deadline = time.monotonic() + (YOUTUBE_SESSION_LOCK_WAIT_MS / 1000)
         lock_path = cls.lock_file()
         while time.monotonic() < deadline:
             cls._drop_stale_lock(lock_path)

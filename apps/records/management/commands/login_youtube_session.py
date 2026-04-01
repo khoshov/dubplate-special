@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from records.constants import YOUTUBE_SESSION_LOGIN_TIMEOUT_MS
 from records.services.audio.audio_service import AudioService
 
 
@@ -13,13 +13,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--timeout-sec",
             type=int,
-            default=max(
-                1,
-                int(
-                    getattr(settings, "YOUTUBE_SESSION_LOGIN_TIMEOUT_MS", 900_000)
-                    / 1000
-                ),
-            ),
+            default=max(1, int(YOUTUBE_SESSION_LOGIN_TIMEOUT_MS / 1000)),
             help="Максимальное время ожидания ручного логина.",
         )
 

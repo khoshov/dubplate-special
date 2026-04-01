@@ -12,6 +12,7 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html
 from config.logging import log_event
+from records.constants import YOUTUBE_SESSION_LOGIN_TIMEOUT_MS
 
 from records.models import YouTubeSessionState
 from records.services.tasks import (
@@ -395,9 +396,7 @@ class YouTubeAudioRefreshMixin:
             )
             return redirect(self._youtube_session_redirect_target(request))
 
-        timeout_sec = int(
-            getattr(settings, "YOUTUBE_SESSION_LOGIN_TIMEOUT_MS", 900_000) / 1000
-        )
+        timeout_sec = int(YOUTUBE_SESSION_LOGIN_TIMEOUT_MS / 1000)
         ui_url = str(getattr(settings, "YOUTUBE_SESSION_UI_URL", "") or "").strip()
         try:
             login_youtube_session_profile.delay(timeout_sec=timeout_sec)

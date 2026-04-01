@@ -559,7 +559,10 @@ def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, sett
     admin = RecordAdmin(Record, AdminSite())
     queued: list[int] = []
     settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"
-    settings.YOUTUBE_SESSION_LOGIN_TIMEOUT_MS = 120_000
+    monkeypatch.setattr(
+        "records.admin.mixins.YOUTUBE_SESSION_LOGIN_TIMEOUT_MS",
+        120_000,
+    )
     monkeypatch.setattr(
         login_youtube_session_profile,
         "delay",

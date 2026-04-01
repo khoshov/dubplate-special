@@ -22,6 +22,7 @@ from yt_dlp.utils import DownloadError
 
 from config.logging import log_event
 from records.constants import (
+    YOUTUBE_REMOTE_COMPONENTS,
     YTDLP_BASE_RETRY_DELAY_SEC,
     YTDLP_NETWORK_RETRIES,
     YTDLP_SOCKET_TIMEOUT_SEC,
@@ -707,13 +708,9 @@ class YouTubeAudioEnrichmentProvider:
 
     @classmethod
     def _resolve_remote_components(cls) -> list[str]:
-        configured_value = getattr(settings, "YOUTUBE_REMOTE_COMPONENTS", []) or []
-        if not isinstance(configured_value, list):
-            return []
-
         allowed_components = {"ejs:github", "ejs:npm"}
         resolved: list[str] = []
-        for raw_value in configured_value:
+        for raw_value in YOUTUBE_REMOTE_COMPONENTS:
             value = str(raw_value or "").strip().lower()
             if value in allowed_components and value not in resolved:
                 resolved.append(value)

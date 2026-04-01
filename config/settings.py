@@ -248,47 +248,6 @@ YOUTUBE_JS_RUNTIME = env(
     "YOUTUBE_JS_RUNTIME",
     default="deno" if RUN_ENV == "docker" else "node",
 )
-YOUTUBE_BROWSER_NAME = env("YOUTUBE_BROWSER_NAME", default="chromium")
-YOUTUBE_BROWSER_KEYRING = env(
-    "YOUTUBE_BROWSER_KEYRING",
-    default="BASICTEXT" if RUN_ENV == "docker" else "",
-)
-YOUTUBE_REMOTE_COMPONENTS = env.list(
-    "YOUTUBE_REMOTE_COMPONENTS",
-    default=["ejs:github"],
-)
-YOUTUBE_SESSION_REFRESH_URL = env(
-    "YOUTUBE_SESSION_REFRESH_URL",
-    default="https://www.youtube.com/",
-)
-YOUTUBE_SESSION_LOGIN_URL = env(
-    "YOUTUBE_SESSION_LOGIN_URL",
-    default="https://accounts.google.com/ServiceLogin?service=youtube",
-)
-YOUTUBE_SESSION_REFRESH_WAIT_MS = env.int(
-    "YOUTUBE_SESSION_REFRESH_WAIT_MS",
-    default=3_000,
-)
-YOUTUBE_SESSION_LOGIN_TIMEOUT_MS = env.int(
-    "YOUTUBE_SESSION_LOGIN_TIMEOUT_MS",
-    default=900_000,
-)
-YOUTUBE_SESSION_LOGIN_POLL_MS = env.int(
-    "YOUTUBE_SESSION_LOGIN_POLL_MS",
-    default=2_000,
-)
-YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS = env.int(
-    "YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS",
-    default=10_000,
-)
-YOUTUBE_SESSION_LOCK_WAIT_MS = env.int(
-    "YOUTUBE_SESSION_LOCK_WAIT_MS",
-    default=15_000,
-)
-YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED = env.bool(
-    "YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED",
-    default=True,
-)
 YOUTUBE_SESSION_UI_URL = env(
     "YOUTUBE_SESSION_UI_URL",
     default="http://localhost:6080/vnc.html?autoconnect=1&resize=scale",

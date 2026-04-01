@@ -125,6 +125,46 @@ ALLOWED_AUDIO_CONTENT_TYPES = {
 
 
 # ============================================================================
+#  YOUTUBE SESSION / YT-DLP ПОВЕДЕНЧЕСКИЕ КОНСТАНТЫ
+# ============================================================================
+
+YOUTUBE_BROWSER_NAME: str = "chromium"
+"""Имя браузера для извлечения cookies из persistent profile."""
+
+YOUTUBE_BROWSER_KEYRING: str = "BASICTEXT"
+"""Ключница браузера по умолчанию для container runtime."""
+
+YOUTUBE_REMOTE_COMPONENTS: tuple[str, ...] = ("ejs:github",)
+"""Разрешённые remote-компоненты для yt-dlp JavaScript runtime."""
+
+YOUTUBE_SESSION_REFRESH_URL: str = "https://www.youtube.com/"
+"""URL для фонового обновления YouTube-сессии."""
+
+YOUTUBE_SESSION_LOGIN_URL: str = (
+    "https://accounts.google.com/ServiceLogin?service=youtube"
+)
+"""URL интерактивного логина YouTube-сессии."""
+
+YOUTUBE_SESSION_REFRESH_WAIT_MS: int = 3_000
+"""Пауза после открытия refresh URL перед чтением cookies."""
+
+YOUTUBE_SESSION_LOGIN_TIMEOUT_MS: int = 900_000
+"""Максимальное время ожидания ручной авторизации YouTube."""
+
+YOUTUBE_SESSION_LOGIN_POLL_MS: int = 2_000
+"""Интервал опроса cookies во время интерактивного логина."""
+
+YOUTUBE_SESSION_LOGIN_SUCCESS_WAIT_MS: int = 10_000
+"""Дополнительное ожидание после успешного интерактивного логина."""
+
+YOUTUBE_SESSION_LOCK_WAIT_MS: int = 15_000
+"""Максимальное ожидание освобождения lock-файла YouTube session."""
+
+YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED: bool = True
+"""Разрешает ли повторную попытку после refresh YouTube session."""
+
+
+# ============================================================================
 #  НАСТРОЙКИ PLAYWRIGHT / ЗАХВАТА АУДИО С REDEYE
 # ============================================================================
 

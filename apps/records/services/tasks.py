@@ -22,6 +22,7 @@ from records.models import (
     VKPublicationJobRecord,
 )
 from config.logging import NOTICE_LEVEL, build_log_extra, log_event
+from records.constants import YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED
 from records.services.audio.audio_service import AudioService
 from records.services.audio.providers.youtube_audio_enrichment import (
     YouTubeAuthenticationRequiredError,
@@ -634,7 +635,7 @@ def _maybe_refresh_youtube_session(
     overwrite_existing: bool,
     audio_service: AudioService,
 ) -> tuple[str | None, int, Exception | None]:
-    if not bool(getattr(settings, "YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED", True)):
+    if not YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED:
         return None, 0, None
 
     _log_youtube_session_event(

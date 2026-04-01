@@ -607,7 +607,10 @@ def test_youtube_provider_builds_ydl_options_without_cookie_file_fallback(
         settings.YOUTUBE_YTDLP_CACHE_DIR = str(cache_dir)
         settings.YOUTUBE_JS_RUNTIME = "node"
         settings.YOUTUBE_JS_RUNTIME_PATH = ""
-        settings.YOUTUBE_REMOTE_COMPONENTS = ["ejs:github", "ejs:npm", "invalid"]
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_audio_enrichment.YOUTUBE_REMOTE_COMPONENTS",
+            ("ejs:github", "ejs:npm", "invalid"),
+        )
         monkeypatch.setattr(
             "records.services.audio.providers.youtube_audio_enrichment.shutil.which",
             lambda name: "/usr/bin/node" if name == "node" else "",
@@ -1150,7 +1153,7 @@ def test_bandcamp_provider_sets_audio_source(settings, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_youtube_session_service_resolves_browser_profile(settings):
+def test_youtube_session_service_resolves_browser_profile(settings, monkeypatch):
     runtime_dir = Path("runtime")
     profile_dir = runtime_dir / "test-youtube-browser-profile"
     default_dir = profile_dir / "Default"
@@ -1159,8 +1162,14 @@ def test_youtube_session_service_resolves_browser_profile(settings):
     try:
         cookies_db.write_text("", encoding="utf-8")
         settings.YOUTUBE_BROWSER_PROFILE_DIR = str(profile_dir)
-        settings.YOUTUBE_BROWSER_NAME = "chromium"
-        settings.YOUTUBE_BROWSER_KEYRING = "BASICTEXT"
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_session.YOUTUBE_BROWSER_NAME",
+            "chromium",
+        )
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_session.YOUTUBE_BROWSER_KEYRING",
+            "BASICTEXT",
+        )
         state = YouTubeSessionState.get_solo()
         state.status = YouTubeSessionState.Status.HEALTHY
         state.save(update_fields=["status", "modified"])
@@ -1288,7 +1297,10 @@ def test_youtube_session_service_rejects_anonymous_cookie_set():
 def test_process_track_for_youtube_enrichment_recovers_after_session_refresh(
     settings, monkeypatch
 ):
-    settings.YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED = True
+    monkeypatch.setattr(
+        "records.services.tasks.YOUTUBE_SESSION_RECOVERY_RETRY_ENABLED",
+        True,
+    )
     record = Record.objects.create(title="Recovery Record")
     track = Track.objects.create(
         record=record,
