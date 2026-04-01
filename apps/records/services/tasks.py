@@ -407,6 +407,28 @@ def tasks_module_time_sleep(seconds: int) -> None:
     time.sleep(seconds)
 
 
+def _build_audio_job_record_response(
+    *,
+    job: AudioEnrichmentJob,
+    record: Record,
+    job_record: AudioEnrichmentJobRecord,
+    track_id: int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "job_id": str(job.id),
+        "record_id": record.pk,
+        "status": job_record.status,
+        "updated_count": job_record.updated_count,
+        "skipped_count": job_record.skipped_count,
+        "error_count": job_record.error_count,
+    }
+    if track_id is not None:
+        payload["track_id"] = track_id
+    if job_record.reason_code:
+        payload["reason_code"] = job_record.reason_code
+    return payload
+
+
 @shared_task(name="records.vk_publication.run_job", queue="vk_publication")
 def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Ставит fan-out обработку VK job по списку записей."""
@@ -1389,6 +1411,26 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
         job=job,
         record=record,
     )
+    terminal_statuses = {
+        AudioEnrichmentJobRecord.Status.COMPLETED,
+        AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+        AudioEnrichmentJobRecord.Status.FAILED,
+        AudioEnrichmentJobRecord.Status.SKIPPED,
+    }
+    if job_record.status in terminal_statuses:
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+        )
+    if job_record.status == AudioEnrichmentJobRecord.Status.RUNNING:
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+        )
     if not can_process:
         _refresh_job_status(job)
         _log_youtube_audio_event(
@@ -1402,15 +1444,31 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
             reason=job_record.reason_code
             or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
         )
-        return {
-            "job_id": str(job.id),
-            "record_id": record.pk,
-            "status": AudioEnrichmentJobRecord.Status.SKIPPED,
-            "reason_code": job_record.reason_code
-            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
-        }
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+        )
 
-    audio_service.mark_youtube_record_running(job_record)
+    started_at = timezone.now()
+    updated = AudioEnrichmentJobRecord.objects.filter(
+        pk=job_record.pk,
+        status=AudioEnrichmentJobRecord.Status.QUEUED,
+    ).update(
+        status=AudioEnrichmentJobRecord.Status.RUNNING,
+        started_at=started_at,
+        stage="Добавление аудио к трекам",
+        modified=started_at,
+    )
+    if not updated:
+        job_record.refresh_from_db()
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+        )
+    job_record.refresh_from_db()
     _log_youtube_audio_event(
         logging.INFO,
         "record_start",
@@ -1572,14 +1630,11 @@ def process_youtube_enrichment_record(payload: dict[str, Any]) -> dict[str, Any]
 
     refreshed = _refresh_job_status(job)
     refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
-    return {
-        "job_id": str(refreshed.id),
-        "record_id": record.pk,
-        "status": refreshed_job_record.status,
-        "updated_count": refreshed_job_record.updated_count,
-        "skipped_count": refreshed_job_record.skipped_count,
-        "error_count": refreshed_job_record.error_count,
-    }
+    return _build_audio_job_record_response(
+        job=refreshed,
+        record=record,
+        job_record=refreshed_job_record,
+    )
 
 
 @shared_task(name="records.youtube_enrichment.process_track")
@@ -1596,6 +1651,28 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
         job=job,
         record=record,
     )
+    terminal_statuses = {
+        AudioEnrichmentJobRecord.Status.COMPLETED,
+        AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+        AudioEnrichmentJobRecord.Status.FAILED,
+        AudioEnrichmentJobRecord.Status.SKIPPED,
+    }
+    if job_record.status in terminal_statuses:
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+            track_id=track.pk,
+        )
+    if job_record.status == AudioEnrichmentJobRecord.Status.RUNNING:
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+            track_id=track.pk,
+        )
     if not can_process:
         _refresh_job_status(job)
         _log_youtube_audio_event(
@@ -1609,32 +1686,37 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
             reason=job_record.reason_code
             or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
         )
-        return {
-            "job_id": str(job.id),
-            "record_id": record.pk,
-            "track_id": track.pk,
-            "status": AudioEnrichmentJobRecord.Status.SKIPPED,
-            "reason_code": job_record.reason_code
-            or AudioEnrichmentJobRecord.Reason.ALREADY_RUNNING,
-        }
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+            track_id=track.pk,
+        )
 
-    job_record.operation_name = "Добавление аудио к треку"
-    job_record.scope = AudioEnrichmentJobRecord.Scope.TRACK
-    job_record.stage = "Ожидает выполнения"
-    job_record.tracks_total = 1
-    if not job_record.queued_at:
-        job_record.queued_at = timezone.now()
-    job_record.save(
-        update_fields=[
-            "operation_name",
-            "scope",
-            "stage",
-            "tracks_total",
-            "queued_at",
-            "modified",
-        ]
+    started_at = timezone.now()
+    updated = AudioEnrichmentJobRecord.objects.filter(
+        pk=job_record.pk,
+        status=AudioEnrichmentJobRecord.Status.QUEUED,
+    ).update(
+        status=AudioEnrichmentJobRecord.Status.RUNNING,
+        started_at=started_at,
+        operation_name="Добавление аудио к треку",
+        scope=AudioEnrichmentJobRecord.Scope.TRACK,
+        stage="Добавление аудио к треку",
+        tracks_total=1,
+        queued_at=job_record.queued_at or started_at,
+        modified=started_at,
     )
-    audio_service.mark_youtube_record_running(job_record)
+    if not updated:
+        job_record.refresh_from_db()
+        _refresh_job_status(job)
+        return _build_audio_job_record_response(
+            job=job,
+            record=record,
+            job_record=job_record,
+            track_id=track.pk,
+        )
+    job_record.refresh_from_db()
     _log_youtube_audio_event(
         logging.INFO,
         "record_start",
@@ -1768,15 +1850,12 @@ def process_youtube_enrichment_track(payload: dict[str, Any]) -> dict[str, Any]:
 
     refreshed = _refresh_job_status(job)
     refreshed_job_record = AudioEnrichmentJobRecord.objects.get(pk=job_record.pk)
-    return {
-        "job_id": str(refreshed.id),
-        "record_id": record.pk,
-        "track_id": track.pk,
-        "status": refreshed_job_record.status,
-        "updated_count": refreshed_job_record.updated_count,
-        "skipped_count": refreshed_job_record.skipped_count,
-        "error_count": refreshed_job_record.error_count,
-    }
+    return _build_audio_job_record_response(
+        job=refreshed,
+        record=record,
+        job_record=refreshed_job_record,
+        track_id=track.pk,
+    )
 
 
 @shared_task(name="records.youtube_search.find_track_urls")
@@ -1834,7 +1913,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         "extract_flat": True,
         "skip_download": True,
     }
-    updated = skipped = not_found = 0
+    updated = skipped = not_found = search_errors = 0
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         for track in record.tracks.order_by("position_index", "id"):
@@ -1881,7 +1960,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     query=query,
                     error=str(exc),
                 )
-                not_found += 1
+                search_errors += 1
                 track_results_summary.append(
                     {
                         "track_id": str(track.pk),
@@ -1897,7 +1976,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         job_record=job_record,
                         updated_count=updated,
                         skipped_count=skipped + not_found,
-                        error_count=0,
+                        error_count=search_errors,
                         stage="Поиск аудио для треков",
                     )
                 continue
@@ -1937,7 +2016,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         job_record=job_record,
                         updated_count=updated,
                         skipped_count=skipped + not_found,
-                        error_count=0,
+                        error_count=search_errors,
                         stage="Поиск аудио для треков",
                     )
                 continue
@@ -1982,7 +2061,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                         job_record=job_record,
                         updated_count=updated,
                         skipped_count=skipped + not_found,
-                        error_count=0,
+                        error_count=search_errors,
                         stage="Поиск аудио для треков",
                     )
                 continue
@@ -2005,7 +2084,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
                     job_record=job_record,
                     updated_count=updated,
                     skipped_count=skipped + not_found,
-                    error_count=0,
+                    error_count=search_errors,
                     stage="Поиск аудио для треков",
                 )
 
@@ -2035,13 +2114,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         "record_finish",
         (
             "Поиск YouTube для релиза завершён: "
-            f"updated={updated}, skipped={skipped}, not_found={not_found}."
+            f"updated={updated}, skipped={skipped}, not_found={not_found}, "
+            f"errors={search_errors}."
         ),
         record_id=record.pk,
     )
     if job_record is not None and job is not None:
         total_skipped = skipped + not_found
-        if updated > 0 and total_skipped == 0:
+        if updated > 0 and total_skipped == 0 and search_errors == 0:
             status = AudioEnrichmentJobRecord.Status.COMPLETED
             result = "Ссылки YouTube найдены"
             warning_message = ""
@@ -2050,7 +2130,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
             result = "Ссылки YouTube найдены частично"
             warning_message = (
                 f"Не для всех треков найдены ссылки YouTube: "
-                f"пропущено {skipped}, не найдено {not_found}."
+                f"пропущено {skipped}, не найдено {not_found}, ошибок {search_errors}."
+            )
+        elif search_errors > 0:
+            status = AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+            result = "Поиск YouTube завершился с ошибками"
+            warning_message = (
+                f"Поиск завершён без новых ссылок: пропущено {skipped}, "
+                f"не найдено {not_found}, ошибок {search_errors}."
             )
         else:
             status = AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
@@ -2065,14 +2152,14 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         job_record.result = result
         job_record.result_message = (
             f"Поиск аудио на YouTube завершён: найдено {updated}, "
-            f"пропущено {skipped}, не найдено {not_found}."
+            f"пропущено {skipped}, не найдено {not_found}, ошибок {search_errors}."
         )
         job_record.warning_message = warning_message
         job_record.error_message = ""
         job_record.audio_source_summary = "YouTube"
         job_record.updated_count = updated
         job_record.skipped_count = total_skipped
-        job_record.error_count = 0
+        job_record.error_count = search_errors
         job_record.track_results_json = track_results_summary
         job_record.finished_at = timezone.now()
         job_record.save(
@@ -2099,6 +2186,7 @@ def find_youtube_audio_urls_for_record(payload: dict[str, Any]) -> dict[str, Any
         "updated": updated,
         "skipped": skipped,
         "not_found": not_found,
+        "error_count": search_errors,
     }
 
 

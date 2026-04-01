@@ -650,7 +650,9 @@ class YouTubeSessionService:
         if not lock_path.exists():
             return
         lock_pid = cls._read_lock_pid(lock_path)
-        if lock_pid is not None and not cls._pid_is_running(lock_pid):
+        if lock_pid is not None:
+            if cls._pid_is_running(lock_pid):
+                return
             with contextlib.suppress(FileNotFoundError):
                 lock_path.unlink()
             return

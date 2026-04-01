@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -367,6 +368,7 @@ def test_find_youtube_audio_urls_for_record_updates_release_report(monkeypatch):
         "updated": 1,
         "skipped": 0,
         "not_found": 0,
+        "error_count": 0,
     }
     assert track.youtube_url == "https://www.youtube.com/watch?v=abc123"
     assert job.status == AudioEnrichmentJob.Status.COMPLETED
@@ -1235,6 +1237,28 @@ def test_youtube_session_service_drops_orphaned_lock(settings, monkeypatch):
             lock_path.unlink()
 
 
+def test_youtube_session_service_keeps_live_stale_lock(settings, monkeypatch):
+    runtime_dir = Path("runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    lock_path = runtime_dir / f"youtube-session-{uuid.uuid4().hex}.lock"
+    try:
+        settings.YOUTUBE_SESSION_LOCK_FILE = str(lock_path)
+        lock_path.write_text("424242", encoding="utf-8")
+        stale_timestamp = lock_path.stat().st_mtime - (60 * 60)
+        os.utime(lock_path, (stale_timestamp, stale_timestamp))
+        monkeypatch.setattr(
+            "records.services.audio.providers.youtube_session.os.kill",
+            lambda _pid, _signal: None,
+        )
+
+        YouTubeSessionService._drop_stale_lock(lock_path)
+
+        assert lock_path.exists() is True
+    finally:
+        if lock_path.exists():
+            lock_path.unlink()
+
+
 @pytest.mark.django_db
 def test_youtube_session_service_interactive_login_keeps_valid_session(
     settings, monkeypatch
@@ -1338,6 +1362,169 @@ def test_process_track_for_youtube_enrichment_recovers_after_session_refresh(
     assert payload["status"] == AudioEnrichmentTrackResult.Status.UPDATED
     assert payload["attempts"] == 2
     assert attempts == {"download": 2, "refresh": 1}
+
+
+@pytest.mark.django_db
+def test_process_youtube_enrichment_record_returns_existing_completed_result():
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        overwrite_existing=True,
+        status=AudioEnrichmentJob.Status.COMPLETED,
+    )
+    record = Record.objects.create(title="Completed Record")
+    job_record = AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED,
+        updated_count=2,
+        skipped_count=1,
+        error_count=0,
+    )
+
+    result = tasks_module.process_youtube_enrichment_record(
+        {
+            "job_id": str(job.id),
+            "record_id": record.id,
+            "overwrite_existing": True,
+        }
+    )
+
+    assert result == {
+        "job_id": str(job.id),
+        "record_id": record.id,
+        "status": AudioEnrichmentJobRecord.Status.COMPLETED,
+        "updated_count": 2,
+        "skipped_count": 1,
+        "error_count": 0,
+    }
+    job_record.refresh_from_db()
+    assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED
+
+
+@pytest.mark.django_db
+def test_process_youtube_enrichment_track_returns_existing_completed_result():
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        overwrite_existing=True,
+        status=AudioEnrichmentJob.Status.COMPLETED,
+    )
+    record = Record.objects.create(title="Completed Track Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Completed Track",
+    )
+    job_record = AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+        updated_count=0,
+        skipped_count=1,
+        error_count=1,
+        reason_code=AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+    )
+
+    result = tasks_module.process_youtube_enrichment_track(
+        {
+            "job_id": str(job.id),
+            "track_id": track.id,
+            "overwrite_existing": True,
+        }
+    )
+
+    assert result == {
+        "job_id": str(job.id),
+        "record_id": record.id,
+        "track_id": track.id,
+        "status": AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS,
+        "updated_count": 0,
+        "skipped_count": 1,
+        "error_count": 1,
+        "reason_code": AudioEnrichmentJobRecord.Reason.VALIDATION_ERROR,
+    }
+    job_record.refresh_from_db()
+    assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+
+
+@pytest.mark.django_db
+def test_find_youtube_audio_urls_for_record_counts_search_errors(monkeypatch):
+    job = AudioEnrichmentJob.objects.create(
+        source=AudioEnrichmentJob.Source.MANUAL_RECORD,
+        status=AudioEnrichmentJob.Status.QUEUED,
+        total_records=1,
+        total_tracks=1,
+    )
+    record = Record.objects.create(title="Search Error Record")
+    track = Track.objects.create(
+        record=record,
+        position="A1",
+        position_index=1,
+        title="Broken Search Track",
+    )
+    AudioEnrichmentJobRecord.objects.create(
+        job=job,
+        record=record,
+        status=AudioEnrichmentJobRecord.Status.QUEUED,
+        operation_name="Поиск аудио на YouTube",
+        stage="Ожидает выполнения",
+        result="Операция создана",
+        result_message="Поставлена задача поиска аудио на YouTube.",
+        tracks_total=1,
+        queued_at=timezone.now(),
+    )
+
+    class _BrokenYoutubeDL:
+        def __init__(self, _opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, _query, download=False):
+            assert download is False
+            raise RuntimeError("temporary yt-dlp failure")
+
+    monkeypatch.setattr(tasks_module.yt_dlp, "YoutubeDL", _BrokenYoutubeDL)
+
+    result = tasks_module.find_youtube_audio_urls_for_record(
+        {
+            "job_id": str(job.id),
+            "record_id": record.id,
+            "requested_by_user_id": None,
+        }
+    )
+
+    job.refresh_from_db()
+    job_record = AudioEnrichmentJobRecord.objects.get(job=job, record=record)
+
+    assert result == {
+        "record_id": record.pk,
+        "updated": 0,
+        "skipped": 0,
+        "not_found": 0,
+        "error_count": 1,
+    }
+    assert job.status == AudioEnrichmentJob.Status.COMPLETED_WITH_ERRORS
+    assert job_record.status == AudioEnrichmentJobRecord.Status.COMPLETED_WITH_ERRORS
+    assert job_record.result == "Поиск YouTube завершился с ошибками"
+    assert job_record.error_count == 1
+    assert job_record.skipped_count == 0
+    assert "ошибок 1" in job_record.result_message
+    assert "ошибок 1" in job_record.warning_message
+    assert job_record.track_results_json == [
+        {
+            "track_id": str(track.pk),
+            "track_title": track.title,
+            "action": "Поиск аудио на YouTube",
+            "status": "Ошибка",
+            "source": "YouTube",
+            "message": "temporary yt-dlp failure",
+        }
+    ]
 
 
 def test_login_youtube_session_command_reports_success(monkeypatch, capsys):
