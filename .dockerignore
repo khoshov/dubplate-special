@@ -3,5 +3,13 @@
 .idea
 .ruff_cache
 .venv
+.env
+.pytest_cache
+.pytest-tmp
+__pycache__
 db.sqlite3
+htmlcov
+media
+pgdata
 runtime/*
+staticfiles
