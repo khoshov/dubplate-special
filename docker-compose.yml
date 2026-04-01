@@ -24,7 +24,7 @@ services:
       redis:
         condition: service_healthy
 
-  celery:
+  celery_general:
     build: .
     env_file:
       - .env
@@ -119,5 +119,4 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-
 
