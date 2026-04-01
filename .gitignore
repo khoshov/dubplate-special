@@ -182,6 +182,7 @@ staticfiles
 runtime/*
 !runtime/.gitkeep
 AGENTS.md
+@AGENTS.md
 AGENT_INSTRUCTIONS.md
 AGENT*.md
 agent*.md
