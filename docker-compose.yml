@@ -30,7 +30,30 @@ services:
       - .env
     environment:
       RUN_ENV: docker
-    command: uv run celery -A config worker --loglevel=info
+    command: uv run celery -A config worker --loglevel=info --queues=celery,youtube_session_login
+    volumes:
+      - ./apps:/app/apps
+      - ./config:/app/config
+      - ./locale:/app/locale
+      - ./media:/app/media
+      - ./runtime:/app/runtime
+      - ./templates:/app/templates
+      - ./manage.py:/app/manage.py
+      - ./pytest.ini:/app/pytest.ini
+      - ./tests:/app/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_vk_publication:
+    build: .
+    env_file:
+      - .env
+    environment:
+      RUN_ENV: docker
+    command: uv run celery -A config worker --loglevel=info --queues=vk_publication --concurrency=1 --hostname=vk_publication@%h
     volumes:
       - ./apps:/app/apps
       - ./config:/app/config
@@ -96,6 +119,5 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-
 
 

@@ -1035,7 +1035,7 @@ class VKService:
                     resp = requests.post(
                         url,
                         files={"file": (audio_path.name, f, "audio/mpeg")},
-                        timeout=60,
+                        timeout=(10, 180),
                     )
                     resp.raise_for_status()
                 upload_resp = resp.json()

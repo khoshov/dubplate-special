@@ -383,7 +383,7 @@ def tasks_module_time_sleep(seconds: int) -> None:
     time.sleep(seconds)
 
 
-@shared_task(name="records.vk_publication.run_job")
+@shared_task(name="records.vk_publication.run_job", queue="vk_publication")
 def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Ставит fan-out обработку VK job по списку записей."""
     job_id, requested_by_user_id, source = _parse_vk_run_job_payload(payload)
@@ -442,7 +442,7 @@ def run_vk_publication_job(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@shared_task(name="records.vk_publication.process_record")
+@shared_task(name="records.vk_publication.process_record", queue="vk_publication")
 def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
     """Публикует одну запись в VK и обновляет job report."""
     job_id, job_record_id = _parse_vk_process_record_payload(payload)
