@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from django import template
-from django.conf import settings
 from django.urls import NoReverseMatch, reverse
 
 from records.models import YouTubeSessionState
+from records.services.audio.providers.youtube_session import YouTubeSessionService
 
 register = template.Library()
 
@@ -61,6 +61,6 @@ def youtube_session_banner(context: dict[str, object]) -> dict[str, object]:
         "recover_url": recover_url,
         "show_refresh_action": show_refresh_action,
         "show_login_action": show_login_action,
-        "ui_url": str(getattr(settings, "YOUTUBE_SESSION_UI_URL", "") or "").strip(),
+        "ui_url": YouTubeSessionService.resolved_ui_url(request),
         "request": request,
     }

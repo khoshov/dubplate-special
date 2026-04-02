@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
 from playwright.sync_api import (
@@ -70,6 +71,11 @@ _AUTHENTICATED_COOKIE_DOMAIN_HINTS = (
 )
 _GOOGLE_LOGIN_EMAIL_SELECTOR = 'input[type="email"]'
 _GOOGLE_LOGIN_PASSWORD_SELECTOR = 'input[type="password"]'
+_LOCAL_UI_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_INTERACTIVE_LOGIN_INTERNAL_PAGE_PREFIXES = (
+    "chrome://",
+    "edge://",
+)
 
 
 def _log_youtube_session_event(
@@ -151,6 +157,53 @@ class YouTubeSessionService:
         ).strip()
 
     @classmethod
+    def resolved_ui_url(cls, request: Any | None = None) -> str:
+        configured_url = cls.ui_url()
+        if not configured_url or request is None:
+            return configured_url
+
+        try:
+            parsed_url = urlsplit(configured_url)
+        except ValueError:
+            return configured_url
+
+        if (parsed_url.hostname or "").lower() not in _LOCAL_UI_HOSTS:
+            return configured_url
+
+        get_host = getattr(request, "get_host", None)
+        if not callable(get_host):
+            return configured_url
+
+        try:
+            request_host = str(get_host() or "").strip()
+        except Exception:  # noqa: BLE001
+            return configured_url
+        if not request_host:
+            return configured_url
+
+        request_host_parts = urlsplit(f"//{request_host}")
+        target_host = str(request_host_parts.hostname or "").strip()
+        if not target_host:
+            return configured_url
+
+        if ":" in target_host and not target_host.startswith("["):
+            target_host = f"[{target_host}]"
+
+        target_port = parsed_url.port
+        rewritten_netloc = (
+            f"{target_host}:{target_port}" if target_port is not None else target_host
+        )
+        return urlunsplit(
+            (
+                parsed_url.scheme,
+                rewritten_netloc,
+                parsed_url.path,
+                parsed_url.query,
+                parsed_url.fragment,
+            )
+        )
+
+    @classmethod
     def login_url(cls) -> str:
         return YOUTUBE_SESSION_LOGIN_URL
 
@@ -166,8 +219,18 @@ class YouTubeSessionService:
         return state.status == state.Status.HEALTHY
 
     @classmethod
+    def profile_allows_cookie_reuse(cls) -> bool:
+        if not cls.profile_has_cookie_store():
+            return False
+        state = cls._get_state()
+        return state.status in {
+            state.Status.HEALTHY,
+            state.Status.UNKNOWN,
+        }
+
+    @classmethod
     def resolve_cookies_from_browser(cls) -> tuple[str, str, str | None, None] | None:
-        if not cls.profile_is_ready():
+        if not cls.profile_allows_cookie_reuse():
             return None
         return (
             cls.browser_name(),
@@ -249,10 +312,12 @@ class YouTubeSessionService:
                 try:
                     # Для dedicated profile интерактивный bootstrap всегда должен
                     # требовать живой re-login, а не принимать stale cookies за успех.
-                    page = cls._resolve_page(context)
+                    page = cls._prepare_interactive_login_page(context)
                     page.set_default_timeout(10_000)
                     page.set_default_navigation_timeout(20_000)
+                    cls._bring_page_to_front(page)
                     cls._safe_goto(page, cls.login_url())
+                    cls._bring_page_to_front(page)
                     cls._prefill_google_login(page)
 
                     deadline = time.monotonic() + (login_timeout_ms / 1000)
@@ -439,6 +504,50 @@ class YouTubeSessionService:
         if context.pages:
             return context.pages[0]
         return context.new_page()
+
+    @classmethod
+    def _prepare_interactive_login_page(cls, context: BrowserContext) -> Page:
+        pages = list(context.pages)
+        if not pages:
+            page = context.new_page()
+            cls._bring_page_to_front(page)
+            return page
+
+        _log_youtube_session_event(
+            logging.DEBUG,
+            "login_prepare_pages",
+            "Подготовка стартовой страницы интерактивной YouTube-авторизации.",
+            page_urls=", ".join(cls._page_url(page) or "—" for page in pages),
+            pages_total=len(pages),
+        )
+
+        candidate_page: Page | None = None
+        for page in pages:
+            page_url = cls._page_url(page).lower()
+            if any(
+                page_url.startswith(prefix)
+                for prefix in _INTERACTIVE_LOGIN_INTERNAL_PAGE_PREFIXES
+            ):
+                with contextlib.suppress(PWError):
+                    page.close()
+                continue
+            candidate_page = page
+            break
+
+        page = candidate_page or context.new_page()
+        cls._bring_page_to_front(page)
+        return page
+
+    @classmethod
+    def _page_url(cls, page: Page) -> str:
+        with contextlib.suppress(PWError):
+            return str(page.url or "").strip()
+        return ""
+
+    @classmethod
+    def _bring_page_to_front(cls, page: Page) -> None:
+        with contextlib.suppress(PWError):
+            page.bring_to_front()
 
     @classmethod
     def has_authenticated_session_cookies(

@@ -125,16 +125,18 @@ WSGI_APPLICATION = "config.wsgi.application"
 # DATABASES = {
 #     "default": env.db(),
 # }
-RUN_ENV = os.getenv("RUN_ENV", "local")
+RUN_ENV = env("RUN_ENV", default="local").lower()
+IS_DOCKER_ENV = RUN_ENV == "docker"
+IS_PROD_ENV = RUN_ENV == "prod"
 POSTGRES_NAME = env("POSTGRES_DB")
 POSTGRES_USER = env("POSTGRES_USER")
 POSTGRES_PASSWORD = env("POSTGRES_PASSWORD")
 POSTGRES_PORT = env("POSTGRES_PORT")
 
-if RUN_ENV == "docker":
-    POSTGRES_HOST = env("POSTGRES_HOST")
+if IS_DOCKER_ENV:
+    POSTGRES_HOST = env("POSTGRES_HOST", default="postgres")
 else:
-    POSTGRES_HOST = "127.0.0.1"
+    POSTGRES_HOST = env("POSTGRES_HOST", default="127.0.0.1")
 
 DATABASES = {
     "default": {
@@ -184,7 +186,7 @@ LOCALE_PATHS = [
 # =================
 # CELERY / REDIS
 # =================
-if RUN_ENV == "docker":
+if IS_DOCKER_ENV:
     CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
     CELERY_RESULT_BACKEND = env(
         "CELERY_RESULT_BACKEND",
@@ -212,7 +214,7 @@ CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=150
 # =================
 # YOUTUBE AUDIO ENRICHMENT
 # =================
-if RUN_ENV == "docker":
+if IS_DOCKER_ENV:
     YOUTUBE_BROWSER_PROFILE_DIR = env(
         "YOUTUBE_BROWSER_PROFILE_DIR",
         default="/app/runtime/youtube-browser-profile",
@@ -246,7 +248,7 @@ else:
 
 YOUTUBE_JS_RUNTIME = env(
     "YOUTUBE_JS_RUNTIME",
-    default="deno" if RUN_ENV == "docker" else "node",
+    default="deno" if IS_DOCKER_ENV else "node",
 )
 YOUTUBE_SESSION_UI_URL = env(
     "YOUTUBE_SESSION_UI_URL",
@@ -275,8 +277,12 @@ AUTH_USER_MODEL = "accounts.User"
 # =============
 # MEDIA FILES
 # =============
+
 MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+if IS_PROD_ENV:
+    MEDIA_ROOT = env("MEDIA_ROOT", default="/mnt/yadisk/app-media")
+else:
+    MEDIA_ROOT = env("MEDIA_ROOT", default=os.path.join(BASE_DIR, "media"))
 
 # ===================
 # CKEDITOR 5 CONFIG

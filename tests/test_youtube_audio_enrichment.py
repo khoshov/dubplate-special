@@ -8,6 +8,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.core.management import call_command
+from django.test import RequestFactory
 from django.utils import timezone
 from yt_dlp.utils import DownloadError
 
@@ -1186,6 +1187,30 @@ def test_youtube_session_service_resolves_browser_profile(settings, monkeypatch)
     assert option == ("chromium", str(profile_dir), "BASICTEXT", None)
 
 
+def test_youtube_session_service_rewrites_local_ui_url_to_request_host(settings):
+    settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html?autoconnect=1"
+    settings.ALLOWED_HOSTS = ["dubplate.example"]
+
+    request = RequestFactory().get("/admin/", HTTP_HOST="dubplate.example:8000")
+
+    assert (
+        YouTubeSessionService.resolved_ui_url(request)
+        == "http://dubplate.example:6080/vnc.html?autoconnect=1"
+    )
+
+
+def test_youtube_session_service_keeps_explicit_remote_ui_url(settings):
+    settings.YOUTUBE_SESSION_UI_URL = "https://ui.example.com/vnc.html?autoconnect=1"
+    settings.ALLOWED_HOSTS = ["dubplate.example", "ui.example.com"]
+
+    request = RequestFactory().get("/admin/", HTTP_HOST="dubplate.example:8000")
+
+    assert (
+        YouTubeSessionService.resolved_ui_url(request)
+        == "https://ui.example.com/vnc.html?autoconnect=1"
+    )
+
+
 @pytest.mark.django_db
 def test_youtube_session_service_rejects_anonymous_browser_profile(settings):
     runtime_dir = Path("runtime")
@@ -1203,6 +1228,37 @@ def test_youtube_session_service_rejects_anonymous_browser_profile(settings):
         assert YouTubeSessionService.profile_has_cookie_store() is True
         assert YouTubeSessionService.profile_is_ready() is False
         assert YouTubeSessionService.resolve_cookies_from_browser() is None
+    finally:
+        if cookies_db.exists():
+            cookies_db.unlink()
+        if default_dir.exists():
+            default_dir.rmdir()
+        if profile_dir.exists():
+            profile_dir.rmdir()
+
+
+@pytest.mark.django_db
+def test_youtube_session_service_keeps_browser_cookies_for_unknown_state(settings):
+    runtime_dir = Path("runtime")
+    profile_dir = runtime_dir / "test-youtube-browser-profile-unknown"
+    default_dir = profile_dir / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    cookies_db = default_dir / "Cookies"
+    try:
+        cookies_db.write_text("", encoding="utf-8")
+        settings.YOUTUBE_BROWSER_PROFILE_DIR = str(profile_dir)
+        state = YouTubeSessionState.get_solo()
+        state.status = YouTubeSessionState.Status.UNKNOWN
+        state.save(update_fields=["status", "modified"])
+
+        assert YouTubeSessionService.profile_has_cookie_store() is True
+        assert YouTubeSessionService.profile_is_ready() is False
+        assert YouTubeSessionService.resolve_cookies_from_browser() == (
+            "chromium",
+            str(profile_dir),
+            "BASICTEXT",
+            None,
+        )
     finally:
         if cookies_db.exists():
             cookies_db.unlink()
@@ -1291,6 +1347,39 @@ def test_youtube_session_service_rejects_anonymous_cookie_set():
     ]
 
     assert YouTubeSessionService.has_authenticated_session_cookies(cookies) is False
+
+
+def test_youtube_session_service_prepare_interactive_login_page_reuses_about_blank():
+    class DummyPage:
+        def __init__(self, url: str):
+            self.url = url
+            self.closed = False
+            self.brought_to_front = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        def bring_to_front(self) -> None:
+            self.brought_to_front = True
+
+    class DummyContext:
+        def __init__(self, pages):
+            self.pages = pages
+            self.new_page_calls = 0
+
+        def new_page(self):
+            self.new_page_calls += 1
+            return DummyPage("about:blank")
+
+    page = DummyPage("about:blank")
+    context = DummyContext([page])
+
+    result = YouTubeSessionService._prepare_interactive_login_page(context)
+
+    assert result is page
+    assert page.closed is False
+    assert page.brought_to_front is True
+    assert context.new_page_calls == 0
 
 
 @pytest.mark.django_db

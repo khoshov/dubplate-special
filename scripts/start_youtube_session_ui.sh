@@ -12,10 +12,17 @@ mkdir -p /tmp/.X11-unix
 Xvfb "$DISPLAY_NUMBER" -screen 0 "$SCREEN_SIZE" -nolisten tcp -ac &
 XVFB_PID=$!
 
+export DISPLAY="$DISPLAY_NUMBER"
+sleep 1
+
 fluxbox >/tmp/youtube-session-fluxbox.log 2>&1 &
 FLUXBOX_PID=$!
 
-uv run celery -A config worker   --loglevel=info   --queues=youtube_session_login   --concurrency=1   --hostname=youtube-session-login@%h   >/tmp/youtube-session-celery.log 2>&1 &
+if [ -x /home/largas/dubplate-special/.venv/bin/celery ]; then
+  /home/largas/dubplate-special/.venv/bin/celery -A config worker   --loglevel=info   --queues=youtube_session_login   --concurrency=1   --hostname=youtube-session-login@%h   >/tmp/youtube-session-celery.log 2>&1 &
+else
+  uv run celery -A config worker   --loglevel=info   --queues=youtube_session_login   --concurrency=1   --hostname=youtube-session-login@%h   >/tmp/youtube-session-celery.log 2>&1 &
+fi
 CELERY_PID=$!
 
 x11vnc   -display "$DISPLAY_NUMBER"   -rfbport "$VNC_PORT"   -forever   -shared   -nopw   -localhost   >/tmp/youtube-session-x11vnc.log 2>&1 &
@@ -41,4 +48,3 @@ while true
   done
   sleep 2
 done
-

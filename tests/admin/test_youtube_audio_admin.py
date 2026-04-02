@@ -692,6 +692,7 @@ def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, sett
     admin = RecordAdmin(Record, AdminSite())
     queued: list[int] = []
     settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"
+    settings.ALLOWED_HOSTS = ["dubplate.example"]
     monkeypatch.setattr(
         "records.admin.mixins.YOUTUBE_SESSION_LOGIN_TIMEOUT_MS",
         120_000,
@@ -702,7 +703,10 @@ def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, sett
         lambda **kwargs: queued.append(kwargs["timeout_sec"]),
     )
 
-    request = RequestFactory().post("/admin/records/record/youtube-session/login/")
+    request = RequestFactory().post(
+        "/admin/records/record/youtube-session/login/",
+        HTTP_HOST="dubplate.example:8000",
+    )
     request.user = FakeUser()
     request.META["HTTP_REFERER"] = "/admin/records/record/"
     _attach_session_and_messages(request)
@@ -717,7 +721,9 @@ def test_record_admin_youtube_session_login_view_enqueues_task(monkeypatch, sett
         "Запущена интерактивная авторизация YouTube-сессии." in msg
         for msg in rendered_messages
     )
-    assert any("http://localhost:6080/vnc.html" in msg for msg in rendered_messages)
+    assert any(
+        "http://dubplate.example:6080/vnc.html" in msg for msg in rendered_messages
+    )
 
 
 @pytest.mark.django_db
@@ -782,10 +788,12 @@ def test_record_admin_youtube_session_login_view_skips_when_login_is_running(
 def test_record_admin_youtube_session_recover_view_renders_page(settings):
     admin = RecordAdmin(Record, AdminSite())
     settings.YOUTUBE_SESSION_UI_URL = "http://localhost:6080/vnc.html"
+    settings.ALLOWED_HOSTS = ["dubplate.example"]
 
     request = RequestFactory().get(
         "/admin/records/record/youtube-session/recover/",
         {"next": "/admin/records/record/"},
+        HTTP_HOST="dubplate.example:8000",
     )
     request.user = FakeUser()
     _attach_session_and_messages(request)
@@ -796,7 +804,7 @@ def test_record_admin_youtube_session_recover_view_renders_page(settings):
     assert response.status_code == 200
     assert "Открыть окно авторизации вручную" in rendered
     assert "Запустить авторизацию вручную" in rendered
-    assert "http://localhost:6080/vnc.html" in rendered
+    assert "http://dubplate.example:6080/vnc.html" in rendered
     assert "/admin/records/record/" in rendered
 
 

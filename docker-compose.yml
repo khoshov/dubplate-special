@@ -30,7 +30,7 @@ services:
       - .env
     environment:
       RUN_ENV: docker
-    command: uv run celery -A config worker --loglevel=info --queues=celery,youtube_session_login
+    command: uv run celery -A config worker --loglevel=info --queues=celery
     volumes:
       - ./apps:/app/apps
       - ./config:/app/config
@@ -119,4 +119,3 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-

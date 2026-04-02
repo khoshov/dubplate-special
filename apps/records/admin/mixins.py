@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from django.contrib import messages
-from django.conf import settings
 from django.db import transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -15,6 +14,7 @@ from config.logging import log_event
 from records.constants import YOUTUBE_SESSION_LOGIN_TIMEOUT_MS
 
 from records.models import YouTubeSessionState
+from records.services.audio.providers.youtube_session import YouTubeSessionService
 from records.services.tasks import (
     login_youtube_session_profile,
     refresh_youtube_session_profile,
@@ -410,7 +410,7 @@ class YouTubeAudioRefreshMixin:
             return redirect(self._youtube_session_redirect_target(request))
 
         timeout_sec = int(YOUTUBE_SESSION_LOGIN_TIMEOUT_MS / 1000)
-        ui_url = str(getattr(settings, "YOUTUBE_SESSION_UI_URL", "") or "").strip()
+        ui_url = YouTubeSessionService.resolved_ui_url(request)
         try:
             login_youtube_session_profile.delay(timeout_sec=timeout_sec)
             _log_admin_mixin_event(
@@ -460,9 +460,7 @@ class YouTubeAudioRefreshMixin:
             **self.admin_site.each_context(request),
             "title": "Авторизация YouTube-сессии",
             "opts": self.model._meta,
-            "ui_url": str(
-                getattr(settings, "YOUTUBE_SESSION_UI_URL", "") or ""
-            ).strip(),
+            "ui_url": YouTubeSessionService.resolved_ui_url(request),
             "login_url": reverse("admin:records_record_youtube_session_login"),
             "next_url": next_url,
             "launch_delay_ms": 2_000,
