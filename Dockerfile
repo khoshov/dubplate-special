@@ -71,5 +71,3 @@ RUN chmod +x entrypoint.sh
 # ======================
 # Expose the port Django runs on
 EXPOSE 8000
-
-ENTRYPOINT ["./entrypoint.sh"]

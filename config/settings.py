@@ -502,5 +502,5 @@ LOGGING = build_logging_config(
 
 # VK интеграция
 
-VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "0"))  # пример: -225812294
+VK_GROUP_ID = int(os.getenv("VK_GROUP_ID", "") or "0")  # пример: -225812294
 VK_ACCESS_TOKEN = os.getenv("VK_ACCESS_TOKEN", "")

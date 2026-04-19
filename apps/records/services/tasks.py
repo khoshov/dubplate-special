@@ -516,6 +516,35 @@ def process_vk_publication_record(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         vk_service = VKService.from_settings()
+        if vk_service is None:
+            job_record.status = VKPublicationJobRecord.Status.FAILED
+            job_record.operation_name = "Публикация в VK"
+            job_record.error_message = (
+                "VK_ACCESS_TOKEN или VK_GROUP_ID не настроены — публикация невозможна."
+            )
+            job_record.finished_at = timezone.now()
+            job_record.save(
+                update_fields=[
+                    "status",
+                    "operation_name",
+                    "error_message",
+                    "finished_at",
+                    "modified",
+                ]
+            )
+            _log_vk_publication_event(
+                logging.ERROR,
+                "token_missing",
+                "VK_ACCESS_TOKEN или VK_GROUP_ID не заданы — публикация отменена.",
+                job_id=job.id,
+                job_record_id=job_record.id,
+                record_id=record.pk,
+            )
+            return {
+                "job_id": str(job.id),
+                "record_id": record.pk,
+                "status": job_record.status,
+            }
         delta = _get_vk_retry_delta(job_record.planned_publish_at, job)
         publication_result, final_publish_at, shifted = _post_to_vk_with_retry(
             vk_service=vk_service,

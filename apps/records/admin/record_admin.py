@@ -320,7 +320,7 @@ class RecordAdmin(YouTubeAudioRefreshMixin, RedeyeAudioRefreshMixin, admin.Model
         post_to_vk,
         schedule_to_vk,
     ]
-    vk_service: VKService
+    vk_service: VKService | None
     fieldsets = (
         (
             "Основная информация",

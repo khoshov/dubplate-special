@@ -39,7 +39,6 @@ class VKConfig:
         group_id:     ID сообщества.
 
     raise:
-        RuntimeError - при отсутствии пользовательского токена в настройках.
         ValueError - если ID группы не целое число.
     """
 
@@ -47,15 +46,21 @@ class VKConfig:
     group_id: int
 
     @staticmethod
-    def from_settings() -> "VKConfig":
-        """Создаёт конфигурацию из Django settings."""
-        token = getattr(settings, "VK_ACCESS_TOKEN", "")
-        if not token:
-            raise RuntimeError(
-                "VK: отсутствует пользовательский токен(VK_ACCESS_TOKEN)."
-            )
+    def from_settings() -> "VKConfig | None":
+        """Создаёт конфигурацию из Django settings.
 
+        Возвращает ``None``, если ``VK_ACCESS_TOKEN`` не задан — в этом
+        случае все функции VK считаются недоступными.
+        """
+        token = getattr(settings, "VK_ACCESS_TOKEN", "")
         group_id_raw = getattr(settings, "VK_GROUP_ID", 0)
+
+        if not token or not group_id_raw:
+            logger.warning(
+                "VK_ACCESS_TOKEN или VK_GROUP_ID не заданы — функции публикации VK недоступны."
+            )
+            return None
+
         try:
             group_id = abs(int(group_id_raw))
         except (TypeError, ValueError) as exc:
@@ -533,8 +538,11 @@ class VKService:
         )
 
     @classmethod
-    def from_settings(cls) -> "VKService":
-        return cls(VKConfig.from_settings())
+    def from_settings(cls) -> "VKService | None":
+        config = VKConfig.from_settings()
+        if config is None:
+            return None
+        return cls(config)
 
     @property
     def owner_id(self) -> int:
