@@ -804,6 +804,7 @@ class RecordSource(models.Model):
         help_text=_("Роль ссылки: product_page / api / listing."),
     )
     url = models.URLField(
+        max_length=1024,
         verbose_name=_("Source URL"),
         help_text=_("Ссылка на внешний источник для этой записи."),
     )
